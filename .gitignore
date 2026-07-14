@@ -1,0 +1,47 @@
+# Local tooling and environments
+.agents/
+.codex/
+.mindfs/
+.venv*/
+ideaspark_run/
+
+# Superseded local experiments retained outside the published implementation
+batchswap_lp/
+qddca_marl/
+reproduction/
+CODE_AUDIT_QDDCA_RELIQ.md
+qddca_hop_scan.py
+.idea/
+.vscode/
+
+# Python caches and build artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+
+# Training artifacts
+**/runs/
+**/logs/
+*.pt
+*.pth
+*.ckpt
+*.log
+*.tmp
+
+# Independent upstream repositories; keep their pristine histories separate.
+QCAST/
+QDDCA/
+QPATH_QLEAP/
+QPATH_QLEAP_SIMQN/
+RELiQ/
+reproduction/qddca_corrected/source/
+reproduction/qddca_pristine/source/
+
+# OS files
+.DS_Store
+Thumbs.db
