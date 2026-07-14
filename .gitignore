@@ -1,16 +1,5 @@
-# Local tooling and environments
-.agents/
-.codex/
-.mindfs/
+# Local environments and editor state
 .venv*/
-ideaspark_run/
-
-# Superseded local experiments retained outside the published implementation
-batchswap_lp/
-qddca_marl/
-reproduction/
-CODE_AUDIT_QDDCA_RELIQ.md
-qddca_hop_scan.py
 .idea/
 .vscode/
 
@@ -32,15 +21,6 @@ dist/
 *.ckpt
 *.log
 *.tmp
-
-# Independent upstream repositories; keep their pristine histories separate.
-QCAST/
-QDDCA/
-QPATH_QLEAP/
-QPATH_QLEAP_SIMQN/
-RELiQ/
-reproduction/qddca_corrected/source/
-reproduction/qddca_pristine/source/
 
 # OS files
 .DS_Store

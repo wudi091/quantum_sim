@@ -15,32 +15,46 @@ physical RELiQ subslots.
   baselines.
 - `batchswap_rl`: dynamic-set actor-critic, masked PPO, training, evaluation,
   and tests.
+- `RELiQ`: vendored pristine physical simulator and original RELiQ code.
+- `QDDCA`: vendored pristine official Q-DDCA prototype for algorithm
+  comparison.
 
-RELiQ is kept as an independent upstream checkout and is intentionally not
-vendored into this repository. Place it at `RELiQ/` beside these packages
-before running the physical backend.
+The repository is self-contained: RELiQ and Q-DDCA are included at their
+recorded upstream commits. See `THIRD_PARTY.md` for provenance and licenses.
 
 ## Test
 
-```powershell
-uv run --with numpy,networkx python -m unittest discover -v batchswap_reliq/tests
-uv run --with torch,numpy python -m unittest discover -v batchswap_rl/tests
+Install CUDA-enabled PyTorch separately, then install the simulator dependencies:
+
+```bash
+pip install -r requirements.txt
 ```
 
-## High-contention fine-tuning
+Run the tests:
 
-```powershell
-python -m batchswap_rl.train `
-  --backend reliq `
-  --device cuda `
-  --request-ttl 100 `
-  --init-checkpoint batchswap_rl/runs/reliq_long_ladder_finetune/checkpoint.pt `
-  --short-updates 0 `
-  --medium-updates 0 `
-  --long-updates 800 `
-  --rollout-steps 1024 `
-  --minibatch-size 32 `
+```bash
+python -m unittest discover -v batchswap_reliq/tests
+python -m unittest discover -v batchswap_rl/tests
+```
+
+## High-contention training
+
+```bash
+python -m batchswap_rl.train \
+  --backend reliq \
+  --device cuda \
+  --request-ttl 100 \
+  --short-updates 200 \
+  --medium-updates 400 \
+  --long-updates 800 \
+  --rollout-steps 1024 \
+  --minibatch-size 32 \
+  --learning-rate 1e-4 \
   --output batchswap_rl/runs/reliq_100req_ttl100
 ```
+
+To fine-tune an existing compatible model, add
+`--init-checkpoint /path/to/checkpoint.pt` and set the short/medium update
+counts to zero.
 
 See `batchswap_reliq/HIGH_HOP_REPORT.md` for the latest paired evaluation.
