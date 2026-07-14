@@ -126,13 +126,14 @@ class EnvConfig:
 @dataclass
 class RewardConfig:
     flow_time_weight: float = 1.0
-    completion_bonus: float = 5.0
+    completion_bonus: float = 1.0
     progress_weight: float = 1.0
-    makespan_weight: float = 0.05
-    elementary_epr_weight: float = 0.01
-    swap_weight: float = 0.005
-    failure_weight: float = 1.0
-    timeout_weight: float = 7.0
+    makespan_weight: float = 0.0
+    elementary_epr_weight: float = 0.0
+    swap_weight: float = 0.0
+    failure_weight: float = 0.0
+    timeout_weight: float = 1.0
+    gamma: float = 0.99
 
 
 CURRICULUM = (
@@ -589,6 +590,17 @@ class BatchSwapReliqEnv:
             self.frontier[request.id], self.config.max_hops
         )
 
+    def _shaping_potential(self) -> float:
+        """Potential for unresolved requests; terminal requests contribute zero."""
+        progress = 0.0
+        for request in self.instance.requests:
+            if (request.id in self.completed_at or request.id in self.expired_at
+                    or request.arrival > self.time):
+                continue
+            remaining = self._remaining_distance(request)
+            progress += min(1.0, max(0.0, 1.0 - remaining / max(request.hops, 1)))
+        return progress / max(len(self.instance.requests), 1)
+
     def _request_ttl(self, request: RequestSpec) -> int | None:
         """Return this request's deadline budget in physical subslots."""
         del request
@@ -868,11 +880,9 @@ class BatchSwapReliqEnv:
     def _execute_batch(self):
         self._validate_batch()
         batch_start_time = self.time
-        active_before = len(self._active_requests())
-        old_remaining = sum(
-            self._remaining_distance(request)
-            for request in self._active_requests()
-        )
+        active_requests_before = self._active_requests()
+        active_before = len(active_requests_before)
+        old_potential = self._shaping_potential()
         self._consume_base_links()
         for plan in self.selected_plans:
             self.carried_links[plan.request_id] = None
@@ -930,26 +940,55 @@ class BatchSwapReliqEnv:
                 self.frontier[plan.request_id] = plan.reach_index
                 self.carried_links[plan.request_id] = output
 
-        # Measure progress before timeouts are removed from the active set;
-        # otherwise expiration would look like successful forward progress.
-        new_remaining = sum(
-            self._remaining_distance(request)
-            for request in self._active_requests()
-        )
         expired_now = self._expire_unresolved_requests()
+        new_potential = self._shaping_potential()
         elementary_now = sum(len(plan.base_links) for plan in self.selected_plans)
         swaps_now = self.swaps - swaps_before
         self.elementary_eprs += elementary_now
         self.planning_slots += 1
         failures_now = len(failed)
-        reward = -self.reward_config.flow_time_weight * active_before * duration / max(self.config.max_requests, 1)
-        reward -= self.reward_config.makespan_weight * duration
-        reward -= self.reward_config.elementary_epr_weight * elementary_now / max(self.config.max_hops, 1)
-        reward -= self.reward_config.swap_weight * swaps_now / max(self.config.max_hops, 1)
-        reward -= self.reward_config.failure_weight * failures_now
-        reward -= self.reward_config.timeout_weight * expired_now
-        reward += self.reward_config.completion_bonus * completed_now
-        reward += self.reward_config.progress_weight * (old_remaining - new_remaining) / max(self.config.max_hops, 1)
+        request_scale = max(len(self.instance.requests), 1)
+        ttl_scale = max(
+            self.config.request_ttl
+            if self.config.request_ttl is not None else self.config.max_subslots,
+            1,
+        )
+        resource_scale = max(request_scale * self.config.max_hops, 1)
+        alive_subslots = 0.0
+        for request in active_requests_before:
+            request_end = float(self.time)
+            if request.id in self.completed_at:
+                request_end = min(request_end, float(self.completed_at[request.id]))
+            deadline = self._deadline(request)
+            if deadline is not None:
+                request_end = min(request_end, float(deadline))
+            alive_subslots += max(0.0, request_end - batch_start_time)
+        reward_flow = (
+            -self.reward_config.flow_time_weight
+            * alive_subslots
+            / (request_scale * ttl_scale)
+        )
+        reward_makespan = -self.reward_config.makespan_weight * duration / ttl_scale
+        reward_elementary = (
+            -self.reward_config.elementary_epr_weight * elementary_now / resource_scale
+        )
+        reward_swaps = -self.reward_config.swap_weight * swaps_now / resource_scale
+        reward_failure = -self.reward_config.failure_weight * failures_now / request_scale
+        reward_timeout = -self.reward_config.timeout_weight * expired_now / request_scale
+        reward_completion = self.reward_config.completion_bonus * completed_now / request_scale
+        reward_progress = self.reward_config.progress_weight * (
+            self.reward_config.gamma ** duration * new_potential - old_potential
+        )
+        reward = sum((
+            reward_flow,
+            reward_makespan,
+            reward_elementary,
+            reward_swaps,
+            reward_failure,
+            reward_timeout,
+            reward_completion,
+            reward_progress,
+        ))
 
         terminated = (
             len(self.completed_at) + len(self.expired_at) == len(self.instance.requests)
@@ -968,6 +1007,11 @@ class BatchSwapReliqEnv:
         info.update(
             phase="execute", elementary_now=elementary_now, swaps_now=swaps_now,
             failed_now=failures_now, expired_now=expired_now,
+            reward_flow=reward_flow, reward_makespan=reward_makespan,
+            reward_elementary=reward_elementary, reward_swaps=reward_swaps,
+            reward_failure=reward_failure, reward_timeout=reward_timeout,
+            reward_completion=reward_completion, reward_progress=reward_progress,
+            alive_subslots=alive_subslots,
         )
         return self.observe(), float(reward), terminated, truncated, info
 

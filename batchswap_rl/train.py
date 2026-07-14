@@ -59,7 +59,14 @@ def build_reliq_environment(config: PPOConfig, request_ttl: int | None = None):
     # across curriculum stages.  Reward fields are passed when supported by a
     # future make_env implementation; the current factory intentionally keeps
     # this call dependency-light.
-    return make_reliq_env(stage=0, seed=config.seed, request_ttl=request_ttl)
+    from batchswap_reliq.env import RewardConfig as ReliqRewardConfig
+
+    return make_reliq_env(
+        stage=0,
+        seed=config.seed,
+        request_ttl=request_ttl,
+        reward_config=ReliqRewardConfig(gamma=config.gamma),
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -86,6 +93,11 @@ def parse_args() -> argparse.Namespace:
         "--init-checkpoint",
         type=Path,
         help="Initialize model weights from a compatible checkpoint before curriculum training.",
+    )
+    parser.add_argument(
+        "--reset-critic",
+        action="store_true",
+        help="Reinitialize the value head after loading a checkpoint with a different reward scale.",
     )
     parser.add_argument("--torch-threads", type=int, default=1)
     parser.add_argument(
@@ -144,6 +156,12 @@ def main() -> None:
 
         payload = torch.load(args.init_checkpoint, map_location=trainer.device, weights_only=False)
         trainer.model.load_state_dict(payload["model"])
+        if args.reset_critic:
+            trainer.model.critic.apply(trainer.model._initialize)
+            torch.nn.init.orthogonal_(trainer.model.critic[-1].weight, gain=1.0)
+            torch.nn.init.zeros_(trainer.model.critic[-1].bias)
+    elif args.reset_critic:
+        raise ValueError("--reset-critic requires --init-checkpoint")
     trainer.train()
 
 

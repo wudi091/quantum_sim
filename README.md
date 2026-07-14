@@ -9,6 +9,10 @@ The current high-contention benchmark uses 100 simultaneous requests balanced
 across 20--29, 30--39, and 40--50 hops, with a fixed request TTL measured in
 physical RELiQ subslots.
 
+The PPO reward contains no expert action, routing priority, or hop-specific
+bonus. It uses request-count/TTL-normalized completion, timeout, and actual
+flow time, plus duration-aware potential shaping for credit assignment.
+
 ## Packages
 
 - `batchswap_reliq`: RELiQ-backed physical environment and deterministic
@@ -54,7 +58,8 @@ python -m batchswap_rl.train \
 ```
 
 To fine-tune an existing compatible model, add
-`--init-checkpoint /path/to/checkpoint.pt` and set the short/medium update
-counts to zero.
+`--init-checkpoint /path/to/checkpoint.pt --reset-critic` and set the
+short/medium update counts to zero. Resetting the critic is required when the
+checkpoint was trained with the legacy unnormalized reward.
 
 See `batchswap_reliq/HIGH_HOP_REPORT.md` for the latest paired evaluation.

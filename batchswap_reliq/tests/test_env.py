@@ -191,6 +191,53 @@ def actions_for(env: BatchSwapReliqEnv, request_id: str) -> list[int]:
 
 
 class BatchSwapReliqP0Tests(unittest.TestCase):
+    def test_reward_scale_is_invariant_to_request_count(self):
+        single, _ = make_env((RequestSpec("r0", (0, 1)),), {(0, 1): 1})
+        single.step(action_for(single, "r0"))
+        _, single_reward, _, _, _ = single.step(single.stop_action)
+
+        requests = (RequestSpec("r0", (0, 1)), RequestSpec("r1", (2, 3)))
+        doubled, _ = make_env(requests, {(0, 1): 1, (2, 3): 1})
+        doubled.step(action_for(doubled, "r0"))
+        doubled.step(action_for(doubled, "r1"))
+        _, doubled_reward, _, _, _ = doubled.step(doubled.stop_action)
+
+        self.assertAlmostEqual(single_reward, doubled_reward, places=7)
+
+    def test_shaping_potential_normalizes_each_request_by_its_hops(self):
+        requests = (
+            RequestSpec("two", (0, 1, 2)),
+            RequestSpec("four", (3, 4, 5, 6, 7)),
+        )
+        env, _ = make_env(
+            requests,
+            {(0, 1): 0, (1, 2): 0, (3, 4): 0, (4, 5): 0,
+             (5, 6): 0, (6, 7): 0},
+        )
+        env.frontier["two"] = 1
+        env.frontier["four"] = 5
+
+        self.assertAlmostEqual(env._shaping_potential(), 0.5)
+
+    def test_timeout_revokes_prior_progress_shaping(self):
+        request = RequestSpec("r0", (0, 1, 2))
+        env, _ = make_env(
+            (request,), {(0, 1): 1, (1, 2): 0}, request_ttl=2
+        )
+
+        env.step(action_for(env, "r0"))
+        _, _, terminated, truncated, first_info = env.step(env.stop_action)
+        self.assertFalse(terminated or truncated)
+        _, _, terminated, truncated, second_info = env.step(env.stop_action)
+
+        self.assertTrue(terminated)
+        self.assertFalse(truncated)
+        discounted_shaping = (
+            first_info["reward_progress"]
+            + env.reward_config.gamma * second_info["reward_progress"]
+        )
+        self.assertAlmostEqual(discounted_shaping, 0.0, places=7)
+
     def test_topology_path_cache_is_bounded_to_one_episode(self):
         request = RequestSpec("r0", (0, 1))
         env, _ = make_env((request,), {(0, 1): 1})
@@ -297,6 +344,7 @@ class BatchSwapReliqP0Tests(unittest.TestCase):
         self.assertTrue(terminated)
         self.assertFalse(truncated)
         self.assertEqual(info["time"], 3)
+        self.assertEqual(info["alive_subslots"], 2.0)
         self.assertEqual(env.completed_at, {"short": 1})
         self.assertEqual(env.expired_at, {"long": 3})
 
