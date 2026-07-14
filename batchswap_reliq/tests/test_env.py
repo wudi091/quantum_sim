@@ -191,6 +191,16 @@ def actions_for(env: BatchSwapReliqEnv, request_id: str) -> list[int]:
 
 
 class BatchSwapReliqP0Tests(unittest.TestCase):
+    def test_topology_path_cache_is_bounded_to_one_episode(self):
+        request = RequestSpec("r0", (0, 1))
+        env, _ = make_env((request,), {(0, 1): 1})
+        sentinel = (999, 1000, ())
+        env._topology_path_cache[sentinel] = ((999, 1000),)
+
+        env.reset(seed=1)
+
+        self.assertNotIn(sentinel, env._topology_path_cache)
+
     def test_high_hop_stage_expands_to_one_hundred_requests(self):
         env = BatchSwapReliqEnv()
         env.set_curriculum(2)

@@ -435,6 +435,11 @@ class BatchSwapReliqEnv:
         self, seed: int | None = None, options: Mapping[str, object] | None = None
     ) -> tuple[dict[str, np.ndarray], dict[str, object]]:
         del options
+        # Request endpoints/frontiers change every episode.  Keeping all
+        # source-destination K-shortest paths forever causes unbounded memory
+        # growth in the 100-request workload.  Reuse paths within an episode,
+        # then release them here.
+        self._topology_path_cache.clear()
         episode_seed = self._next_episode_seed if seed is None else int(seed)
         self._next_episode_seed = episode_seed + 1
         if self._fixed_instance is None:
