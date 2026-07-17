@@ -22,13 +22,16 @@ def _pack(plans: list[PlanDescriptor]) -> tuple[str, ...]:
     selected: list[str] = []
     requests: set[str] = set()
     pairs: set[str] = set()
+    claims: set[tuple[tuple[int, int], int]] = set()
     for plan in plans:
         inputs = _pair_ids(plan)
-        if plan.request_id in requests or inputs & pairs:
+        plan_claims = {(claim.endpoints, claim.lane) for claim in plan.claims}
+        if plan.request_id in requests or inputs & pairs or plan_claims & claims:
             continue
         selected.append(plan.plan_id)
         requests.add(plan.request_id)
         pairs.update(inputs)
+        claims.update(plan_claims)
     return tuple(selected)
 
 
@@ -60,6 +63,39 @@ class RandomPlanner:
     def select(self, snapshot: PlanningSnapshot) -> tuple[str, ...]:
         plans = list(snapshot.candidates)
         self.rng.shuffle(plans)
+        return _pack(plans)
+
+
+class QCASTPlanner:
+    """Planning-only QCAST port over the public width/recovery catalogue."""
+
+    def reset(self, episode_seed: int) -> None:
+        del episode_seed
+
+    def select(self, snapshot: PlanningSnapshot) -> tuple[str, ...]:
+        if snapshot.phase == "allocate":
+            complete = [plan for plan in snapshot.candidates if plan.completes_request]
+            catalogue = complete or list(snapshot.candidates)
+            plans = sorted(
+                catalogue,
+                key=lambda plan: (
+                    -plan.expected_throughput,
+                    plan.memory_cost,
+                    plan.remaining_hops,
+                    plan.plan_id,
+                ),
+            )
+        else:
+            plans = sorted(
+                snapshot.candidates,
+                key=lambda plan: (
+                    not plan.completes_request,
+                    -plan.expected_throughput,
+                    -plan.width,
+                    plan.remaining_hops,
+                    plan.plan_id,
+                ),
+            )
         return _pack(plans)
 
 
@@ -119,7 +155,19 @@ class QDDCAPlanner:
         return (1.0 - failure) * remaining + failure * metric_drop
 
     def select(self, snapshot: PlanningSnapshot) -> tuple[str, ...]:
-        self._settle(snapshot)
+        if snapshot.phase == "allocate":
+            self._settle(snapshot)
+            local = [
+                plan for plan in snapshot.candidates
+                if len(plan.route_nodes) == 2 and plan.width == 1
+            ]
+            local.sort(key=lambda plan: (
+                plan.remaining_hops,
+                plan.request_id,
+                plan.reached_node,
+                plan.plan_id,
+            ))
+            return _pack(local)
         # The official prototype sets queryTime=0.5/M. In the slotted common
         # environment this becomes a deterministic attempt interval: larger M
         # permits more routing attempts within the same physical horizon.

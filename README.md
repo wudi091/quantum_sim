@@ -50,12 +50,63 @@ There is no backend option. Training always uses SeQUeNCe.
 ```bash
 python -m routing_rl.train \
   --device cuda \
-  --request-ttl 32 \
-  --long-requests 20 \
+  --min-hops 2 \
+  --max-hops 50 \
+  --updates 1000 \
+  --requests 100 \
+  --request-ttl 64 \
+  --potential-coef 0.1 \
+  --completion-bonus 1.0 \
   --generation-probability 0.5 \
-  --swap-probability 0.5 \
+  --swap-probability 0.95 \
   --memory-capacity 2 \
+  --topology-nodes 200 \
+  --waxman-alpha 0.05 \
+  --waxman-beta 0.02 \
   --output routing_rl/runs/sequence_default
+```
+
+By default, training uses one full-range stage (2--50 hops); it does not
+switch through short/medium/long curricula. Add `--curriculum` to restore the
+legacy three-stage schedule.
+
+Each episode uses a seeded sparse Waxman topology plus its Euclidean minimum
+spanning tree for guaranteed connectivity. Topologies whose true graph
+diameter is below `max_hops` are rejected. Requested hop lengths are spread
+across the selected range, and source/destination endpoints are sampled from
+the corresponding true shortest-path-distance buckets. Requests are not all
+anchored at node 0.
+
+The full-range default uses a shared swap success probability of 0.95. With
+the old 0.5 setting, a failed extension destroys the carried EPR and a 20--50
+hop request requires an exponentially unlikely run of consecutive successful
+swaps, so neither PPO nor Q-DDCA receives a meaningful completion signal.
+
+## Multi-width allocation and recovery
+
+Set `--max-width` above one to enable the common QCAST-style two-phase
+resource protocol.  Every algorithm, including PPO, receives the same public
+catalogue and follows the same state machine:
+
+```text
+ALLOCATE(path, width) -> realized link EPRs -> RECOVER/EXECUTE -> settle
+```
+
+Allocations claim exact `(edge, lane)` units and consume real node memory
+slots.  Realized surplus EPRs form one shared recovery graph for the slot;
+recovery candidates are exposed as plan IDs rather than being chosen inside
+the backend.  `demand_pairs` controls how many end-to-end EPRs complete one
+request, so width greater than one contributes to pair throughput instead of
+silently discarding extra successful lanes.
+
+Example:
+
+```bash
+python -m routing_rl.train \
+  --max-width 2 --demand-pairs 2 \
+  --memory-capacity 2 --node-memory-capacity 12 \
+  --candidates-per-request 6 \
+  --output routing_rl/runs/qcast_common
 ```
 
 ## Fair evaluation
@@ -64,8 +115,8 @@ python -m routing_rl.train \
 python -m routing_rl.evaluate \
   --checkpoint routing_rl/runs/sequence_default/checkpoint.pt \
   --episodes 20 \
-  --requests 20 --min-hops 20 --max-hops 50 \
-  --request-ttl 32 \
+  --requests 100 --min-hops 2 --max-hops 50 \
+  --request-ttl 64 \
   --output routing_rl/runs/sequence_default/evaluation.json
 ```
 

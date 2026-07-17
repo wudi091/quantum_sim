@@ -3,20 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-
-@dataclass(frozen=True)
-class RewardConfig:
-    """Weights for the pure-RL environment reward.
-
-    The environment owns reward calculation.  These weights are kept with the
-    checkpoint so evaluation can reproduce the exact training objective.
-    """
-
-    potential_coef: float = 1.0
-    completion_bonus: float = 5.0
-    makespan_coef: float = 0.05
-    elementary_epr_coef: float = 0.01
-    swap_coef: float = 0.005
+from qnet_core.reward import RewardConfig
 
 
 @dataclass(frozen=True)
@@ -30,10 +17,15 @@ class CurriculumStage:
 
 
 def default_curriculum() -> tuple[CurriculumStage, ...]:
+    """Return the default full-range training configuration.
+
+    The trainer keeps a tuple of stages for checkpoint/evaluator
+    compatibility, but the default run is intentionally a single stage over
+    the complete 2--50 hop range.  The legacy short/medium/long curriculum is
+    still available from the CLI with ``--curriculum``.
+    """
     return (
-        CurriculumStage("short", 2, 5, 200, 2, 4),
-        CurriculumStage("medium", 5, 15, 400, 5, 10),
-        CurriculumStage("long", 20, 50, 800, 100, 100),
+        CurriculumStage("full", 2, 50, 1000, 100, 100),
     )
 
 
@@ -42,6 +34,7 @@ class PPOConfig:
     hidden_dim: int = 128
     rollout_steps: int = 512
     learning_rate: float = 3e-4
+    anneal_learning_rate: bool = False
     gamma: float = 0.99
     gae_lambda: float = 0.95
     clip_ratio: float = 0.2

@@ -1,5 +1,7 @@
 import unittest
 
+import networkx as nx
+
 from qnet_core.planner_api import COMMIT, PlanDescriptor, PlanningSnapshot
 from qnet_core.scenario import ScenarioConfig, make_episode
 from qnet_core.spec import EpisodeSpec, PhysicalConfig, RequestSpec
@@ -14,6 +16,33 @@ class SharedContractTests(unittest.TestCase):
         self.assertEqual(arrivals, [request.arrival for request in second.requests])
         self.assertEqual(arrivals, sorted(arrivals))
         self.assertEqual(first.horizon, arrivals[-1] + config.ttl)
+
+    def test_generated_requests_use_seeded_distributed_endpoints(self):
+        config = ScenarioConfig(request_count=100, min_hops=2, max_hops=50)
+        first = make_episode(config, 321)
+        second = make_episode(config, 321)
+        self.assertEqual(first.requests, second.requests)
+        graph = nx.Graph(first.edges)
+        self.assertEqual(graph.number_of_nodes(), 200)
+        self.assertTrue(nx.is_connected(graph))
+        self.assertGreater(graph.number_of_edges(), graph.number_of_nodes() - 1)
+        self.assertGreaterEqual(nx.diameter(graph), 50)
+        distances = sorted(
+            nx.shortest_path_length(graph, request.source, request.destination)
+            for request in first.requests
+        )
+        expected = sorted(
+            2 + round(48 * index / 99)
+            for index in range(100)
+        )
+        self.assertEqual(distances, expected)
+        self.assertGreater(len({request.source for request in first.requests}), 1)
+        self.assertTrue(any(request.source < request.destination for request in first.requests))
+        self.assertTrue(any(request.source > request.destination for request in first.requests))
+        self.assertTrue(all(
+            request.source in first.nodes and request.destination in first.nodes
+            for request in first.requests
+        ))
 
     def test_episode_spec_rejects_invalid_probability(self):
         with self.assertRaises(ValueError):

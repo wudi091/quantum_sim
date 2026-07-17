@@ -35,21 +35,29 @@ def build_evaluator(args: argparse.Namespace, config: PPOConfig):
                 request_count=stage.max_requests,
                 min_hops=stage.min_hops,
                 max_hops=stage.max_hops,
-                ttl=args.request_ttl or 32,
-                horizon=args.request_ttl or 32,
+                ttl=args.request_ttl or 64,
+                horizon=args.request_ttl or 64,
                 arrival_rate=args.arrival_rate,
+                topology_nodes=args.topology_nodes,
+                waxman_alpha=args.waxman_alpha,
+                waxman_beta=args.waxman_beta,
+                topology_attempts=args.topology_attempts,
+                demand_pairs=args.demand_pairs,
                 physical=PhysicalConfig(
                     generation_probability=args.generation_probability,
                     swap_probability=args.swap_probability,
                     memory_capacity=args.memory_capacity,
+                    node_memory_capacity=args.node_memory_capacity,
+                    max_width=args.max_width,
                 ),
             )
             env = SequenceGymEnv(GymConfig(
                 max_requests=stage.max_requests,
-                max_candidates_per_request=3,
+                max_candidates_per_request=args.candidates_per_request,
                 max_hops=stage.max_hops,
                 scenario=scenario,
                 seed=seed,
+                reward=config.reward,
             ))
             observation, _ = unpack_reset(env.reset(seed=seed))
             while True:
@@ -63,11 +71,25 @@ def build_evaluator(args: argparse.Namespace, config: PPOConfig):
                     break
         if was_training:
             model.train()
-        keys = ("completion_rate", "timeout_rate", "mean_delay", "planning_slots")
-        return {
+        keys = (
+            "completion_rate", "timeout_rate", "mean_delay", "planning_slots",
+            "successful_plans", "partial_plan_successes", "failed_plans",
+            "progress_hops", "positive_progress_hops", "lost_progress_hops",
+            "delivered_pairs", "pair_throughput", "recovery_attempts",
+            "recovery_successes", "recovery_success_rate",
+            "allocation_claims", "allocation_successes", "allocation_success_rate",
+            "released_surplus_pairs", "epr_delivery_utilization",
+        )
+        result = {
             key: float(np.mean([row.get(key, 0.0) for row in values]))
             for key in keys
         }
+        rates = []
+        for row in values:
+            attempts = row.get("successful_plans", 0.0) + row.get("failed_plans", 0.0)
+            rates.append(row.get("successful_plans", 0.0) / attempts if attempts else 0.0)
+        result["plan_success_rate"] = float(np.mean(rates))
+        return result
 
     return evaluate
 
@@ -75,9 +97,17 @@ def build_environment(
     config: PPOConfig,
     request_ttl: int | None = None,
     generation_probability: float = 0.5,
-    swap_probability: float = 0.5,
+    swap_probability: float = 0.95,
     memory_capacity: int = 2,
     arrival_rate: float = 1.0,
+    topology_nodes: int | None = None,
+    waxman_alpha: float = 0.05,
+    waxman_beta: float = 0.02,
+    topology_attempts: int = 128,
+    demand_pairs: int = 1,
+    node_memory_capacity: int | None = None,
+    max_width: int = 1,
+    candidates_per_request: int = 6,
 ):
     """Build the single shared SeQUeNCe environment used by every planner."""
     from qnet_core.gym_env import GymConfig, SequenceGymEnv
@@ -91,34 +121,55 @@ def build_environment(
         request_count=first.max_requests,
         min_hops=first.min_hops,
         max_hops=first.max_hops,
-        ttl=request_ttl or 32,
-        horizon=max(request_ttl or 32, 1),
+        ttl=request_ttl or 64,
+        horizon=max(request_ttl or 64, 1),
         arrival_rate=arrival_rate,
+        topology_nodes=topology_nodes,
+        waxman_alpha=waxman_alpha,
+        waxman_beta=waxman_beta,
+        topology_attempts=topology_attempts,
+        demand_pairs=demand_pairs,
         physical=PhysicalConfig(
             generation_probability=generation_probability,
             swap_probability=swap_probability,
             memory_capacity=memory_capacity,
+            node_memory_capacity=node_memory_capacity,
+            max_width=max_width,
         ),
     )
     return SequenceGymEnv(GymConfig(
         max_requests=maximum_requests,
-        max_candidates_per_request=3,
+        max_candidates_per_request=candidates_per_request,
         max_hops=maximum_hops,
         scenario=scenario,
         seed=config.seed,
+        reward=config.reward,
     ))
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train masked PPO on the shared SeQUeNCe environment")
     parser.add_argument("--output", type=Path, default=Path("routing_rl/runs/default"))
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--min-hops", type=int, default=2)
+    parser.add_argument("--max-hops", type=int, default=50)
+    parser.add_argument("--updates", type=int, default=1000)
+    parser.add_argument("--requests", type=int, default=100)
+    parser.add_argument(
+        "--curriculum",
+        action="store_true",
+        help="Use the legacy short/medium/long curriculum instead of one full-range stage.",
+    )
     parser.add_argument("--rollout-steps", type=int, default=512)
     parser.add_argument("--minibatch-size", type=int, default=128)
     parser.add_argument("--ppo-epochs", type=int, default=6)
     parser.add_argument("--hidden-dim", type=int, default=128)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
+    parser.add_argument(
+        "--anneal-learning-rate", action="store_true",
+        help="Linearly decay the PPO learning rate to zero over all updates.",
+    )
     parser.add_argument("--short-updates", type=int, default=200)
     parser.add_argument("--medium-updates", type=int, default=400)
     parser.add_argument("--long-updates", type=int, default=800)
@@ -139,41 +190,71 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--request-ttl",
         type=int,
+        default=64,
         help="Fixed request lifetime in shared physical steps; independent of hop count.",
     )
     parser.add_argument("--long-requests", type=int, default=20)
     parser.add_argument("--short-requests", type=int, default=4,
                         help="Requests per short-stage episode")
     parser.add_argument("--generation-probability", type=float, default=0.5)
-    parser.add_argument("--swap-probability", type=float, default=0.5)
+    parser.add_argument("--swap-probability", type=float, default=0.95)
     parser.add_argument("--memory-capacity", type=int, default=2)
     parser.add_argument("--arrival-rate", type=float, default=1.0,
                         help="Mean Poisson request arrivals per physical step")
+    parser.add_argument("--topology-nodes", type=int,
+                        help="Waxman node count; defaults to max(4 * max_hops, 16)")
+    parser.add_argument("--waxman-alpha", type=float, default=0.05)
+    parser.add_argument("--waxman-beta", type=float, default=0.02)
+    parser.add_argument("--topology-attempts", type=int, default=128)
+    parser.add_argument("--demand-pairs", type=int, default=1)
+    parser.add_argument("--node-memory-capacity", type=int)
+    parser.add_argument("--max-width", type=int, default=1)
+    parser.add_argument("--candidates-per-request", type=int, default=6)
+    parser.add_argument("--potential-coef", type=float, default=0.1)
+    parser.add_argument("--completion-bonus", type=float, default=1.0)
+    parser.add_argument("--makespan-coef", type=float, default=0.005)
+    parser.add_argument("--failure-coef", type=float, default=0.1)
+    parser.add_argument("--timeout-coef", type=float, default=0.1)
     parser.add_argument(
         "--smoke",
         action="store_true",
-        help="Run one small update per curriculum stage for integration testing",
+        help="Run one small update per configured training stage for integration testing",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def make_config(args: argparse.Namespace) -> PPOConfig:
-    updates = (args.short_updates, args.medium_updates, args.long_updates)
     rollout_steps = args.rollout_steps
     minibatch_size = args.minibatch_size
+    if args.curriculum:
+        updates = (args.short_updates, args.medium_updates, args.long_updates)
+        curriculum = (
+            CurriculumStage("short", 2, 5, updates[0], args.short_requests, args.short_requests),
+            CurriculumStage("medium", 5, 15, updates[1], 5, 10),
+            CurriculumStage("long", 20, 50, updates[2], args.long_requests, args.long_requests),
+        )
+    else:
+        curriculum = (
+            CurriculumStage(
+                "full", args.min_hops, args.max_hops,
+                args.updates, args.requests, args.requests,
+            ),
+        )
     if args.smoke:
-        updates = (1, 1, 1)
+        curriculum = tuple(
+            CurriculumStage(
+                stage.name, stage.min_hops, stage.max_hops, 1,
+                stage.min_requests, stage.max_requests,
+            )
+            for stage in curriculum
+        )
         rollout_steps = min(rollout_steps, 64)
         minibatch_size = min(minibatch_size, 32)
-    curriculum = (
-        CurriculumStage("short", 2, 5, updates[0], args.short_requests, args.short_requests),
-        CurriculumStage("medium", 5, 15, updates[1], 5, 10),
-        CurriculumStage("long", 20, 50, updates[2], args.long_requests, args.long_requests),
-    )
     return PPOConfig(
         hidden_dim=args.hidden_dim,
         rollout_steps=rollout_steps,
         learning_rate=args.learning_rate,
+        anneal_learning_rate=args.anneal_learning_rate,
         ppo_epochs=args.ppo_epochs,
         minibatch_size=minibatch_size,
         seed=args.seed,
@@ -183,7 +264,13 @@ def make_config(args: argparse.Namespace) -> PPOConfig:
         evaluate_every=args.evaluate_every,
         evaluation_episodes=args.evaluation_episodes,
         curriculum=curriculum,
-        reward=RewardConfig(),
+        reward=RewardConfig(
+            potential_coef=args.potential_coef,
+            completion_bonus=args.completion_bonus,
+            makespan_coef=args.makespan_coef,
+            failure_coef=args.failure_coef,
+            timeout_coef=args.timeout_coef,
+        ),
     )
 
 
@@ -191,13 +278,35 @@ def main() -> None:
     args = parse_args()
     if args.request_ttl is not None and args.request_ttl < 1:
         raise ValueError("request TTL must be positive")
-    if (args.short_requests < 1 or args.long_requests < 1
-            or args.memory_capacity < 1 or args.arrival_rate <= 0):
-        raise ValueError("request count and memory capacity must be positive")
+    if args.memory_capacity < 1 or args.arrival_rate <= 0:
+        raise ValueError("memory capacity and arrival rate must be positive")
+    if args.topology_nodes is not None and args.topology_nodes <= args.max_hops:
+        raise ValueError("topology nodes must exceed max_hops")
+    if args.waxman_alpha <= 0 or not 0 < args.waxman_beta <= 1:
+        raise ValueError("invalid Waxman alpha or beta")
+    if args.topology_attempts < 1:
+        raise ValueError("topology attempts must be positive")
+    if args.demand_pairs < 1 or args.max_width < 1 or args.candidates_per_request < 1:
+        raise ValueError("demand, max width, and candidate count must be positive")
+    if args.node_memory_capacity is not None and args.node_memory_capacity < 1:
+        raise ValueError("node memory capacity must be positive")
+    if args.curriculum:
+        if args.short_requests < 1 or args.long_requests < 1:
+            raise ValueError("curriculum request counts must be positive")
+    else:
+        if args.min_hops < 1 or args.max_hops < args.min_hops:
+            raise ValueError("invalid hop range")
+        if args.updates < 1 or args.requests < 1:
+            raise ValueError("updates and requests must be positive")
     if not 0 < args.generation_probability <= 1:
         raise ValueError("generation probability must be in (0, 1]")
     if not 0 <= args.swap_probability <= 1:
         raise ValueError("swap probability must be in [0, 1]")
+    if any(value < 0 for value in (
+        args.potential_coef, args.completion_bonus,
+        args.makespan_coef, args.failure_coef, args.timeout_coef,
+    )):
+        raise ValueError("reward coefficients must be non-negative")
     config = make_config(args)
     env = build_environment(
         config,
@@ -206,6 +315,14 @@ def main() -> None:
         args.swap_probability,
         args.memory_capacity,
         args.arrival_rate,
+        args.topology_nodes,
+        args.waxman_alpha,
+        args.waxman_beta,
+        args.topology_attempts,
+        args.demand_pairs,
+        args.node_memory_capacity,
+        args.max_width,
+        args.candidates_per_request,
     )
     trainer = PPOTrainer(env, config, args.output, evaluator=build_evaluator(args, config))
     if args.init_checkpoint is not None:

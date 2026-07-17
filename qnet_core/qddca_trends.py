@@ -110,7 +110,39 @@ def _corr(left: list[float], right: list[float]) -> float:
     return 0.0 if np.isnan(value) else float(value)
 
 
+def _shape_stats(reference: list[float], observed: list[float]) -> dict[str, float]:
+    """Scale-free curve agreement for metrics with different native units."""
+    left = np.asarray(reference, dtype=float)
+    right = np.asarray(observed, dtype=float)
+    left_scale = max(float(np.max(np.abs(left))), 1e-12)
+    right_scale = max(float(np.max(np.abs(right))), 1e-12)
+    left_normalized = left / left_scale
+    right_normalized = right / right_scale
+    left_direction = np.sign(np.diff(left))
+    right_direction = np.sign(np.diff(right))
+    return {
+        "spearman": _corr(reference, observed),
+        "direction_agreement": float(np.mean(left_direction == right_direction)),
+        "normalized_bias": float(np.mean(right_normalized - left_normalized)),
+        "normalized_mae": float(np.mean(np.abs(right_normalized - left_normalized))),
+    }
+
+
+def _relative_improvement(before: float, after: float, lower_is_better: bool) -> float:
+    if before == 0:
+        return 0.0 if after == 0 else float("inf")
+    delta = before - after if lower_is_better else after - before
+    return float(delta / abs(before))
+
+
+def _meets_threshold(value: float, threshold: float, tolerance: float = 1e-12) -> bool:
+    """Avoid rejecting an exact rank threshold due to floating-point noise."""
+    return value >= threshold - tolerance
+
+
 def run_suite(seeds: int = 3) -> dict[str, object]:
+    if seeds < 1:
+        raise ValueError("seeds must be positive")
     retry = []
     for max_try in OFFICIAL["retry"]["x"]:
         retry.append(_mean([
@@ -150,9 +182,9 @@ def run_suite(seeds: int = 3) -> dict[str, object]:
         "window_cv_spearman": _corr(
             OFFICIAL["window"]["cv"], [row["cv"] for row in window]
         ),
-        "reroute_throughput_improves": reroute["true"]["throughput"] >= reroute["false"]["throughput"],
-        "reroute_drop_improves": reroute["true"]["drop"] <= reroute["false"]["drop"],
-        "reroute_cv_improves": reroute["true"]["cv"] <= reroute["false"]["cv"],
+        "reroute_throughput_improves": reroute["true"]["throughput"] > reroute["false"]["throughput"],
+        "reroute_drop_improves": reroute["true"]["drop"] < reroute["false"]["drop"],
+        "reroute_cv_improves": reroute["true"]["cv"] < reroute["false"]["cv"],
     }
     window_throughput = [row["throughput"] for row in window]
     validation.update({
@@ -161,10 +193,11 @@ def run_suite(seeds: int = 3) -> dict[str, object]:
         "window_declines_under_high_load": window_throughput[-1] < max(window_throughput),
     })
     validation["overall_pass"] = bool(
-        validation["retry_throughput_spearman"] >= 0.8
-        and validation["retry_drop_spearman"] >= 0.8
-        and validation["window_drop_spearman"] >= 0.8
-        and validation["window_cv_spearman"] >= 0.8
+        _meets_threshold(validation["retry_throughput_spearman"], 0.8)
+        and _meets_threshold(validation["retry_drop_spearman"], 0.8)
+        and _meets_threshold(validation["window_throughput_spearman"], 0.8)
+        and _meets_threshold(validation["window_drop_spearman"], 0.8)
+        and _meets_threshold(validation["window_cv_spearman"], 0.8)
         and validation["window_rises_before_congestion"]
         and validation["window_peaks_at_moderate_load"]
         and validation["window_declines_under_high_load"]
@@ -172,9 +205,42 @@ def run_suite(seeds: int = 3) -> dict[str, object]:
         and validation["reroute_drop_improves"]
         and validation["reroute_cv_improves"]
     )
+    comparison = {
+        "retry_throughput": _shape_stats(
+            OFFICIAL["retry"]["throughput"], [row["throughput"] for row in retry]
+        ),
+        "retry_drop": _shape_stats(
+            OFFICIAL["retry"]["drop"], [row["drop"] for row in retry]
+        ),
+        "window_throughput": _shape_stats(
+            OFFICIAL["window"]["throughput"], [row["throughput"] for row in window]
+        ),
+        "window_drop": _shape_stats(
+            OFFICIAL["window"]["drop"], [row["drop"] for row in window]
+        ),
+        "window_cv": _shape_stats(
+            OFFICIAL["window"]["cv"], [row["cv"] for row in window]
+        ),
+        "reroute_effect": {},
+    }
+    for metric, lower_is_better in (("throughput", False), ("drop", True), ("cv", True)):
+        official_effect = _relative_improvement(
+            float(OFFICIAL["reroute"]["false"][metric]),
+            float(OFFICIAL["reroute"]["true"][metric]),
+            lower_is_better,
+        )
+        sequence_effect = _relative_improvement(
+            reroute["false"][metric], reroute["true"][metric], lower_is_better
+        )
+        comparison["reroute_effect"][metric] = {
+            "official_relative_improvement": official_effect,
+            "sequence_relative_improvement": sequence_effect,
+            "relative_improvement_bias": sequence_effect - official_effect,
+        }
     return {
         "official": OFFICIAL,
         "sequence": {"retry": retry, "window": window, "reroute": reroute},
+        "comparison": comparison,
         "validation": validation,
         "seeds": seeds,
     }

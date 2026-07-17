@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 
 from .env import SharedRoutingEnv
-from .planners import GreedyPlanner, QDDCAPlanner, RandomPlanner
+from .planners import GreedyPlanner, QCASTPlanner, QDDCAPlanner, RandomPlanner
 from .scenario import ScenarioConfig, make_episode
 from .spec import PhysicalConfig
 
@@ -27,6 +27,7 @@ def compare(scenario: ScenarioConfig, seeds: int) -> dict[str, object]:
     planners = {
         "greedy": GreedyPlanner(),
         "qddca": QDDCAPlanner(),
+        "qcast": QCASTPlanner(),
         "random": RandomPlanner(0),
     }
     rows = {

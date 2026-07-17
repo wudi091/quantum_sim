@@ -200,6 +200,11 @@ class PPOTrainer:
             self.observation, _ = unpack_reset(self.env.reset(seed=self._next_episode_seed()))
             for stage_update in range(1, stage.updates + 1):
                 self.update += 1
+                if self.config.anneal_learning_rate:
+                    fraction = 1.0 - (self.update - 1) / max(self.config.total_updates, 1)
+                    current_lr = self.config.learning_rate * max(fraction, 0.0)
+                    for group in self.optimizer.param_groups:
+                        group["lr"] = current_lr
                 collection = collect_rollout(
                     self.env,
                     self.model,
@@ -222,6 +227,7 @@ class PPOTrainer:
                     "stage": stage.name,
                     "stage_update": stage_update,
                     "rollout_mean_reward": collection.mean_reward,
+                    "learning_rate": float(self.optimizer.param_groups[0]["lr"]),
                     **update_metrics,
                     **_mean_episode_metrics(collection.episodes),
                 }
@@ -230,7 +236,10 @@ class PPOTrainer:
                 ):
                     evaluation = self.evaluator(self.model, self.update)
                     row["evaluation"] = evaluation
-                    score = float(evaluation.get("completion_rate", float("-inf")))
+                    score = float(evaluation.get(
+                        "pair_throughput",
+                        evaluation.get("completion_rate", float("-inf")),
+                    ))
                     if score > self.best_evaluation_score:
                         self.best_evaluation_score = score
                         self.save_checkpoint(self.output_dir / "best.pt")
