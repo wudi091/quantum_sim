@@ -177,6 +177,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--evaluate-every", type=int, default=10)
     parser.add_argument("--evaluation-episodes", type=int, default=10)
     parser.add_argument(
+        "--early-stopping-patience", type=int, default=0,
+        help="Stop after this many consecutive evaluations without improvement; 0 disables it.",
+    )
+    parser.add_argument(
         "--init-checkpoint",
         type=Path,
         help="Initialize model weights from a compatible checkpoint before curriculum training.",
@@ -263,6 +267,7 @@ def make_config(args: argparse.Namespace) -> PPOConfig:
         checkpoint_every=args.checkpoint_every,
         evaluate_every=args.evaluate_every,
         evaluation_episodes=args.evaluation_episodes,
+        early_stopping_patience=args.early_stopping_patience,
         curriculum=curriculum,
         reward=RewardConfig(
             potential_coef=args.potential_coef,
@@ -286,6 +291,8 @@ def main() -> None:
         raise ValueError("invalid Waxman alpha or beta")
     if args.topology_attempts < 1:
         raise ValueError("topology attempts must be positive")
+    if args.early_stopping_patience < 0:
+        raise ValueError("early stopping patience must be non-negative")
     if args.demand_pairs < 1 or args.max_width < 1 or args.candidates_per_request < 1:
         raise ValueError("demand, max width, and candidate count must be positive")
     if args.node_memory_capacity is not None and args.node_memory_capacity < 1:

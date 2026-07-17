@@ -24,10 +24,15 @@ class TrainConfigTest(unittest.TestCase):
         self.assertEqual(config.reward.completion_bonus, 1.0)
         self.assertEqual(config.reward.failure_coef, 0.1)
         self.assertFalse(config.anneal_learning_rate)
+        self.assertEqual(config.early_stopping_patience, 0)
 
     def test_learning_rate_annealing_is_opt_in(self):
         config = make_config(parse_args(["--anneal-learning-rate"]))
         self.assertTrue(config.anneal_learning_rate)
+
+    def test_early_stopping_patience_is_configurable(self):
+        config = make_config(parse_args(["--early-stopping-patience", "4"]))
+        self.assertEqual(config.early_stopping_patience, 4)
 
     def test_legacy_curriculum_remains_opt_in(self):
         args = parse_args(["--curriculum"])

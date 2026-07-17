@@ -196,6 +196,7 @@ class PPOTrainer:
             self.stage_index = stage_index
             self.stage_episode = 0
             self.best_evaluation_score = float("-inf")
+            evaluations_without_improvement = 0
             configure_curriculum(self.env, stage)
             self.observation, _ = unpack_reset(self.env.reset(seed=self._next_episode_seed()))
             for stage_update in range(1, stage.updates + 1):
@@ -242,14 +243,25 @@ class PPOTrainer:
                     ))
                     if score > self.best_evaluation_score:
                         self.best_evaluation_score = score
+                        evaluations_without_improvement = 0
                         self.save_checkpoint(self.output_dir / "best.pt")
                         self.save_checkpoint(self.output_dir / f"best_{stage.name}.pt")
                         row["best_evaluation"] = True
+                    else:
+                        evaluations_without_improvement += 1
+                    row["evaluations_without_improvement"] = evaluations_without_improvement
+                    if (
+                        self.config.early_stopping_patience > 0
+                        and evaluations_without_improvement >= self.config.early_stopping_patience
+                    ):
+                        row["early_stopping"] = True
                 self.history.append(row)
                 self._write_history()
                 if self.update == 1 or self.update % self.config.checkpoint_every == 0:
                     self.save_checkpoint(self.output_dir / f"checkpoint_{self.update:06d}.pt")
                 print(json.dumps(row, ensure_ascii=False), flush=True)
+                if row.get("early_stopping"):
+                    break
         self.save_checkpoint(self.output_dir / "checkpoint.pt")
         return self.history
 
