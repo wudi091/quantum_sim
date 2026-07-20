@@ -58,6 +58,7 @@ def build_evaluator(args: argparse.Namespace, config: PPOConfig):
                 scenario=scenario,
                 seed=seed,
                 reward=config.reward,
+                discount_gamma=config.gamma,
             ))
             observation, _ = unpack_reset(env.reset(seed=seed))
             while True:
@@ -144,6 +145,7 @@ def build_environment(
         scenario=scenario,
         seed=config.seed,
         reward=config.reward,
+        discount_gamma=config.gamma,
     ))
 
 
@@ -166,6 +168,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--ppo-epochs", type=int, default=6)
     parser.add_argument("--hidden-dim", type=int, default=128)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
+    parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument(
         "--anneal-learning-rate", action="store_true",
         help="Linearly decay the PPO learning rate to zero over all updates.",
@@ -259,6 +262,7 @@ def make_config(args: argparse.Namespace) -> PPOConfig:
         rollout_steps=rollout_steps,
         learning_rate=args.learning_rate,
         anneal_learning_rate=args.anneal_learning_rate,
+        gamma=args.gamma,
         ppo_epochs=args.ppo_epochs,
         minibatch_size=minibatch_size,
         seed=args.seed,
@@ -293,6 +297,8 @@ def main() -> None:
         raise ValueError("topology attempts must be positive")
     if args.early_stopping_patience < 0:
         raise ValueError("early stopping patience must be non-negative")
+    if not 0 < args.gamma <= 1:
+        raise ValueError("gamma must be in (0, 1]")
     if args.demand_pairs < 1 or args.max_width < 1 or args.candidates_per_request < 1:
         raise ValueError("demand, max width, and candidate count must be positive")
     if args.node_memory_capacity is not None and args.node_memory_capacity < 1:

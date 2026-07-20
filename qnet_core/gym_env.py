@@ -22,6 +22,7 @@ class GymConfig:
     scenario: ScenarioConfig = ScenarioConfig()
     seed: int = 0
     reward: RewardConfig = field(default_factory=RewardConfig)
+    discount_gamma: float = 0.99
 
 
 class SequenceGymEnv:
@@ -180,8 +181,13 @@ class SequenceGymEnv:
             info.update(outcome)
             info["planning_slots"] = planning_slots
             return self.observe(), 0.0, False, False, info
-        progress_delta = float(outcome["progress_potential_delta"])
-        reward = self.config.reward.potential_coef * progress_delta
+        potential_before = float(outcome["progress_potential_before"])
+        potential_after = float(outcome["progress_potential_after"])
+        reward_progress = (
+            self.config.discount_gamma ** duration * potential_after
+            - potential_before
+        )
+        reward = self.config.reward.potential_coef * reward_progress
         reward += self.config.reward.completion_bonus * float(
             outcome.get("delivered_pairs_now", outcome["completed_now"])
         )
@@ -207,7 +213,7 @@ class SequenceGymEnv:
             self.slots = [None] * self.stop_action
         info = self._info(phase="execute")
         info.update(outcome)
-        info["reward_progress"] = progress_delta
+        info["reward_progress"] = reward_progress
         info["planning_slots"] = planning_slots
         return self.observe(), float(reward), terminated, truncated, info
 

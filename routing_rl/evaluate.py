@@ -22,6 +22,25 @@ from .ppo import act
 from .trainer import load_model, unpack_reset, unpack_step
 
 
+CONTROLLER_NAMES = ("ppo", "qddca", "qcast", "greedy", "random")
+
+
+def parse_controller_names(value: str) -> tuple[str, ...]:
+    """Parse a comma-separated controller subset while preserving order."""
+    names = tuple(dict.fromkeys(
+        name.strip().lower() for name in value.split(",") if name.strip()
+    ))
+    unknown = tuple(name for name in names if name not in CONTROLLER_NAMES)
+    if unknown:
+        choices = ", ".join(CONTROLLER_NAMES)
+        raise argparse.ArgumentTypeError(
+            f"unknown controller(s): {', '.join(unknown)}; choose from {choices}"
+        )
+    if not names:
+        raise argparse.ArgumentTypeError("at least one controller is required")
+    return names
+
+
 class Controller(Protocol):
     def reset(self, seed: int) -> None: ...
     def act(self, env: SequenceGymEnv, observation: Mapping[str, Any]) -> int: ...
@@ -100,6 +119,7 @@ def make_env(args: argparse.Namespace, seed: int) -> SequenceGymEnv:
             failure_coef=args.failure_coef,
             timeout_coef=args.timeout_coef,
         ),
+        discount_gamma=args.gamma,
     ))
 
 
@@ -173,6 +193,16 @@ def main() -> None:
     parser.add_argument("--makespan-coef", type=float, default=0.005)
     parser.add_argument("--failure-coef", type=float, default=0.1)
     parser.add_argument("--timeout-coef", type=float, default=0.1)
+    parser.add_argument("--gamma", type=float, default=0.99)
+    parser.add_argument(
+        "--controllers",
+        type=parse_controller_names,
+        default=CONTROLLER_NAMES,
+        help=(
+            "Comma-separated controllers to evaluate; defaults to "
+            + ",".join(CONTROLLER_NAMES)
+        ),
+    )
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     if any(value < 0 for value in (
@@ -180,6 +210,8 @@ def main() -> None:
         args.makespan_coef, args.failure_coef, args.timeout_coef,
     )):
         raise ValueError("reward coefficients must be non-negative")
+    if not 0 < args.gamma <= 1:
+        raise ValueError("gamma must be in (0, 1]")
     if args.topology_nodes is not None and args.topology_nodes <= args.max_hops:
         raise ValueError("topology nodes must exceed max_hops")
     if args.waxman_alpha <= 0 or not 0 < args.waxman_beta <= 1:
@@ -192,12 +224,16 @@ def main() -> None:
         raise ValueError("node memory capacity must be positive")
     device = torch.device(args.device)
     model = load_model(args.checkpoint, device)
-    controllers: dict[str, Controller] = {
+    available_controllers: dict[str, Controller] = {
         "ppo": LearnedController(model, device),
         "qddca": PlannerController(QDDCAPlanner()),
         "qcast": PlannerController(QCASTPlanner()),
         "greedy": PlannerController(GreedyPlanner()),
         "random": PlannerController(RandomPlanner(0)),
+    }
+    controllers = {
+        name: available_controllers[name]
+        for name in args.controllers
     }
     rows: dict[str, list[dict[str, float]]] = {name: [] for name in controllers}
     for seed in range(args.seed, args.seed + args.episodes):

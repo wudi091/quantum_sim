@@ -271,8 +271,10 @@ class SequenceEnvironmentTests(unittest.TestCase):
         self.assertEqual(selection_reward, 0.0)
         self.assertEqual(info["duration"], 0.0)
         _, reward, _, _, info = env.step(env.stop_action)
-        self.assertAlmostEqual(reward, 1.0)
+        self.assertAlmostEqual(reward, env.config.discount_gamma)
         self.assertEqual(info["progress_hops_now"], 1.0)
+        self.assertAlmostEqual(info["progress_potential_delta"], 1.0)
+        self.assertAlmostEqual(info["reward_progress"], env.config.discount_gamma)
 
     def test_potential_reward_penalizes_failed_frontier_reset(self):
         env = SequenceGymEnv(GymConfig(
@@ -297,6 +299,41 @@ class SequenceEnvironmentTests(unittest.TestCase):
         _, reward, _, _, info = env.step(env.stop_action)
         self.assertAlmostEqual(reward, -1.0)
         self.assertEqual(info["lost_progress_hops_now"], 1.0)
+
+    def test_discounted_potential_shaping_telescopes_across_frontier_reset(self):
+        gamma = 0.9
+        env = SequenceGymEnv(GymConfig(
+            max_requests=1,
+            max_candidates_per_request=3,
+            max_hops=2,
+            scenario=ScenarioConfig(
+                request_count=1, min_hops=2, max_hops=2, ttl=8, horizon=8,
+                arrival_rate=100.0,
+                physical=PhysicalConfig(
+                    generation_probability=1.0, swap_probability=0.0,
+                ),
+            ),
+            seed=47,
+            reward=RewardConfig(
+                potential_coef=1.0, completion_bonus=0.0,
+                makespan_coef=0.0, failure_coef=0.0, timeout_coef=0.0,
+            ),
+            discount_gamma=gamma,
+        ))
+        env.reset(seed=47)
+        env.step(self._one_hop_action(env))
+        _, advance_reward, _, _, advance_info = env.step(env.stop_action)
+        env.step(self._completion_action(env))
+        _, reset_reward, _, _, reset_info = env.step(env.stop_action)
+
+        self.assertAlmostEqual(advance_info["progress_potential_delta"], 1.0)
+        self.assertAlmostEqual(reset_info["progress_potential_delta"], -1.0)
+        self.assertAlmostEqual(advance_reward, gamma)
+        self.assertAlmostEqual(reset_reward, -1.0)
+        self.assertAlmostEqual(
+            advance_reward + gamma ** advance_info["duration"] * reset_reward,
+            0.0,
+        )
 
     def test_timeout_terminal_cancels_unfinished_progress(self):
         env = SequenceGymEnv(GymConfig(
