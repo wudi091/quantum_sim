@@ -3,7 +3,11 @@ from __future__ import annotations
 import unittest
 
 from routing_rl.train import make_config, parse_args
-from routing_rl.large_scale import SETTINGS, build_args as build_large_scale_args
+from routing_rl.large_scale import (
+    SETTINGS,
+    build_args as build_large_scale_args,
+    prepare_initialization,
+)
 
 
 class TrainConfigTest(unittest.TestCase):
@@ -84,6 +88,12 @@ class TrainConfigTest(unittest.TestCase):
         self.assertEqual(args.topology_nodes, 200)
         self.assertEqual(args.high_hop_evaluation_episodes, 10)
         self.assertTrue(config.anneal_learning_rate)
+
+    def test_large_scale_missing_warm_start_falls_back_to_scratch(self):
+        args = build_large_scale_args(SETTINGS)
+        args.init_checkpoint = args.output / "missing.pt"
+        self.assertFalse(prepare_initialization(args))
+        self.assertIsNone(args.init_checkpoint)
 
 
 if __name__ == "__main__":

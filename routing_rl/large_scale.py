@@ -7,6 +7,7 @@ and reproducible.
 
 from __future__ import annotations
 
+import argparse
 from dataclasses import dataclass, fields
 from pathlib import Path
 
@@ -77,18 +78,39 @@ def build_args(settings: LargeScaleSettings = SETTINGS):
     return args
 
 
-def main() -> None:
+def prepare_initialization(args) -> bool:
+    """Use the optional warm-start checkpoint only when it is available."""
+    checkpoint = args.init_checkpoint
+    if checkpoint is None or checkpoint.is_file():
+        return checkpoint is not None
+    args.init_checkpoint = None
+    return False
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Validate and print the formal configuration without training.",
+    )
+    operational = parser.parse_args(argv)
     args = build_args()
-    if not args.init_checkpoint.is_file():
-        raise FileNotFoundError(
-            "large-scale initialization checkpoint is missing: "
-            f"{args.init_checkpoint}"
+    requested_checkpoint = args.init_checkpoint
+    warm_start = prepare_initialization(args)
+    if requested_checkpoint is not None and not warm_start:
+        print(
+            "warning: optional initialization checkpoint is unavailable; "
+            f"training will start from scratch ({requested_checkpoint})"
         )
     print(
         "formal large-scale training: "
         f"device={args.device}, updates={args.updates}, "
-        f"rollout_steps={args.rollout_steps}, output={args.output}"
+        f"rollout_steps={args.rollout_steps}, warm_start={warm_start}, "
+        f"output={args.output}"
     )
+    if operational.check:
+        return
     run(args)
 
 

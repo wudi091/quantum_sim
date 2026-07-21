@@ -25,3 +25,12 @@ python -m routing_rl.large_scale
 The preset runs 200 PPO updates with 512 rollout steps (roughly 3,000 training
 episodes), evaluates the full range and 41--50 hop bucket every 10 updates, and
 writes checkpoints under `results/gnn_large_scale_seed67001_u200`.
+
+The small-scale checkpoint is an optional local warm start because training
+artifacts are intentionally not committed. If it is absent, the same entry
+starts from scratch. Validate the resolved device and checkpoint without
+starting training with:
+
+```bash
+python -m routing_rl.large_scale --check
+```
