@@ -27,13 +27,12 @@ def _masked_max(values: Tensor, mask: Tensor) -> Tensor:
 
 
 class DynamicPlanActorCritic(nn.Module):
-    """Centralized actor-critic over a variable-size set of candidate plans.
+    """Actor-critic over a variable-size request/plan bipartite graph.
 
-    Candidate plans are encoded independently and pooled with a permutation-
-    invariant DeepSets context.  The actor emits one score per candidate and a
-    learned STOP score.  The critic sees the global observation plus the full
-    pooled candidate set, making it centralized without requiring fixed action
-    dimensions.
+    Requests and candidate plans are graph nodes, joined by the plan's owning
+    request.  One linear-cost message-passing round lets plans compete in the
+    context of the request they serve.  The actor emits one logit per plan node
+    and a learned STOP logit.
     """
 
     def __init__(
@@ -42,12 +41,14 @@ class DynamicPlanActorCritic(nn.Module):
         global_feature_dim: int,
         hidden_dim: int = 128,
         request_feature_dim: int = 0,
+        use_plan_gnn: bool = True,
     ):
         super().__init__()
         self.plan_feature_dim = plan_feature_dim
         self.global_feature_dim = global_feature_dim
         self.request_feature_dim = request_feature_dim
         self.hidden_dim = hidden_dim
+        self.use_plan_gnn = use_plan_gnn
 
         self.plan_encoder = nn.Sequential(
             nn.Linear(plan_feature_dim, hidden_dim),
@@ -56,6 +57,11 @@ class DynamicPlanActorCritic(nn.Module):
             nn.Linear(hidden_dim, hidden_dim),
             nn.Tanh(),
         )
+        self.plan_message = nn.Linear(hidden_dim, hidden_dim) if use_plan_gnn else None
+        self.request_update = nn.Linear(hidden_dim * 2, hidden_dim) if use_plan_gnn else None
+        self.plan_update = nn.Linear(hidden_dim * 2, hidden_dim) if use_plan_gnn else None
+        self.request_graph_gate = nn.Parameter(torch.zeros(())) if use_plan_gnn else None
+        self.plan_graph_gate = nn.Parameter(torch.zeros(())) if use_plan_gnn else None
         self.global_encoder = nn.Sequential(
             nn.Linear(global_feature_dim, hidden_dim), nn.Tanh()
         )
@@ -106,6 +112,7 @@ class DynamicPlanActorCritic(nn.Module):
         action_mask: Tensor | None = None,
         request_features: Tensor | None = None,
         request_mask: Tensor | None = None,
+        plan_request_index: Tensor | None = None,
     ) -> PolicyOutput:
         """Evaluate a padded batch.
 
@@ -125,13 +132,47 @@ class DynamicPlanActorCritic(nn.Module):
 
         plan_hidden = self.plan_encoder(plan_features)
         global_hidden = self.global_encoder(global_features)
-        mean_hidden = _masked_mean(plan_hidden, plan_mask)
-        max_hidden = _masked_max(plan_hidden, plan_mask)
-        context_parts = [global_hidden, mean_hidden, max_hidden]
+        request_hidden = None
         if self.request_encoder is not None:
             if request_features is None or request_mask is None:
                 raise ValueError("request features and mask are required by this model")
             request_hidden = self.request_encoder(request_features)
+            if self.use_plan_gnn and plan_request_index is not None:
+                assert self.plan_message is not None
+                assert self.request_update is not None
+                assert self.plan_update is not None
+                assert self.request_graph_gate is not None
+                assert self.plan_graph_gate is not None
+                request_count = request_hidden.shape[1]
+                valid = plan_mask & (plan_request_index >= 0) & (plan_request_index < request_count)
+                indices = plan_request_index.clamp(0, max(request_count - 1, 0))
+                sums = torch.zeros_like(request_hidden)
+                counts = torch.zeros(
+                    request_hidden.shape[:2], dtype=plan_hidden.dtype, device=plan_hidden.device
+                )
+                messages = self.plan_message(plan_hidden) * valid.unsqueeze(-1)
+                sums.scatter_add_(1, indices.unsqueeze(-1).expand_as(messages), messages)
+                counts.scatter_add_(1, indices, valid.to(plan_hidden.dtype))
+                plan_context = sums / counts.clamp_min(1.0).unsqueeze(-1)
+                request_hidden = request_hidden + self.request_graph_gate * torch.tanh(
+                    self.request_update(torch.cat((request_hidden, plan_context), dim=-1))
+                )
+                owner_hidden = request_hidden.gather(
+                    1, indices.unsqueeze(-1).expand(-1, -1, self.hidden_dim)
+                )
+                updated = torch.tanh(
+                    self.plan_update(torch.cat((plan_hidden, owner_hidden), dim=-1))
+                )
+                plan_hidden = (
+                    plan_hidden
+                    + self.plan_graph_gate * updated * valid.unsqueeze(-1)
+                )
+                plan_hidden = plan_hidden.masked_fill(~plan_mask.unsqueeze(-1), 0.0)
+        mean_hidden = _masked_mean(plan_hidden, plan_mask)
+        max_hidden = _masked_max(plan_hidden, plan_mask)
+        context_parts = [global_hidden, mean_hidden, max_hidden]
+        if self.request_encoder is not None:
+            assert request_hidden is not None and request_mask is not None
             context_parts.extend(
                 (_masked_mean(request_hidden, request_mask), _masked_max(request_hidden, request_mask))
             )
@@ -164,6 +205,7 @@ class DynamicPlanActorCritic(nn.Module):
         action_mask: Tensor | None = None,
         request_features: Tensor | None = None,
         request_mask: Tensor | None = None,
+        plan_request_index: Tensor | None = None,
     ) -> tuple[torch.distributions.Categorical, Tensor]:
         output = self(
             plan_features,
@@ -172,5 +214,6 @@ class DynamicPlanActorCritic(nn.Module):
             action_mask,
             request_features,
             request_mask,
+            plan_request_index,
         )
         return torch.distributions.Categorical(logits=output.logits), output.value

@@ -256,9 +256,11 @@ class SequenceGymEnv:
         candidate_features = np.zeros(
             (self.stop_action, self.candidate_feature_dim), dtype=np.float32
         )
+        candidate_request_index = np.full(self.stop_action, -1, dtype=np.int64)
         for action, plan in enumerate(self.slots):
             if plan is None:
                 continue
+            candidate_request_index[action] = request_index.get(plan.request_id, -1)
             candidate_features[action, :9] = (
                 1.0, request_index.get(plan.request_id, 0) / max(self.config.max_requests - 1, 1),
                 (len(plan.route_nodes) - 1) / max(self.config.max_hops, 1),
@@ -287,6 +289,7 @@ class SequenceGymEnv:
             "request_features": request_features,
             "request_mask": request_mask,
             "candidate_features": candidate_features,
+            "candidate_request_index": candidate_request_index,
             "action_mask": self.action_mask(),
         }
 

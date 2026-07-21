@@ -16,6 +16,7 @@ GLOBAL_KEYS = ("global_features", "state_features", "global_state")
 MASK_KEYS = ("action_mask", "candidate_mask", "mask")
 REQUEST_KEYS = ("request_features", "requests")
 REQUEST_MASK_KEYS = ("request_mask", "active_request_mask")
+PLAN_REQUEST_KEYS = ("plan_request_index", "candidate_request_index")
 
 
 @dataclass(frozen=True)
@@ -26,6 +27,7 @@ class PolicyObservation:
     plan_mask: np.ndarray
     request_features: np.ndarray | None = None
     request_mask: np.ndarray | None = None
+    plan_request_index: np.ndarray | None = None
 
     @property
     def stop_action(self) -> int:
@@ -68,6 +70,7 @@ def parse_observation(observation: Mapping[str, Any]) -> PolicyObservation:
         raise ValueError("action mask must expose at least one legal action")
     request_features = None
     request_mask = None
+    plan_request_index = None
     for key in REQUEST_KEYS:
         if key in observation:
             request_features = np.asarray(observation[key], dtype=np.float32).copy()
@@ -83,12 +86,19 @@ def parse_observation(observation: Mapping[str, Any]) -> PolicyObservation:
             request_mask = np.ones(request_features.shape[0], dtype=np.bool_)
         if request_mask.shape != request_features.shape[:1]:
             raise ValueError("request mask must contain one entry per request row")
+    for key in PLAN_REQUEST_KEYS:
+        if key in observation:
+            plan_request_index = np.asarray(observation[key], dtype=np.int64).copy()
+            break
+    if plan_request_index is not None and plan_request_index.shape != plans.shape[:1]:
+        raise ValueError("plan_request_index must contain one entry per plan row")
     # The environment uses fixed tensor shapes for efficient replay, while the
     # legal candidate set is dynamic.  Excluding masked slots from the set pool
     # prevents unused zero rows and already-conflicting plans from diluting the
     # actor/critic context.
     return PolicyObservation(
-        plans, global_features, mask, mask[:-1].copy(), request_features, request_mask
+        plans, global_features, mask, mask[:-1].copy(), request_features, request_mask,
+        plan_request_index,
     )
 
 
@@ -145,6 +155,7 @@ class PaddedBatch:
     action_mask: Tensor
     requests: Tensor | None
     request_mask: Tensor | None
+    plan_request_index: Tensor | None
     actions: Tensor
     old_log_probs: Tensor
     old_values: Tensor
@@ -174,11 +185,14 @@ def collate_transitions(
     has_requests = selected[0].observation.request_features is not None
     requests = None
     request_mask_array = None
+    plan_request_index = None
     if has_requests:
         max_requests = max(item.observation.request_features.shape[0] for item in selected)
         request_dim = selected[0].observation.request_features.shape[1]
         requests = np.zeros((len(selected), max(max_requests, 1), request_dim), dtype=np.float32)
         request_mask_array = np.zeros((len(selected), max(max_requests, 1)), dtype=np.bool_)
+    if any(item.observation.plan_request_index is not None for item in selected):
+        plan_request_index = np.full((len(selected), padded_plans), -1, dtype=np.int64)
 
     for row, item in enumerate(selected):
         observation = item.observation
@@ -197,6 +211,8 @@ def collate_transitions(
             request_count = observation.request_features.shape[0]
             requests[row, :request_count] = observation.request_features
             request_mask_array[row, :request_count] = observation.request_mask
+        if plan_request_index is not None and observation.plan_request_index is not None:
+            plan_request_index[row, :count] = observation.plan_request_index
 
     to_tensor = lambda value, dtype: torch.as_tensor(value, dtype=dtype, device=device)
     return PaddedBatch(
@@ -208,6 +224,9 @@ def collate_transitions(
         request_mask=None
         if request_mask_array is None
         else to_tensor(request_mask_array, torch.bool),
+        plan_request_index=None
+        if plan_request_index is None
+        else to_tensor(plan_request_index, torch.long),
         actions=to_tensor(actions, torch.long),
         old_log_probs=to_tensor([item.old_log_prob for item in selected], torch.float32),
         old_values=to_tensor([item.old_value for item in selected], torch.float32),
@@ -235,9 +254,14 @@ def act(
     action_mask[0, -1] = parsed.action_mask[count]
     requests = None
     request_mask = None
+    plan_request_index = None
     if parsed.request_features is not None:
         requests = torch.as_tensor(parsed.request_features[None], device=device)
         request_mask = torch.as_tensor(parsed.request_mask[None], device=device)
+    if parsed.plan_request_index is not None:
+        values = np.full((1, padded_count), -1, dtype=np.int64)
+        values[0, :count] = parsed.plan_request_index
+        plan_request_index = torch.as_tensor(values, device=device)
     distribution, value = model.distribution_and_value(
         torch.as_tensor(plans, device=device),
         torch.as_tensor(parsed.global_features[None], device=device),
@@ -245,6 +269,7 @@ def act(
         torch.as_tensor(action_mask, device=device),
         requests,
         request_mask,
+        plan_request_index,
     )
     network_action = distribution.probs.argmax(dim=-1) if deterministic else distribution.sample()
     network_index = int(network_action.item())
@@ -279,6 +304,7 @@ def ppo_update(
                 batch.action_mask,
                 batch.requests,
                 batch.request_mask,
+                batch.plan_request_index,
             )
             log_probs = distribution.log_prob(batch.actions)
             entropy = distribution.entropy().mean()

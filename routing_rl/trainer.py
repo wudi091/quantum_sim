@@ -183,6 +183,8 @@ class PPOTrainer:
         self.stage_index = 0
         self.stage_episode = 0
         self.best_evaluation_score = float("-inf")
+        self.best_overall_evaluation_score = float("-inf")
+        self.best_high_hop_evaluation_score = float("-inf")
 
     def _next_episode_seed(self) -> int:
         seed = self.config.seed + 100_000 * self.stage_index + self.stage_episode
@@ -196,6 +198,8 @@ class PPOTrainer:
             self.stage_index = stage_index
             self.stage_episode = 0
             self.best_evaluation_score = float("-inf")
+            self.best_overall_evaluation_score = float("-inf")
+            self.best_high_hop_evaluation_score = float("-inf")
             evaluations_without_improvement = 0
             configure_curriculum(self.env, stage)
             self.observation, _ = unpack_reset(self.env.reset(seed=self._next_episode_seed()))
@@ -237,15 +241,43 @@ class PPOTrainer:
                 ):
                     evaluation = self.evaluator(self.model, self.update)
                     row["evaluation"] = evaluation
-                    score = float(evaluation.get(
+                    overall_score = float(evaluation.get(
                         "pair_throughput",
                         evaluation.get("completion_rate", float("-inf")),
+                    ))
+                    if overall_score > self.best_overall_evaluation_score:
+                        self.best_overall_evaluation_score = overall_score
+                        self.save_checkpoint(self.output_dir / "best.pt")
+                        self.save_checkpoint(self.output_dir / f"best_{stage.name}.pt")
+                        row["best_overall_evaluation"] = True
+                    high_hop_completion = evaluation.get("high_hop_completion_rate")
+                    if high_hop_completion is not None:
+                        high_hop_score = (
+                            float(high_hop_completion)
+                            + 1e-3 * float(evaluation.get(
+                                "high_hop_pair_throughput", 0.0,
+                            ))
+                        )
+                    else:
+                        high_hop_score = None
+                    if (
+                        high_hop_score is not None
+                        and high_hop_score > self.best_high_hop_evaluation_score
+                    ):
+                        self.best_high_hop_evaluation_score = high_hop_score
+                        self.save_checkpoint(self.output_dir / "best_highhop.pt")
+                        self.save_checkpoint(
+                            self.output_dir / f"best_highhop_{stage.name}.pt"
+                        )
+                        row["best_high_hop_evaluation"] = True
+                    score = float(evaluation.get(
+                        "selection_score", overall_score,
                     ))
                     if score > self.best_evaluation_score:
                         self.best_evaluation_score = score
                         evaluations_without_improvement = 0
-                        self.save_checkpoint(self.output_dir / "best.pt")
-                        self.save_checkpoint(self.output_dir / f"best_{stage.name}.pt")
+                        self.save_checkpoint(self.output_dir / "best_selected.pt")
+                        row["selection_improved"] = True
                         row["best_evaluation"] = True
                     else:
                         evaluations_without_improvement += 1
@@ -274,6 +306,7 @@ class PPOTrainer:
                 "global_feature_dim": self.model.global_feature_dim,
                 "hidden_dim": self.model.hidden_dim,
                 "request_feature_dim": self.model.request_feature_dim,
+                "use_plan_gnn": self.model.use_plan_gnn,
             },
             "ppo_config": self.config.to_dict(),
             "update": self.update,
@@ -293,7 +326,17 @@ class PPOTrainer:
 
 def load_model(checkpoint: Path, device: torch.device) -> DynamicPlanActorCritic:
     payload = torch.load(checkpoint, map_location=device, weights_only=False)
-    model = DynamicPlanActorCritic(**payload["model_config"]).to(device)
-    model.load_state_dict(payload["model"])
+    model_config = dict(payload["model_config"])
+    # Checkpoints created before the candidate GNN used the original DeepSets
+    # encoder and must remain exactly reproducible during evaluation.
+    model_config.setdefault("use_plan_gnn", False)
+    model = DynamicPlanActorCritic(**model_config).to(device)
+    incompatible = model.load_state_dict(payload["model"], strict=False)
+    allowed_missing = {"request_graph_gate", "plan_graph_gate"}
+    if incompatible.unexpected_keys or not set(incompatible.missing_keys).issubset(allowed_missing):
+        raise ValueError(
+            "incompatible checkpoint state: "
+            f"missing={incompatible.missing_keys}, unexpected={incompatible.unexpected_keys}"
+        )
     model.eval()
     return model

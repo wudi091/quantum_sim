@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from routing_rl.train import make_config, parse_args
+from routing_rl.large_scale import SETTINGS, build_args as build_large_scale_args
 
 
 class TrainConfigTest(unittest.TestCase):
@@ -24,8 +25,22 @@ class TrainConfigTest(unittest.TestCase):
         self.assertEqual(config.reward.completion_bonus, 1.0)
         self.assertEqual(config.reward.failure_coef, 0.1)
         self.assertEqual(config.gamma, 0.99)
+        self.assertEqual(config.value_coef, 0.5)
         self.assertFalse(config.anneal_learning_rate)
         self.assertEqual(config.early_stopping_patience, 0)
+        self.assertEqual(args.high_hop_evaluation_episodes, 0)
+        self.assertEqual(args.high_hop_min_hops, 41)
+        self.assertFalse(args.select_high_hop)
+
+    def test_high_hop_selection_flags_are_configurable(self):
+        args = parse_args([
+            "--high-hop-evaluation-episodes", "7",
+            "--high-hop-min-hops", "37",
+            "--select-high-hop",
+        ])
+        self.assertEqual(args.high_hop_evaluation_episodes, 7)
+        self.assertEqual(args.high_hop_min_hops, 37)
+        self.assertTrue(args.select_high_hop)
 
     def test_learning_rate_annealing_is_opt_in(self):
         config = make_config(parse_args(["--anneal-learning-rate"]))
@@ -34,6 +49,10 @@ class TrainConfigTest(unittest.TestCase):
     def test_gamma_is_configurable(self):
         config = make_config(parse_args(["--gamma", "0.97"]))
         self.assertEqual(config.gamma, 0.97)
+
+    def test_value_coefficient_is_configurable(self):
+        config = make_config(parse_args(["--value-coef", "0.1"]))
+        self.assertEqual(config.value_coef, 0.1)
 
     def test_early_stopping_patience_is_configurable(self):
         config = make_config(parse_args(["--early-stopping-patience", "4"]))
@@ -51,6 +70,20 @@ class TrainConfigTest(unittest.TestCase):
         self.assertEqual(config.curriculum[0].updates, 1)
         self.assertLessEqual(config.rollout_steps, 64)
         self.assertLessEqual(config.minibatch_size, 32)
+
+    def test_large_scale_preset_is_formal_full_range_run(self):
+        args = build_large_scale_args(SETTINGS)
+        config = make_config(args)
+        stage = config.curriculum[0]
+        self.assertEqual((stage.min_hops, stage.max_hops), (2, 50))
+        self.assertEqual(stage.max_requests, 20)
+        self.assertEqual(config.total_updates, 200)
+        self.assertEqual(config.rollout_steps, 512)
+        self.assertEqual(config.ppo_epochs, 4)
+        self.assertEqual(config.entropy_coef, 0.001)
+        self.assertEqual(args.topology_nodes, 200)
+        self.assertEqual(args.high_hop_evaluation_episodes, 10)
+        self.assertTrue(config.anneal_learning_rate)
 
 
 if __name__ == "__main__":
