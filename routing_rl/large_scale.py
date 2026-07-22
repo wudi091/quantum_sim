@@ -18,14 +18,12 @@ from .train import parse_args, run
 
 @dataclass(frozen=True)
 class LargeScaleSettings:
-    output: Path = Path("results/gnn_large_scale_seed67001_u200")
-    init_checkpoint: Path = Path(
-        "results/gnn_small_continue_seed66001_u70/best.pt"
-    )
+    output: Path = Path("results/gnn_large_scale_scratch_seed67001_u1000")
+    init_checkpoint: Path | None = None
     seed: int = 67_001
     min_hops: int = 2
     max_hops: int = 50
-    updates: int = 200
+    updates: int = 1000
     requests: int = 20
     rollout_steps: int = 512
     minibatch_size: int = 128
@@ -40,8 +38,8 @@ class LargeScaleSettings:
     evaluation_episodes: int = 10
     high_hop_evaluation_episodes: int = 10
     high_hop_min_hops: int = 41
-    early_stopping_patience: int = 5
-    allow_scratch_without_checkpoint: bool = False
+    early_stopping_patience: int = 20
+    allow_scratch_without_checkpoint: bool = True
     request_ttl: int = 64
     generation_probability: float = 0.5
     swap_probability: float = 0.95

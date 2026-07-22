@@ -22,16 +22,15 @@ when a CUDA-enabled PyTorch installation is available:
 python -m routing_rl.large_scale
 ```
 
-The preset runs 200 PPO updates with 512 rollout steps (roughly 3,000 training
-episodes), evaluates the full range and 41--50 hop bucket every 10 updates, and
-writes checkpoints under `results/gnn_large_scale_seed67001_u200`.
+The preset trains from scratch for at most 1,000 PPO updates with 512 rollout
+steps (roughly 15,000 training episodes), evaluates the full range and 41--50
+hop bucket every 10 updates, and writes checkpoints under
+`results/gnn_large_scale_scratch_seed67001_u1000`.
 
-The formal preset stops after five consecutive evaluations without improvement.
-It requires the small-scale warm-start checkpoint by default because the
-200-update budget is not sufficient for a reliable 2--50 hop scratch run.
-Training artifacts are intentionally not committed; place the checkpoint at
-the configured path before starting. Validate the resolved device and
-checkpoint without training with:
+The formal preset uses no initialization checkpoint. It stops after 20
+consecutive evaluations (200 updates) without improvement, giving a scratch
+policy enough time to cross a temporary plateau. Validate the resolved device
+and configuration without training with:
 
 ```bash
 python -m routing_rl.large_scale --check

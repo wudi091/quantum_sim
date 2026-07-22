@@ -81,13 +81,14 @@ class TrainConfigTest(unittest.TestCase):
         stage = config.curriculum[0]
         self.assertEqual((stage.min_hops, stage.max_hops), (2, 50))
         self.assertEqual(stage.max_requests, 20)
-        self.assertEqual(config.total_updates, 200)
+        self.assertEqual(config.total_updates, 1000)
         self.assertEqual(config.rollout_steps, 512)
         self.assertEqual(config.ppo_epochs, 4)
         self.assertEqual(config.entropy_coef, 0.001)
         self.assertEqual(args.topology_nodes, 200)
         self.assertEqual(args.high_hop_evaluation_episodes, 10)
-        self.assertEqual(config.early_stopping_patience, 5)
+        self.assertEqual(config.early_stopping_patience, 20)
+        self.assertIsNone(args.init_checkpoint)
         self.assertTrue(config.anneal_learning_rate)
 
     def test_large_scale_missing_warm_start_falls_back_to_scratch(self):
