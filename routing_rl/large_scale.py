@@ -19,7 +19,7 @@ from .train import parse_args, run
 @dataclass(frozen=True)
 class LargeScaleSettings:
     output: Path = Path("results/gnn_large_scale_scratch_seed67001_u1000")
-    direction_report: Path = Path("results/gnn_small_direction_seed68001_u150/direction_report.json")
+    direction_report: Path = Path("results/gnn_small_direction_seed68001_u30/direction_report.json")
     require_direction_gate: bool = True
     init_checkpoint: Path | None = None
     seed: int = 67_001

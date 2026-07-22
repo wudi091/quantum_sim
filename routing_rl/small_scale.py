@@ -26,15 +26,15 @@ from .trainer import PPOTrainer, load_model
 
 @dataclass(frozen=True)
 class SmallScaleSettings:
-    output: Path = Path("results/gnn_small_direction_seed68001_u150")
+    output: Path = Path("results/gnn_small_direction_seed68001_u30")
     init_checkpoint: Path | None = None
     seed: int = 68_001
     min_hops: int = 2
     max_hops: int = 50
-    updates: int = 150
-    requests: int = 10
-    rollout_steps: int = 512
-    minibatch_size: int = 128
+    updates: int = 30
+    requests: int = 5
+    rollout_steps: int = 128
+    minibatch_size: int = 64
     ppo_epochs: int = 4
     hidden_dim: int = 128
     learning_rate: float = 1e-4
@@ -43,8 +43,8 @@ class SmallScaleSettings:
     gamma: float = 0.99
     checkpoint_every: int = 10
     evaluate_every: int = 10
-    evaluation_episodes: int = 20
-    high_hop_evaluation_episodes: int = 20
+    evaluation_episodes: int = 5
+    high_hop_evaluation_episodes: int = 5
     high_hop_min_hops: int = 41
     early_stopping_patience: int = 0
     early_stopping_min_updates: int = 0

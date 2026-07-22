@@ -108,11 +108,11 @@ class TrainConfigTest(unittest.TestCase):
         config = make_config(args)
         stage = config.curriculum[0]
         self.assertEqual((stage.min_hops, stage.max_hops), (2, 50))
-        self.assertEqual(stage.max_requests, 10)
-        self.assertEqual(config.total_updates, 150)
+        self.assertEqual(stage.max_requests, 5)
+        self.assertEqual(config.total_updates, 30)
         self.assertFalse(args.curriculum)
         self.assertIsNone(args.init_checkpoint)
-        self.assertEqual(config.rollout_steps, 512)
+        self.assertEqual(config.rollout_steps, 128)
         self.assertEqual(config.ppo_epochs, 4)
 
     def test_direction_gate_requires_overall_gain_and_stability(self):
