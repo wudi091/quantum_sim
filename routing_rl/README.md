@@ -34,11 +34,11 @@ python -m routing_rl.large_scale
 The preset trains from scratch on the full 2--50 hop distribution for at most
 1,000 updates. It uses 512 rollout steps (roughly 15,000 training episodes at
 the full budget), evaluates every 10 updates, and writes checkpoints under
-`results/gnn_large_scale_scratch_seed67001_u1000_es700`.
+`results/gnn_large_scale_scratch_seed67001_u1000_es900`.
 
 The formal preset uses no initialization checkpoint and no curriculum. Early
-stopping uses a 400-update learning window followed by 30 evaluations of
-patience, so the earliest possible stop is update 700. Overall throughput,
+stopping uses a 500-update learning window followed by 40 evaluations of
+patience, so the earliest possible stop is update 900. Overall throughput,
 overall completion, or high-hop progress resets the patience window, using
 post-warmup baselines so an accidental early validation peak cannot terminate
 scratch learning. Validate the resolved device and configuration without
