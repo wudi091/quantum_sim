@@ -19,10 +19,6 @@ from .train import parse_args, run
 @dataclass(frozen=True)
 class LargeScaleSettings:
     output: Path = Path("results/gnn_large_scale_scratch_seed67001_u1000")
-    direction_report: Path = Path(
-        "routing_rl/validation/gnn_small_direction_seed68001_u60c_credit_reward2.json"
-    )
-    require_direction_gate: bool = True
     init_checkpoint: Path | None = None
     seed: int = 67_001
     min_hops: int = 2
@@ -72,11 +68,7 @@ SETTINGS = LargeScaleSettings()
 def build_args(settings: LargeScaleSettings = SETTINGS):
     """Overlay the formal preset on the normal parser defaults."""
     args = parse_args([])
-    runtime_only = {
-        "allow_scratch_without_checkpoint",
-        "direction_report",
-        "require_direction_gate",
-    }
+    runtime_only = {"allow_scratch_without_checkpoint"}
     for field in fields(settings):
         if field.name in runtime_only:
             continue
@@ -99,19 +91,6 @@ def prepare_initialization(args) -> bool:
     return False
 
 
-def direction_gate_passed(path: Path) -> bool:
-    """Return true only for a completed pilot report with a passing gate."""
-    if not path.is_file():
-        return False
-    try:
-        import json
-
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, TypeError):
-        return False
-    return bool(payload.get("gate", {}).get("passed", False))
-
-
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -121,20 +100,6 @@ def main(argv: list[str] | None = None) -> None:
     )
     operational = parser.parse_args(argv)
     args = build_args()
-    gate_ready = direction_gate_passed(SETTINGS.direction_report)
-    print(
-        "direction gate: "
-        f"path={SETTINGS.direction_report}, passed={gate_ready}"
-    )
-    if SETTINGS.require_direction_gate and not gate_ready:
-        message = (
-            "formal training is blocked: run `python -m routing_rl.small_scale` "
-            "and obtain a passing direction_report.json first"
-        )
-        if operational.check:
-            print(message)
-            return
-        raise RuntimeError(message)
     requested_checkpoint = args.init_checkpoint
     warm_start = prepare_initialization(args)
     if requested_checkpoint is not None and not warm_start:

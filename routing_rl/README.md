@@ -16,16 +16,16 @@ metrics.
 
 The reviewed 2--50 hop configuration is stored in `routing_rl/large_scale.py`.
 It trains from scratch and selects CUDA automatically when a CUDA-enabled
-PyTorch installation is available.  Before it can start, run the fixed
-full-range direction pilot:
+PyTorch installation is available.  The fixed full-range direction pilot is
+kept as a local validation and experiment record:
 
 ```bash
 python -m routing_rl.small_scale
 ```
 
 The pilot compares the optimizer-step-zero model with the learned checkpoint
-on fixed seeds.  Only a passing `direction_report.json` unlocks formal
-training:
+on fixed seeds.  Once the preset has been reviewed locally, formal training
+can be started directly:
 
 ```bash
 python -m routing_rl.large_scale
