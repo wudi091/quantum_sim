@@ -8,6 +8,11 @@ from routing_rl.large_scale import (
     build_args as build_large_scale_args,
     prepare_initialization,
 )
+from routing_rl.small_scale import (
+    SETTINGS as SMALL_SETTINGS,
+    assess_direction,
+    build_args as build_small_scale_args,
+)
 
 
 class TrainConfigTest(unittest.TestCase):
@@ -97,6 +102,41 @@ class TrainConfigTest(unittest.TestCase):
         args.init_checkpoint = args.output / "missing.pt"
         self.assertFalse(prepare_initialization(args))
         self.assertIsNone(args.init_checkpoint)
+
+    def test_small_scale_pilot_is_full_range_scratch_without_curriculum(self):
+        args = build_small_scale_args(SMALL_SETTINGS)
+        config = make_config(args)
+        stage = config.curriculum[0]
+        self.assertEqual((stage.min_hops, stage.max_hops), (2, 50))
+        self.assertEqual(stage.max_requests, 10)
+        self.assertEqual(config.total_updates, 150)
+        self.assertFalse(args.curriculum)
+        self.assertIsNone(args.init_checkpoint)
+        self.assertEqual(config.rollout_steps, 512)
+        self.assertEqual(config.ppo_epochs, 4)
+
+    def test_direction_gate_requires_overall_gain_and_stability(self):
+        initial = {
+            "pair_throughput": 0.05,
+            "completion_rate": 0.20,
+            "high_hop_completion_rate": 0.01,
+        }
+        learned = {
+            "pair_throughput": 0.07,
+            "completion_rate": 0.27,
+            "high_hop_completion_rate": 0.01,
+        }
+        history = [
+            {"evaluation": {"pair_throughput": 0.065}},
+            {"evaluation": {"pair_throughput": 0.070}},
+            {"evaluation": {"pair_throughput": 0.068}},
+        ]
+        report = assess_direction(initial, learned, history)
+        self.assertTrue(report["passed"])
+
+        learned["completion_rate"] = 0.23
+        report = assess_direction(initial, learned, history)
+        self.assertFalse(report["passed"])
 
     def test_early_stopping_minimum_updates_is_configurable(self):
         config = make_config(parse_args(["--early-stopping-min-updates", "300"]))

@@ -15,8 +15,17 @@ metrics.
 ## Formal large-scale training
 
 The reviewed 2--50 hop configuration is stored in `routing_rl/large_scale.py`.
-It continues from the small-scale GNN checkpoint and selects CUDA automatically
-when a CUDA-enabled PyTorch installation is available:
+It trains from scratch and selects CUDA automatically when a CUDA-enabled
+PyTorch installation is available.  Before it can start, run the fixed
+full-range direction pilot:
+
+```bash
+python -m routing_rl.small_scale
+```
+
+The pilot compares the optimizer-step-zero model with the learned checkpoint
+on fixed seeds.  Only a passing `direction_report.json` unlocks formal
+training:
 
 ```bash
 python -m routing_rl.large_scale
