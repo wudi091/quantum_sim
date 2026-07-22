@@ -217,6 +217,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Stop after this many consecutive evaluations without improvement; 0 disables it.",
     )
     parser.add_argument(
+        "--early-stopping-min-updates", type=int, default=0,
+        help="Never early-stop before this many updates in the current stage.",
+    )
+    parser.add_argument(
         "--init-checkpoint",
         type=Path,
         help="Initialize model weights from a compatible checkpoint before curriculum training.",
@@ -307,6 +311,7 @@ def make_config(args: argparse.Namespace) -> PPOConfig:
         evaluate_every=args.evaluate_every,
         evaluation_episodes=args.evaluation_episodes,
         early_stopping_patience=args.early_stopping_patience,
+        early_stopping_min_updates=args.early_stopping_min_updates,
         curriculum=curriculum,
         reward=RewardConfig(
             potential_coef=args.potential_coef,
@@ -331,6 +336,8 @@ def run(args: argparse.Namespace) -> None:
         raise ValueError("topology attempts must be positive")
     if args.early_stopping_patience < 0:
         raise ValueError("early stopping patience must be non-negative")
+    if args.early_stopping_min_updates < 0:
+        raise ValueError("early stopping minimum updates must be non-negative")
     if args.evaluation_episodes < 1 or args.high_hop_evaluation_episodes < 0:
         raise ValueError("evaluation episode counts are invalid")
     if args.select_high_hop and args.high_hop_evaluation_episodes < 1:

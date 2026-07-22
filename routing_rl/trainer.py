@@ -284,6 +284,7 @@ class PPOTrainer:
                     row["evaluations_without_improvement"] = evaluations_without_improvement
                     if (
                         self.config.early_stopping_patience > 0
+                        and stage_update >= self.config.early_stopping_min_updates
                         and evaluations_without_improvement >= self.config.early_stopping_patience
                     ):
                         row["early_stopping"] = True

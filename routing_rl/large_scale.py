@@ -38,7 +38,8 @@ class LargeScaleSettings:
     evaluation_episodes: int = 10
     high_hop_evaluation_episodes: int = 10
     high_hop_min_hops: int = 41
-    early_stopping_patience: int = 20
+    early_stopping_patience: int = 10
+    early_stopping_min_updates: int = 300
     allow_scratch_without_checkpoint: bool = True
     request_ttl: int = 64
     generation_probability: float = 0.5

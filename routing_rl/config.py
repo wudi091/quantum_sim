@@ -53,6 +53,7 @@ class PPOConfig:
     evaluate_every: int = 25
     evaluation_episodes: int = 20
     early_stopping_patience: int = 0
+    early_stopping_min_updates: int = 0
     curriculum: tuple[CurriculumStage, ...] = field(default_factory=default_curriculum)
     reward: RewardConfig = field(default_factory=RewardConfig)
 

@@ -87,7 +87,8 @@ class TrainConfigTest(unittest.TestCase):
         self.assertEqual(config.entropy_coef, 0.001)
         self.assertEqual(args.topology_nodes, 200)
         self.assertEqual(args.high_hop_evaluation_episodes, 10)
-        self.assertEqual(config.early_stopping_patience, 20)
+        self.assertEqual(config.early_stopping_patience, 10)
+        self.assertEqual(config.early_stopping_min_updates, 300)
         self.assertIsNone(args.init_checkpoint)
         self.assertTrue(config.anneal_learning_rate)
 
@@ -96,6 +97,10 @@ class TrainConfigTest(unittest.TestCase):
         args.init_checkpoint = args.output / "missing.pt"
         self.assertFalse(prepare_initialization(args))
         self.assertIsNone(args.init_checkpoint)
+
+    def test_early_stopping_minimum_updates_is_configurable(self):
+        config = make_config(parse_args(["--early-stopping-min-updates", "300"]))
+        self.assertEqual(config.early_stopping_min_updates, 300)
 
 
 if __name__ == "__main__":
