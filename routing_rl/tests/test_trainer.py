@@ -118,6 +118,39 @@ class TrainerSmokeTest(unittest.TestCase):
             self.assertEqual(overall["update"], 2)
             self.assertEqual(high_hop["update"], 2)
 
+    def test_early_stopping_warmup_resets_stagnation_counter(self):
+        config = PPOConfig(
+            hidden_dim=16,
+            rollout_steps=4,
+            ppo_epochs=1,
+            minibatch_size=4,
+            checkpoint_every=10,
+            evaluate_every=1,
+            early_stopping_patience=1,
+            early_stopping_min_updates=2,
+            curriculum=(CurriculumStage("tiny", 4, 2, 1, 1, 1),),
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            trainer = PPOTrainer(
+                TinyBatchEnv(),
+                config,
+                Path(directory),
+                evaluator=lambda model, update: {
+                    "completion_rate": 0.25,
+                    "pair_throughput": 0.125,
+                },
+            )
+            history = trainer.train()
+
+            # Updates 1-2 are the warmup window.  Stagnation observed there
+            # must not trigger an immediate stop at the warmup boundary.
+            self.assertEqual(len(history), 3)
+            self.assertEqual(history[1]["evaluations_without_improvement"], 0)
+            self.assertNotIn("early_stopping", history[1])
+            self.assertEqual(history[2]["evaluations_without_improvement"], 1)
+            self.assertTrue(history[2]["early_stopping"])
+
     def test_legacy_evaluator_still_selects_overall_best(self):
         config = PPOConfig(
             hidden_dim=16,
