@@ -10,8 +10,12 @@ from .config import CurriculumStage, PPOConfig, RewardConfig
 from .trainer import PPOTrainer
 
 
-def build_evaluator(args: argparse.Namespace, config: PPOConfig):
-    """Deterministic, fixed-seed validation used to select best.pt."""
+def build_evaluator(
+    args: argparse.Namespace,
+    config: PPOConfig,
+    deterministic: bool = True,
+):
+    """Fixed-seed validation used to select/check a policy checkpoint."""
     from qnet_core.gym_env import GymConfig, SequenceGymEnv
     from qnet_core.scenario import ScenarioConfig
     from qnet_core.spec import PhysicalConfig
@@ -35,6 +39,8 @@ def build_evaluator(args: argparse.Namespace, config: PPOConfig):
         values: list[dict[str, float]] = []
         for offset in range(episode_count):
             seed = args.seed + seed_offset + offset
+            if not deterministic:
+                torch.manual_seed(seed)
             scenario = ScenarioConfig(
                 request_count=stage.max_requests,
                 min_hops=min_hops,
@@ -66,7 +72,10 @@ def build_evaluator(args: argparse.Namespace, config: PPOConfig):
             ))
             observation, _ = unpack_reset(env.reset(seed=seed))
             while True:
-                action, _, _ = act(model, observation, torch.device(config.device), deterministic=True)
+                action, _, _ = act(
+                    model, observation, torch.device(config.device),
+                    deterministic=deterministic,
+                )
                 observation, _, terminated, truncated, info = unpack_step(env.step(action))
                 if terminated or truncated:
                     values.append({
@@ -86,35 +95,46 @@ def build_evaluator(args: argparse.Namespace, config: PPOConfig):
         return result
 
     def evaluate(model, update: int) -> dict[str, float]:
-        cumulative = 0
-        stage = config.curriculum[-1]
-        for candidate in config.curriculum:
-            cumulative += max(candidate.updates, 0)
-            if update <= cumulative:
-                stage = candidate
-                break
-        was_training = model.training
-        model.eval()
-        result = run_bucket(
-            model, stage, stage.min_hops, stage.max_hops,
-            args.evaluation_episodes, 1_000_000,
-        )
-        if args.high_hop_evaluation_episodes > 0:
-            high_min = max(stage.min_hops, args.high_hop_min_hops)
-            if high_min <= stage.max_hops:
-                high = run_bucket(
-                    model, stage, high_min, stage.max_hops,
-                    args.high_hop_evaluation_episodes, 1_500_000,
+        device = torch.device(config.device)
+        cuda_devices = []
+        if device.type == "cuda":
+            cuda_devices = [
+                torch.cuda.current_device() if device.index is None else device.index
+            ]
+        # Evaluation may seed stochastic action sampling, but it must never
+        # alter the RNG stream used by the subsequent PPO rollout.
+        with torch.random.fork_rng(devices=cuda_devices):
+            cumulative = 0
+            stage = config.curriculum[-1]
+            for candidate in config.curriculum:
+                cumulative += max(candidate.updates, 0)
+                if update <= cumulative:
+                    stage = candidate
+                    break
+            was_training = model.training
+            model.eval()
+            try:
+                result = run_bucket(
+                    model, stage, stage.min_hops, stage.max_hops,
+                    args.evaluation_episodes, 1_000_000,
                 )
-                result.update({f"high_hop_{key}": value for key, value in high.items()})
-                if args.select_high_hop:
-                    result["selection_score"] = (
-                        high["completion_rate"]
-                        + 1e-3 * high["pair_throughput"]
-                    )
-        if was_training:
-            model.train()
-        return result
+                if args.high_hop_evaluation_episodes > 0:
+                    high_min = max(stage.min_hops, args.high_hop_min_hops)
+                    if high_min <= stage.max_hops:
+                        high = run_bucket(
+                            model, stage, high_min, stage.max_hops,
+                            args.high_hop_evaluation_episodes, 1_500_000,
+                        )
+                        result.update({f"high_hop_{key}": value for key, value in high.items()})
+                        if args.select_high_hop:
+                            result["selection_score"] = (
+                                high["completion_rate"]
+                                + 1e-3 * high["pair_throughput"]
+                            )
+                return result
+            finally:
+                if was_training:
+                    model.train()
 
     return evaluate
 
@@ -195,6 +215,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--value-coef", type=float, default=0.5)
     parser.add_argument("--entropy-coef", type=float, default=0.01)
     parser.add_argument("--gamma", type=float, default=0.99)
+    parser.add_argument("--gae-lambda", type=float, default=0.95)
     parser.add_argument(
         "--anneal-learning-rate", action="store_true",
         help="Linearly decay the PPO learning rate to zero over all updates.",
@@ -300,6 +321,7 @@ def make_config(args: argparse.Namespace) -> PPOConfig:
         learning_rate=args.learning_rate,
         anneal_learning_rate=args.anneal_learning_rate,
         gamma=args.gamma,
+        gae_lambda=args.gae_lambda,
         value_coef=args.value_coef,
         entropy_coef=args.entropy_coef,
         ppo_epochs=args.ppo_epochs,

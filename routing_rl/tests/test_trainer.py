@@ -128,7 +128,7 @@ class TrainerSmokeTest(unittest.TestCase):
             evaluate_every=1,
             early_stopping_patience=1,
             early_stopping_min_updates=2,
-            curriculum=(CurriculumStage("tiny", 4, 2, 1, 1, 1),),
+            curriculum=(CurriculumStage("tiny", 2, 2, 4, 1, 1),),
         )
 
         with tempfile.TemporaryDirectory() as directory:

@@ -59,6 +59,10 @@ class TrainConfigTest(unittest.TestCase):
         config = make_config(parse_args(["--gamma", "0.97"]))
         self.assertEqual(config.gamma, 0.97)
 
+    def test_gae_lambda_is_configurable(self):
+        config = make_config(parse_args(["--gae-lambda", "0.99"]))
+        self.assertEqual(config.gae_lambda, 0.99)
+
     def test_value_coefficient_is_configurable(self):
         config = make_config(parse_args(["--value-coef", "0.1"]))
         self.assertEqual(config.value_coef, 0.1)
@@ -89,13 +93,19 @@ class TrainConfigTest(unittest.TestCase):
         self.assertEqual(config.total_updates, 1000)
         self.assertEqual(config.rollout_steps, 512)
         self.assertEqual(config.ppo_epochs, 4)
-        self.assertEqual(config.entropy_coef, 0.001)
+        self.assertEqual(config.value_coef, 0.5)
+        self.assertEqual(config.entropy_coef, 0.005)
         self.assertEqual(args.topology_nodes, 200)
         self.assertEqual(args.high_hop_evaluation_episodes, 10)
         self.assertEqual(config.early_stopping_patience, 10)
         self.assertEqual(config.early_stopping_min_updates, 300)
         self.assertIsNone(args.init_checkpoint)
-        self.assertTrue(config.anneal_learning_rate)
+        self.assertEqual(config.gamma, 0.999)
+        self.assertEqual(config.gae_lambda, 0.99)
+        self.assertEqual(config.learning_rate, 5e-5)
+        self.assertFalse(config.anneal_learning_rate)
+        self.assertEqual(config.reward.potential_coef, 0.03)
+        self.assertEqual(config.reward.completion_bonus, 2.0)
 
     def test_large_scale_missing_warm_start_falls_back_to_scratch(self):
         args = build_large_scale_args(SETTINGS)
@@ -109,11 +119,15 @@ class TrainConfigTest(unittest.TestCase):
         stage = config.curriculum[0]
         self.assertEqual((stage.min_hops, stage.max_hops), (2, 50))
         self.assertEqual(stage.max_requests, 5)
-        self.assertEqual(config.total_updates, 30)
+        self.assertEqual(config.total_updates, 60)
         self.assertFalse(args.curriculum)
         self.assertIsNone(args.init_checkpoint)
-        self.assertEqual(config.rollout_steps, 128)
+        self.assertEqual(config.rollout_steps, 256)
         self.assertEqual(config.ppo_epochs, 4)
+        self.assertEqual(config.gamma, 0.999)
+        self.assertEqual(config.gae_lambda, 0.99)
+        self.assertEqual(config.learning_rate, 5e-5)
+        self.assertFalse(config.anneal_learning_rate)
 
     def test_direction_gate_requires_overall_gain_and_stability(self):
         initial = {
@@ -127,11 +141,15 @@ class TrainConfigTest(unittest.TestCase):
             "high_hop_completion_rate": 0.01,
         }
         history = [
-            {"evaluation": {"pair_throughput": 0.065}},
+            {"evaluation": {"pair_throughput": 0.055, "completion_rate": 0.20}},
             {"evaluation": {"pair_throughput": 0.070}},
             {"evaluation": {"pair_throughput": 0.068}},
         ]
-        report = assess_direction(initial, learned, history)
+        initial_stochastic = {"pair_throughput": 0.04, "completion_rate": 0.18}
+        learned_stochastic = {"pair_throughput": 0.05, "completion_rate": 0.20}
+        report = assess_direction(
+            initial, learned, history, initial_stochastic, learned_stochastic,
+        )
         self.assertTrue(report["passed"])
 
         learned["completion_rate"] = 0.23

@@ -19,7 +19,7 @@ from .train import parse_args, run
 @dataclass(frozen=True)
 class LargeScaleSettings:
     output: Path = Path("results/gnn_large_scale_scratch_seed67001_u1000")
-    direction_report: Path = Path("results/gnn_small_direction_seed68001_u30/direction_report.json")
+    direction_report: Path = Path("results/gnn_small_direction_seed68001_u60c_credit_reward2/direction_report.json")
     require_direction_gate: bool = True
     init_checkpoint: Path | None = None
     seed: int = 67_001
@@ -31,10 +31,11 @@ class LargeScaleSettings:
     minibatch_size: int = 128
     ppo_epochs: int = 4
     hidden_dim: int = 128
-    learning_rate: float = 1e-4
+    learning_rate: float = 5e-5
     value_coef: float = 0.5
-    entropy_coef: float = 1e-3
-    gamma: float = 0.99
+    entropy_coef: float = 5e-3
+    gamma: float = 0.999
+    gae_lambda: float = 0.99
     checkpoint_every: int = 10
     evaluate_every: int = 10
     evaluation_episodes: int = 10
@@ -55,11 +56,11 @@ class LargeScaleSettings:
     demand_pairs: int = 1
     max_width: int = 1
     candidates_per_request: int = 6
-    potential_coef: float = 0.1
-    completion_bonus: float = 1.0
-    makespan_coef: float = 0.005
-    failure_coef: float = 0.1
-    timeout_coef: float = 0.1
+    potential_coef: float = 0.03
+    completion_bonus: float = 2.0
+    makespan_coef: float = 0.002
+    failure_coef: float = 0.05
+    timeout_coef: float = 0.05
     torch_threads: int = 4
 
 
@@ -79,7 +80,7 @@ def build_args(settings: LargeScaleSettings = SETTINGS):
             continue
         setattr(args, field.name, getattr(settings, field.name))
     args.device = "cuda" if torch.cuda.is_available() else "cpu"
-    args.anneal_learning_rate = True
+    args.anneal_learning_rate = False
     args.curriculum = False
     args.select_high_hop = False
     args.reset_critic = False
