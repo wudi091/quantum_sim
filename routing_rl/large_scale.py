@@ -40,6 +40,8 @@ class LargeScaleSettings:
     evaluation_episodes: int = 10
     high_hop_evaluation_episodes: int = 10
     high_hop_min_hops: int = 41
+    early_stopping_patience: int = 5
+    allow_scratch_without_checkpoint: bool = False
     request_ttl: int = 64
     generation_probability: float = 0.5
     swap_probability: float = 0.95
@@ -66,13 +68,15 @@ SETTINGS = LargeScaleSettings()
 def build_args(settings: LargeScaleSettings = SETTINGS):
     """Overlay the formal preset on the normal parser defaults."""
     args = parse_args([])
+    runtime_only = {"allow_scratch_without_checkpoint"}
     for field in fields(settings):
+        if field.name in runtime_only:
+            continue
         setattr(args, field.name, getattr(settings, field.name))
     args.device = "cuda" if torch.cuda.is_available() else "cpu"
     args.anneal_learning_rate = True
     args.curriculum = False
     args.select_high_hop = False
-    args.early_stopping_patience = 0
     args.reset_critic = False
     args.smoke = False
     return args
@@ -99,10 +103,21 @@ def main(argv: list[str] | None = None) -> None:
     requested_checkpoint = args.init_checkpoint
     warm_start = prepare_initialization(args)
     if requested_checkpoint is not None and not warm_start:
-        print(
-            "warning: optional initialization checkpoint is unavailable; "
-            f"training will start from scratch ({requested_checkpoint})"
+        message = (
+            "initialization checkpoint is unavailable: "
+            f"{requested_checkpoint}"
         )
+        if not SETTINGS.allow_scratch_without_checkpoint:
+            print(f"error: {message}")
+            print(
+                "formal training is configured to require warm start; "
+                "place the checkpoint at the configured path or explicitly set "
+                "allow_scratch_without_checkpoint=True in large_scale.py"
+            )
+            if operational.check:
+                return
+            raise FileNotFoundError(message)
+        print(f"warning: {message}; training will start from scratch")
     print(
         "formal large-scale training: "
         f"device={args.device}, updates={args.updates}, "

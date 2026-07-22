@@ -87,6 +87,7 @@ class TrainConfigTest(unittest.TestCase):
         self.assertEqual(config.entropy_coef, 0.001)
         self.assertEqual(args.topology_nodes, 200)
         self.assertEqual(args.high_hop_evaluation_episodes, 10)
+        self.assertEqual(config.early_stopping_patience, 5)
         self.assertTrue(config.anneal_learning_rate)
 
     def test_large_scale_missing_warm_start_falls_back_to_scratch(self):
