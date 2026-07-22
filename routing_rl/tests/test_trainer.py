@@ -78,7 +78,7 @@ class TrainerSmokeTest(unittest.TestCase):
             checkpoint_every=10,
             evaluate_every=1,
             early_stopping_patience=1,
-            curriculum=(CurriculumStage("tiny", 2, 2, 2, 1, 1),),
+            curriculum=(CurriculumStage("tiny", 2, 2, 3, 1, 1),),
         )
 
         def evaluator(model, update):
@@ -89,9 +89,16 @@ class TrainerSmokeTest(unittest.TestCase):
                     "high_hop_completion_rate": 0.3,
                     "selection_score": 0.5,
                 }
+            if update == 2:
+                return {
+                    "completion_rate": 0.2,
+                    "pair_throughput": 0.08,
+                    "high_hop_completion_rate": 0.4,
+                    "selection_score": 0.4,
+                }
             return {
-                "completion_rate": 0.4,
-                "pair_throughput": 0.2,
+                "completion_rate": 0.2,
+                "pair_throughput": 0.08,
                 "high_hop_completion_rate": 0.4,
                 "selection_score": 0.4,
             }
@@ -101,22 +108,55 @@ class TrainerSmokeTest(unittest.TestCase):
             trainer = PPOTrainer(TinyBatchEnv(), config, output, evaluator=evaluator)
             history = trainer.train()
 
-            self.assertEqual(len(history), 2)
+            self.assertEqual(len(history), 3)
             self.assertTrue(history[0]["best_evaluation"])
             self.assertTrue(history[0]["best_overall_evaluation"])
             self.assertTrue(history[0]["best_high_hop_evaluation"])
             self.assertNotIn("best_evaluation", history[1])
-            self.assertTrue(history[1]["best_overall_evaluation"])
+            self.assertNotIn("best_overall_evaluation", history[1])
             self.assertTrue(history[1]["best_high_hop_evaluation"])
-            self.assertEqual(history[1]["evaluations_without_improvement"], 1)
-            self.assertTrue(history[1]["early_stopping"])
+            self.assertEqual(history[1]["evaluations_without_improvement"], 0)
+            self.assertTrue(history[1]["early_stopping_progress"])
+            self.assertNotIn("early_stopping", history[1])
+            self.assertEqual(history[2]["evaluations_without_improvement"], 1)
+            self.assertTrue(history[2]["early_stopping"])
 
             overall = torch.load(output / "best.pt", map_location="cpu", weights_only=False)
             high_hop = torch.load(
                 output / "best_highhop.pt", map_location="cpu", weights_only=False
             )
-            self.assertEqual(overall["update"], 2)
+            self.assertEqual(overall["update"], 1)
             self.assertEqual(high_hop["update"], 2)
+
+    def test_completion_progress_extends_early_stopping(self):
+        config = PPOConfig(
+            hidden_dim=16,
+            rollout_steps=4,
+            ppo_epochs=1,
+            minibatch_size=4,
+            checkpoint_every=10,
+            evaluate_every=1,
+            early_stopping_patience=1,
+            curriculum=(CurriculumStage("tiny", 2, 2, 3, 1, 1),),
+        )
+
+        def evaluator(model, update):
+            if update == 1:
+                return {"completion_rate": 0.2, "pair_throughput": 0.2}
+            if update == 2:
+                return {"completion_rate": 0.3, "pair_throughput": 0.1}
+            return {"completion_rate": 0.3, "pair_throughput": 0.1}
+
+        with tempfile.TemporaryDirectory() as directory:
+            trainer = PPOTrainer(
+                TinyBatchEnv(), config, Path(directory), evaluator=evaluator,
+            )
+            history = trainer.train()
+
+            self.assertEqual(history[1]["evaluations_without_improvement"], 0)
+            self.assertTrue(history[1]["early_stopping_progress"])
+            self.assertEqual(history[2]["evaluations_without_improvement"], 1)
+            self.assertTrue(history[2]["early_stopping"])
 
     def test_early_stopping_warmup_resets_stagnation_counter(self):
         config = PPOConfig(
@@ -131,6 +171,13 @@ class TrainerSmokeTest(unittest.TestCase):
             curriculum=(CurriculumStage("tiny", 2, 2, 4, 1, 1),),
         )
 
+        scores = {
+            1: 0.5,
+            2: 0.2,
+            3: 0.3,
+            4: 0.3,
+        }
+
         with tempfile.TemporaryDirectory() as directory:
             trainer = PPOTrainer(
                 TinyBatchEnv(),
@@ -138,18 +185,21 @@ class TrainerSmokeTest(unittest.TestCase):
                 Path(directory),
                 evaluator=lambda model, update: {
                     "completion_rate": 0.25,
-                    "pair_throughput": 0.125,
+                    "pair_throughput": scores[update],
                 },
             )
             history = trainer.train()
 
-            # Updates 1-2 are the warmup window.  Stagnation observed there
-            # must not trigger an immediate stop at the warmup boundary.
-            self.assertEqual(len(history), 3)
+            # Update 1 is an early peak and update 2 is the warmup boundary.
+            # Improvement from the boundary at update 3 must receive a fresh
+            # patience window even though it does not exceed the early peak.
+            self.assertEqual(len(history), 4)
             self.assertEqual(history[1]["evaluations_without_improvement"], 0)
             self.assertNotIn("early_stopping", history[1])
-            self.assertEqual(history[2]["evaluations_without_improvement"], 1)
-            self.assertTrue(history[2]["early_stopping"])
+            self.assertEqual(history[2]["evaluations_without_improvement"], 0)
+            self.assertTrue(history[2]["early_stopping_progress"])
+            self.assertEqual(history[3]["evaluations_without_improvement"], 1)
+            self.assertTrue(history[3]["early_stopping"])
 
     def test_legacy_evaluator_still_selects_overall_best(self):
         config = PPOConfig(

@@ -201,6 +201,9 @@ class PPOTrainer:
             self.best_overall_evaluation_score = float("-inf")
             self.best_high_hop_evaluation_score = float("-inf")
             evaluations_without_improvement = 0
+            early_stop_best_overall_score = float("-inf")
+            early_stop_best_completion_score = float("-inf")
+            early_stop_best_high_hop_score = float("-inf")
             configure_curriculum(self.env, stage)
             self.observation, _ = unpack_reset(self.env.reset(seed=self._next_episode_seed()))
             for stage_update in range(1, stage.updates + 1):
@@ -245,7 +248,11 @@ class PPOTrainer:
                         "pair_throughput",
                         evaluation.get("completion_rate", float("-inf")),
                     ))
-                    if overall_score > self.best_overall_evaluation_score:
+                    completion_score = float(evaluation.get(
+                        "completion_rate", float("-inf"),
+                    ))
+                    overall_improved = overall_score > self.best_overall_evaluation_score
+                    if overall_improved:
                         self.best_overall_evaluation_score = overall_score
                         self.save_checkpoint(self.output_dir / "best.pt")
                         self.save_checkpoint(self.output_dir / f"best_{stage.name}.pt")
@@ -260,10 +267,11 @@ class PPOTrainer:
                         )
                     else:
                         high_hop_score = None
-                    if (
+                    high_hop_improved = (
                         high_hop_score is not None
                         and high_hop_score > self.best_high_hop_evaluation_score
-                    ):
+                    )
+                    if high_hop_improved:
                         self.best_high_hop_evaluation_score = high_hop_score
                         self.save_checkpoint(self.output_dir / "best_highhop.pt")
                         self.save_checkpoint(
@@ -275,17 +283,43 @@ class PPOTrainer:
                     ))
                     if score > self.best_evaluation_score:
                         self.best_evaluation_score = score
-                        evaluations_without_improvement = 0
                         self.save_checkpoint(self.output_dir / "best_selected.pt")
                         row["selection_improved"] = True
                         row["best_evaluation"] = True
-                    else:
-                        evaluations_without_improvement += 1
-                    # Do not carry pre-warmup stagnation into the early-stop
-                    # window.  The minimum-update gate is intended to give a
-                    # scratch policy a fresh patience budget after warmup.
+                    # Early stopping has its own post-warmup baselines.  This
+                    # prevents a noisy early peak from becoming an unreachable
+                    # target and treats either overall or high-hop progress as
+                    # evidence that the full-range policy is still learning.
                     if stage_update <= self.config.early_stopping_min_updates:
+                        early_stop_best_overall_score = overall_score
+                        early_stop_best_completion_score = completion_score
+                        early_stop_best_high_hop_score = (
+                            float("-inf") if high_hop_score is None else high_hop_score
+                        )
                         evaluations_without_improvement = 0
+                    else:
+                        early_stop_improved = (
+                            overall_score > early_stop_best_overall_score
+                            or completion_score > early_stop_best_completion_score
+                            or (
+                                high_hop_score is not None
+                                and high_hop_score > early_stop_best_high_hop_score
+                            )
+                        )
+                        if overall_score > early_stop_best_overall_score:
+                            early_stop_best_overall_score = overall_score
+                        if completion_score > early_stop_best_completion_score:
+                            early_stop_best_completion_score = completion_score
+                        if (
+                            high_hop_score is not None
+                            and high_hop_score > early_stop_best_high_hop_score
+                        ):
+                            early_stop_best_high_hop_score = high_hop_score
+                        if early_stop_improved:
+                            evaluations_without_improvement = 0
+                            row["early_stopping_progress"] = True
+                        else:
+                            evaluations_without_improvement += 1
                     row["evaluations_without_improvement"] = evaluations_without_improvement
                     if (
                         self.config.early_stopping_patience > 0

@@ -18,7 +18,7 @@ from .train import parse_args, run
 
 @dataclass(frozen=True)
 class LargeScaleSettings:
-    output: Path = Path("results/gnn_large_scale_scratch_seed67001_u1000")
+    output: Path = Path("results/gnn_large_scale_scratch_seed67001_u1000_es700")
     init_checkpoint: Path | None = None
     seed: int = 67_001
     min_hops: int = 2
@@ -39,8 +39,8 @@ class LargeScaleSettings:
     evaluation_episodes: int = 10
     high_hop_evaluation_episodes: int = 10
     high_hop_min_hops: int = 41
-    early_stopping_patience: int = 10
-    early_stopping_min_updates: int = 300
+    early_stopping_patience: int = 30
+    early_stopping_min_updates: int = 400
     allow_scratch_without_checkpoint: bool = True
     request_ttl: int = 64
     generation_probability: float = 0.5
