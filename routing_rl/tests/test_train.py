@@ -106,6 +106,7 @@ class TrainConfigTest(unittest.TestCase):
         self.assertFalse(config.anneal_learning_rate)
         self.assertEqual(config.reward.potential_coef, 0.03)
         self.assertEqual(config.reward.completion_bonus, 2.0)
+        self.assertIn("atomic_batch_v1", str(args.output))
 
     def test_large_scale_missing_warm_start_falls_back_to_scratch(self):
         args = build_large_scale_args(SETTINGS)
@@ -128,6 +129,7 @@ class TrainConfigTest(unittest.TestCase):
         self.assertEqual(config.gae_lambda, 0.99)
         self.assertEqual(config.learning_rate, 5e-5)
         self.assertFalse(config.anneal_learning_rate)
+        self.assertIn("atomic_batch_v1", str(args.output))
 
     def test_direction_gate_requires_overall_gain_and_stability(self):
         initial = {

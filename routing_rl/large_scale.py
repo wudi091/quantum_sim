@@ -18,7 +18,11 @@ from .train import parse_args, run
 
 @dataclass(frozen=True)
 class LargeScaleSettings:
-    output: Path = Path("results/gnn_large_scale_scratch_seed67001_u1000_es900")
+    # Atomic-batch timing changes the MDP, so keep this run isolated from all
+    # checkpoints and histories produced with the former swap-depth timing.
+    output: Path = Path(
+        "results/gnn_large_scale_atomic_batch_v1_seed67001_u1000_es900"
+    )
     init_checkpoint: Path | None = None
     seed: int = 67_001
     min_hops: int = 2

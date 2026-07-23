@@ -294,7 +294,9 @@ class SharedRoutingEnv:
                         reached_node=route[-1],
                         elementary_pair_ids=tuple(dict.fromkeys(flat_ids)),
                         swap_actions=lanes[0].swap_actions,
-                        duration=max(1, max(len(lane.swap_actions) for lane in lanes)),
+                        # One committed batch is one physical slot.  The swap
+                        # chain is resolved atomically inside that slot.
+                        duration=1,
                         remaining_hops=int(self._distances[route[-1]][request.destination]),
                         completes_request=route[-1] == request.destination,
                         kind="recovery",
@@ -371,7 +373,10 @@ class SharedRoutingEnv:
                     reached_node=route[-1],
                     elementary_pair_ids=tuple(base_ids),
                     swap_actions=actions,
-                    duration=max(1, len(actions)),
+                    # Candidate selection builds a global batch without
+                    # advancing time.  Every selected plan then executes
+                    # atomically in the single committed physical slot.
+                    duration=1,
                     remaining_hops=max(0, full_hops - (len(route) - 1)),
                     completes_request=route[-1] == request.destination,
                 )
@@ -566,7 +571,10 @@ class SharedRoutingEnv:
         progress_hops = 0.0
         positive_progress_hops = 0.0
         lost_progress_hops = 0.0
-        batch_duration = max((plan.duration for plan in plans), default=1)
+        # A commit is the complete exchange schedule for one physical slot.
+        # Plan depth and the number of requests in the batch do not advance
+        # logical time independently.
+        batch_duration = 1
         batch_start = self.time
         delivered_now = 0
         for plan in sorted(plans, key=lambda item: item.plan_id):
@@ -581,13 +589,15 @@ class SharedRoutingEnv:
                     if result.output_pair_id is not None
                 )
             else:
-                inputs = list(self._input_ids(plan, state.carried_pair_id))
-                if plan.swap_actions:
-                    output_id = self.backend.execute_actions(plan.swap_actions)
-                    self.swaps += len(plan.swap_actions)
-                else:
-                    output_id = inputs[0] if inputs else None
-                output_ids = () if output_id is None else (output_id,)
+                inputs = tuple(sorted(self._input_ids(plan, state.carried_pair_id)))
+                lane_result = self.backend.execute_lane(
+                    SwapLane(0, inputs, plan.swap_actions)
+                )
+                self.swaps += lane_result.attempted_swaps
+                output_ids = (
+                    () if lane_result.output_pair_id is None
+                    else (lane_result.output_pair_id,)
+                )
             if not output_ids:
                 state.frontier = state.spec.source
                 self._set_carried(state, ())
@@ -607,7 +617,7 @@ class SharedRoutingEnv:
                 output.reserved_by = None
             state.frontier = plan.reached_node
             self._set_carried(state, output_ids)
-            finish_time = batch_start + plan.duration
+            finish_time = batch_start + batch_duration
             deadline = state.spec.deadline
             if plan.completes_request and (deadline is None or finish_time <= deadline):
                 delivered = len(output_ids)

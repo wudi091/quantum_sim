@@ -16,5 +16,14 @@ The PPO reward uses a graph-derived frontier-progress potential. It does not
 encode an expert route, fixed next-hop preference, or planner-specific action
 rule.
 
+One planning batch is exactly one physical time slot. A planner may select at
+most one candidate per request while constructing the batch; these selection
+microsteps have zero duration. Committing the compatible set atomically
+executes every selected exchange plan, including multi-hop swap chains, and
+advances logical time by one slot. Swap count is a physical work metric, not a
+time duration. An empty commit is a one-slot wait. The allocation control phase
+used by multi-width routing remains zero-duration; its recovery/execution batch
+is one slot.
+
 The SeQUeNCe implementation will live behind this contract. Q-DDCA, PPO,
 Greedy, and Random will use the same snapshot and commit path.

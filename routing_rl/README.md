@@ -34,7 +34,12 @@ python -m routing_rl.large_scale
 The preset trains from scratch on the full 2--50 hop distribution for at most
 1,000 updates. It uses 512 rollout steps (roughly 15,000 training episodes at
 the full budget), evaluates every 10 updates, and writes checkpoints under
-`results/gnn_large_scale_scratch_seed67001_u1000_es900`.
+`results/gnn_large_scale_atomic_batch_v1_seed67001_u1000_es900`.
+
+The `atomic_batch_v1` tag is intentional. A committed plan batch now represents
+one physical time slot regardless of the number of swaps in its plans. Models,
+histories, and baseline results produced with the former swap-depth timing must
+not be resumed or mixed into comparisons with this run.
 
 The formal preset uses no initialization checkpoint and no curriculum. Early
 stopping uses a 500-update learning window followed by 40 evaluations of

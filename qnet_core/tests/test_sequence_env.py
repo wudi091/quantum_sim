@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from qnet_core.env import SharedRoutingEnv
 from qnet_core.gym_env import GymConfig, SequenceGymEnv
@@ -47,6 +48,9 @@ class SequenceEnvironmentTests(unittest.TestCase):
         self.assertGreaterEqual(len(snapshot.candidates), 2)
         plan = next(item for item in snapshot.candidates if item.completes_request)
         result = env.commit((plan.plan_id,))
+        self.assertEqual(plan.duration, 1)
+        self.assertEqual(result["duration"], 1)
+        self.assertEqual(env.time, 1)
         self.assertEqual(result["completed_now"], 1)
         self.assertEqual(result["metrics"]["completion_rate"], 1.0)
         self.assertTrue(env.done)
@@ -118,7 +122,7 @@ class SequenceEnvironmentTests(unittest.TestCase):
         self.assertEqual(env.requests["r0"].frontier, 0)
         self.assertEqual(env.metrics()["progress_hops"], 0.0)
 
-    def test_late_destination_plan_is_not_partial_success(self):
+    def test_multi_hop_destination_plan_completes_at_deadline_in_one_slot(self):
         env = SharedRoutingEnv(EpisodeSpec(
             seed=37,
             nodes=(0, 1, 2, 3),
@@ -131,12 +135,125 @@ class SequenceEnvironmentTests(unittest.TestCase):
                 memory_capacity=2,
             ),
         ))
-        plan = next(item for item in env.snapshot().candidates if item.completes_request)
+        snapshot = env.snapshot()
+        self.assertTrue(all(plan.duration == 1 for plan in snapshot.candidates))
+        plan = next(item for item in snapshot.candidates if item.completes_request)
+        self.assertEqual(plan.route_nodes, (0, 1, 2, 3))
+        self.assertEqual(len(plan.swap_actions), 2)
         result = env.commit((plan.plan_id,))
+        self.assertEqual(plan.duration, 1)
+        self.assertEqual(result["duration"], 1)
+        self.assertEqual(env.time, 1)
         self.assertEqual(result["successful_plans_now"], 1)
-        self.assertEqual(result["completed_now"], 0)
+        self.assertEqual(result["completed_now"], 1)
         self.assertEqual(result["partial_plan_successes_now"], 0)
-        self.assertEqual(result["expired_now"], 1)
+        self.assertEqual(result["expired_now"], 0)
+        self.assertEqual(env.requests["r0"].completed_at, 1)
+
+    def test_atomic_multi_hop_uses_fewer_slots_than_qddca_one_hop(self):
+        spec = EpisodeSpec(
+            seed=38,
+            nodes=(0, 1, 2, 3, 4),
+            edges=((0, 1), (1, 2), (2, 3), (3, 4)),
+            requests=(RequestSpec("r0", 0, 4, ttl=8),),
+            horizon=8,
+            physical=PhysicalConfig(
+                generation_probability=1.0,
+                swap_probability=1.0,
+                memory_capacity=2,
+            ),
+        )
+        atomic = SharedRoutingEnv(spec)
+        complete = next(
+            plan for plan in atomic.snapshot().candidates
+            if plan.completes_request
+        )
+        atomic.commit((complete.plan_id,))
+
+        qddca = SharedRoutingEnv(spec)
+        planner = QDDCAPlanner()
+        planner.reset(spec.seed)
+        while not qddca.done:
+            qddca.commit(planner.select(qddca.snapshot()))
+
+        self.assertEqual(atomic.time, 1)
+        self.assertEqual(qddca.time, 4)
+        self.assertEqual(atomic.metrics()["completion_rate"], 1.0)
+        self.assertEqual(qddca.metrics()["completion_rate"], 1.0)
+
+    def test_failed_multi_hop_plan_consumes_only_one_slot_and_counts_attempts(self):
+        env = SharedRoutingEnv(EpisodeSpec(
+            seed=39,
+            nodes=(0, 1, 2, 3, 4),
+            edges=((0, 1), (1, 2), (2, 3), (3, 4)),
+            requests=(RequestSpec("r0", 0, 4, ttl=8),),
+            horizon=8,
+            physical=PhysicalConfig(
+                generation_probability=1.0,
+                swap_probability=1.0,
+                memory_capacity=2,
+            ),
+        ))
+        plan = next(item for item in env.snapshot().candidates if item.completes_request)
+        self.assertEqual(len(plan.swap_actions), 3)
+        real_swap = env.backend._execute_swap
+        attempts = 0
+
+        def fail_second(action):
+            nonlocal attempts
+            attempts += 1
+            if attempts != 2:
+                return real_swap(action)
+            for pair_id in {action.left_pair_id, action.right_pair_id}:
+                env.backend.discard_pair(pair_id)
+            return None
+
+        with patch.object(env.backend, "_execute_swap", side_effect=fail_second):
+            result = env.commit((plan.plan_id,))
+
+        self.assertEqual(result["duration"], 1)
+        self.assertEqual(env.time, 1)
+        self.assertEqual(result["failed_now"], 1)
+        self.assertEqual(attempts, 2)
+        self.assertEqual(env.metrics()["swaps"], 2.0)
+        self.assertEqual(env.requests["r0"].frontier, 0)
+
+    def test_different_depth_plans_share_one_atomic_batch_slot(self):
+        env = SharedRoutingEnv(EpisodeSpec(
+            seed=40,
+            nodes=(0, 1, 2, 3, 4, 5),
+            edges=((0, 1), (2, 3), (3, 4), (4, 5)),
+            requests=(
+                RequestSpec("short", 0, 1, ttl=8),
+                RequestSpec("long", 2, 5, ttl=8),
+            ),
+            horizon=8,
+            physical=PhysicalConfig(
+                generation_probability=1.0,
+                swap_probability=1.0,
+                memory_capacity=2,
+            ),
+        ))
+        snapshot = env.snapshot()
+        short = next(
+            plan for plan in snapshot.candidates
+            if plan.request_id == "short" and plan.completes_request
+        )
+        long = next(
+            plan for plan in snapshot.candidates
+            if plan.request_id == "long" and plan.completes_request
+        )
+        self.assertEqual(len(short.swap_actions), 0)
+        self.assertEqual(len(long.swap_actions), 2)
+
+        result = env.commit((short.plan_id, long.plan_id))
+
+        self.assertEqual(result["duration"], 1)
+        self.assertEqual(env.time, 1)
+        self.assertEqual(result["completed_now"], 2)
+        self.assertEqual(result["delivered_pairs_now"], 2)
+        self.assertEqual(env.requests["short"].completed_at, 1)
+        self.assertEqual(env.requests["long"].completed_at, 1)
 
     def test_batch_keeps_positive_and_lost_progress_separate(self):
         env = SharedRoutingEnv(EpisodeSpec(
@@ -208,7 +325,8 @@ class SequenceEnvironmentTests(unittest.TestCase):
         self.assertEqual(env.core.time, 0)
         _, _, terminated, truncated, info = env.step(env.stop_action)
         self.assertFalse(truncated)
-        self.assertGreaterEqual(env.core.time, 1)
+        self.assertEqual(info["duration"], 1)
+        self.assertEqual(env.core.time, 1)
         self.assertEqual(info["phase"], "execute")
 
     def test_gym_wrapper_allows_empty_wait_commit(self):
@@ -226,7 +344,10 @@ class SequenceEnvironmentTests(unittest.TestCase):
         self.assertTrue(observation["action_mask"][env.stop_action])
         _, _, _, _, info = env.step(env.stop_action)
         self.assertEqual(info["phase"], "execute")
+        self.assertEqual(info["duration"], 1)
         self.assertEqual(info["planning_slots"], 0)
+        self.assertEqual(info["successful_plans_now"], 0)
+        self.assertEqual(info["failed_plans"], 0.0)
         self.assertEqual(env.core.time, 1)
 
     def test_candidate_exposes_remaining_hops(self):
@@ -275,6 +396,39 @@ class SequenceEnvironmentTests(unittest.TestCase):
         self.assertEqual(info["progress_hops_now"], 1.0)
         self.assertAlmostEqual(info["progress_potential_delta"], 1.0)
         self.assertAlmostEqual(info["reward_progress"], env.config.discount_gamma)
+
+    def test_multi_hop_reward_is_discounted_once_for_the_atomic_batch(self):
+        gamma = 0.9
+        env = SequenceGymEnv(GymConfig(
+            max_requests=1,
+            max_candidates_per_request=3,
+            max_hops=3,
+            scenario=ScenarioConfig(
+                request_count=1, min_hops=3, max_hops=3, ttl=8, horizon=8,
+                arrival_rate=100.0,
+                physical=PhysicalConfig(
+                    generation_probability=1.0, swap_probability=1.0,
+                ),
+            ),
+            seed=45,
+            reward=RewardConfig(
+                potential_coef=1.0, completion_bonus=0.0,
+                makespan_coef=0.0, failure_coef=0.0, timeout_coef=0.0,
+            ),
+            discount_gamma=gamma,
+        ))
+        env.reset(seed=45)
+        action = self._completion_action(env)
+        plan = env.slots[action]
+        assert plan is not None
+        self.assertEqual(len(plan.swap_actions), 2)
+
+        env.step(action)
+        _, reward, _, _, info = env.step(env.stop_action)
+
+        self.assertEqual(info["duration"], 1)
+        self.assertAlmostEqual(info["reward_progress"], gamma * 3.0)
+        self.assertAlmostEqual(reward, gamma * 3.0)
 
     def test_potential_reward_penalizes_failed_frontier_reset(self):
         env = SequenceGymEnv(GymConfig(
@@ -352,14 +506,14 @@ class SequenceEnvironmentTests(unittest.TestCase):
             ),
         ))
         env.reset(seed=59)
-        env.step(self._completion_action(env))
+        env.step(self._one_hop_action(env))
         _, reward, terminated, truncated, info = env.step(env.stop_action)
         self.assertTrue(terminated)
         self.assertFalse(truncated)
         self.assertAlmostEqual(reward, -2.0)
         self.assertEqual(info["progress_potential_after"], 0.0)
 
-    def test_completion_after_deadline_is_timeout(self):
+    def test_empty_atomic_slot_expires_request_at_deadline(self):
         env = SharedRoutingEnv(EpisodeSpec(
             seed=23,
             nodes=(0, 1, 2, 3),
@@ -368,8 +522,9 @@ class SequenceEnvironmentTests(unittest.TestCase):
             horizon=4,
             physical=PhysicalConfig(generation_probability=1.0, swap_probability=1.0),
         ))
-        plan = next(item for item in env.snapshot().candidates if item.completes_request)
-        result = env.commit((plan.plan_id,))
+        result = env.commit(())
+        self.assertEqual(result["duration"], 1)
+        self.assertEqual(result["expired_now"], 1)
         self.assertEqual(result["metrics"]["completion_rate"], 0.0)
         self.assertEqual(result["metrics"]["timeout_rate"], 1.0)
 
@@ -402,6 +557,7 @@ class SequenceEnvironmentTests(unittest.TestCase):
         selected = planner.select(recovery)
         self.assertEqual(env._candidates[selected[0]].width, 2)
         result = env.commit(selected)
+        self.assertEqual(result["duration"], 1)
         self.assertEqual(result["delivered_pairs_now"], 2)
         self.assertEqual(env.metrics()["delivered_pairs"], 2.0)
         self.assertEqual(env.metrics()["completion_rate"], 1.0)

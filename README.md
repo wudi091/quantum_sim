@@ -9,6 +9,14 @@ PPO, Q-DDCA, Greedy, and Random only select routing/exchange plan IDs from the
 same immutable planning snapshot. They cannot create requests, mutate EPR
 resources, advance time, reject requests, or perform settlement themselves.
 
+Each committed planning batch is the complete exchange schedule for one
+physical time slot. Candidate-selection microsteps do not advance time; STOP
+atomically executes all compatible plans selected for the requests in that
+batch and advances the environment by exactly one slot. A multi-hop plan may
+therefore reach an intermediate frontier or the destination in that slot.
+Checkpoints and benchmark results produced with the former swap-depth timing
+belong to a different MDP and must be retrained before comparison.
+
 ## Packages
 
 - `qnet_core`: shared SeQUeNCe kernel, scenario generation, candidates,

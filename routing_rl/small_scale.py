@@ -6,8 +6,9 @@ The pilot saves an optimizer-step-zero checkpoint, evaluates it on fixed seeds,
 trains from scratch, and writes a direction report comparing the learned best
 checkpoint with that frozen initialization.
 
-Run with ``python -m routing_rl.small_scale``.  The formal large-scale entry
-point requires the resulting report to pass before it will start training.
+Run with ``python -m routing_rl.small_scale``.  The report is a local direction
+check; the formal large-scale entry point does not depend on this uncommitted
+artifact and can still be started directly.
 """
 
 from __future__ import annotations
@@ -26,7 +27,9 @@ from .trainer import PPOTrainer, load_model
 
 @dataclass(frozen=True)
 class SmallScaleSettings:
-    output: Path = Path("results/gnn_small_direction_seed68001_u60c_credit_reward2")
+    output: Path = Path(
+        "results/gnn_small_direction_atomic_batch_v1_seed68001_u60"
+    )
     init_checkpoint: Path | None = None
     seed: int = 68_001
     min_hops: int = 2
@@ -250,7 +253,7 @@ def main(argv: list[str] | None = None) -> None:
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     print(json.dumps(gate, ensure_ascii=False, indent=2))
     if not gate["passed"]:
-        raise SystemExit("direction gate failed; do not start formal large-scale training")
+        raise SystemExit("direction check failed; do not treat this checkpoint as validated")
 
 
 if __name__ == "__main__":
