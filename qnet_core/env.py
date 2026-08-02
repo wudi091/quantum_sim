@@ -345,7 +345,7 @@ class SharedRoutingEnv:
             # Always expose the farthest executable prefix on the best route.
             proposals.append(resource_paths[0])
             # Local algorithms receive one-hop alternatives through the same
-            # immutable candidate catalogue; they never rewrite a PPO plan.
+            # immutable candidate catalogue; they never rewrite a selected plan.
             for route, base_ids, full_hops in resource_paths:
                 proposals.append((route[:2], base_ids[:1], full_hops))
             # Keep a medium-granularity option for long paths when space allows.

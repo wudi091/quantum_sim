@@ -1,0 +1,54 @@
+
+{
+  'type': "line",
+  'figWidth': 600,
+  'figHeight': 350,
+  'usetex': True,
+
+  'legendLoc': 'best',
+  'legendColumn': 1,
+
+  'markerSize': 8,
+  'lineWidth': 1,
+
+  'xLog': False,
+  'yLog': False,
+  'xGrid': True,
+  'yGrid': True,
+
+  'xFontSize': 16,
+  'xTickRotate': False,
+  'yFontSize': 16,
+  'legendFontSize': 14,
+  'output': True,
+
+  'children': [{
+  'name': 'num-ebit-pairs-50-0.8-0.9',
+  'solutionList': ["Online"],
+  'xTitle': '\\# src-dst pairs in one time slot',
+  'yTitle': '\\# success pairs',
+  'x': [1, 2, 3, 4, 5, 6, 7, 8, 9],
+  'y': [[1.86, 2.68, 3.17, 3.81, 4.27, 4.73, 5.16, 5.27, 5.78]],
+}, {
+  'name': 'num-succ-pairs-50-0.8-0.9',
+  'solutionList': ["Online"],
+  'xTitle': '\\# src-dst pairs in one time slot',
+  'yTitle': '\\# entanglements',
+  'x': [1, 2, 3, 4, 5, 6, 7, 8, 9],
+  'y': [[9.84, 12.71, 15.78, 18.88, 20.79, 22.76, 26.95, 25.51, 28.65]],
+}, {
+  'name': 'num-ebit-pairs-50-0.5-0.9',
+  'solutionList': ["Online"],
+  'xTitle': '\\# src-dst pairs in one time slot',
+  'yTitle': '\\# success pairs',
+  'x': [1, 2, 3, 4, 5, 6, 7, 8, 9],
+  'y': [[1.57, 2.17, 2.7, 3.09, 3.38, 3.78, 4.31, 4.42, 4.74]],
+}, {
+  'name': 'num-succ-pairs-50-0.5-0.9',
+  'solutionList': ["Online"],
+  'xTitle': '\\# src-dst pairs in one time slot',
+  'yTitle': '\\# entanglements',
+  'x': [1, 2, 3, 4, 5, 6, 7, 8, 9],
+  'y': [[4.27, 5.99, 7.47, 8.62, 9.99, 10.8, 12.86, 12.31, 13.94]],
+}]
+}

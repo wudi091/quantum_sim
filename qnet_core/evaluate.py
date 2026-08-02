@@ -5,9 +5,16 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from time import perf_counter
 
 from .env import SharedRoutingEnv
-from .planners import GreedyPlanner, QCASTPlanner, QDDCAPlanner, RandomPlanner
+from .planners import (
+    GreedyPlanner,
+    OptimalPlanner,
+    QCASTPlanner,
+    QDDCAPlanner,
+    RandomPlanner,
+)
 from .scenario import ScenarioConfig, make_episode
 from .spec import PhysicalConfig
 
@@ -16,20 +23,41 @@ def run_planner(planner: object, scenario: ScenarioConfig, seed: int) -> dict[st
     spec = make_episode(scenario, seed)
     env = SharedRoutingEnv(spec)
     planner.reset(seed)
+    planning_seconds = 0.0
+    planner_calls = 0
     while not env.done:
         snapshot = env.snapshot()
+        started = perf_counter()
         selected = tuple(planner.select(snapshot))
+        planning_seconds += perf_counter() - started
+        planner_calls += 1
         env.commit(selected)
-    return env.metrics()
+    metrics = env.metrics()
+    metrics.update({
+        "planner_calls": float(planner_calls),
+        "planning_seconds": planning_seconds,
+        "mean_planning_ms": 1000.0 * planning_seconds / max(planner_calls, 1),
+    })
+    return metrics
 
 
-def compare(scenario: ScenarioConfig, seeds: int) -> dict[str, object]:
-    planners = {
+def compare(
+    scenario: ScenarioConfig,
+    seeds: int,
+    planner_names: tuple[str, ...] | None = None,
+) -> dict[str, object]:
+    available = {
         "greedy": GreedyPlanner(),
+        "optimal": OptimalPlanner(),
         "qddca": QDDCAPlanner(),
         "qcast": QCASTPlanner(),
         "random": RandomPlanner(0),
     }
+    names = tuple(available) if planner_names is None else planner_names
+    unknown = set(names) - set(available)
+    if unknown:
+        raise ValueError(f"unknown planners: {sorted(unknown)}")
+    planners = {name: available[name] for name in names}
     rows = {
         name: [run_planner(planner, scenario, seed) for seed in range(seeds)]
         for name, planner in planners.items()
@@ -53,6 +81,11 @@ def main() -> None:
     parser.add_argument("--p-gen", type=float, default=0.5)
     parser.add_argument("--p-swap", type=float, default=0.5)
     parser.add_argument("--memory", type=int, default=2)
+    parser.add_argument(
+        "--planners", nargs="+",
+        choices=("greedy", "optimal", "qddca", "qcast", "random"),
+        default=("greedy", "optimal", "qddca", "qcast", "random"),
+    )
     parser.add_argument("--arrival-rate", type=float, default=1.0,
                         help="Mean Poisson request arrivals per physical step")
     parser.add_argument("--output", type=Path)
@@ -70,7 +103,7 @@ def main() -> None:
             memory_capacity=args.memory,
         ),
     )
-    result = compare(scenario, args.seeds)
+    result = compare(scenario, args.seeds, tuple(args.planners))
     payload = json.dumps(result, indent=2, default=str)
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)

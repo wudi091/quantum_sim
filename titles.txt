@@ -1,0 +1,272 @@
+﻿A Best-Path Approach to the Design of a Hybrid Space–Ground Quantum Network with Dynamic Constraints
+A Connection-Oriented Entanglement Distribution Design in Quantum Networks
+A Convex Formulation of Game-Theoretic Hierarchical Routing
+A critical analysis of deployed use cases for quantum key distribution and comparison with post-quantum cryptography
+A holistic survey of UAV-assisted wireless communications
+A Linear Algebraic Framework for Dynamic Scheduling Over Memory-Equipped Quantum Networks
+A Load Balancing Routing Algorithm for Quantum Key Distribution Networks
+A MILP Model For Conflict-Free Routing Problem With Partial Charging In Multiple-AGV System
+A Modular Quantum Network Architecture for Integrating Network Scheduling with Local Program Execution
+A Nonblocking Multistage Switching Network for Distributed Quantum Computing
+A Physical and Timing Aware Placement Optimization Framework Based on Graph Neural Network
+A Quantum Routing Model and Protocol Suitable for User Private Networks
+A quantum-network register assembled with optical tweezers in an optical cavity
+A real-time bi-level path planning approach for the conflict-free routing problem of multi-AGV systems
+A Review on Models and Applications of Quantum Computing
+A Strategy for Rapid Synthesis of Carbon Nanodots with Reversible Photoluminescence Switching for Sensitive Dynamic Anti‐Counterfeiting
+A thin film lithium niobate near-infrared platform for multiplexing quantum nodes
+A two-stage Q-learning routing approach for quantum entanglement networks
+Abstracts of the 2024 50th Annual NATAS Conference
+Adaptive Entanglement Generation for Quantum Routing
+Adaptive Entanglement Routing with Deep Q-Networks in Quantum Networks
+Adaptive Inter-Domain Content Retrieval in Satellite-Terrestrial Integrated Networks
+Adaptive Quantum Routing under Dynamic Topological Constraints
+Adaptive Resource Orchestration for Distributed Quantum Computing Systems
+Adaptive Routing Mechanism for LEO Satellite Network Based on Control Domain Partition
+Addressing a device in a quantum network: A quantum approach including routing
+Advances in Battery Modeling and Management Systems
+Advances in Energy Storage, AI Optimisation, and Cybersecurity
+AEPA: Adaptive Entanglement Pre-Allocation for Low-Latency Quantum Repeater Networks
+AI and Quantum Computing for Carbon-Neutral Supply Chains
+AlphaRouter: Quantum Circuit Routing with Reinforcement Learning and Tree Search
+AlphaRouter: Quantum Circuit Routing with RL and Tree Search
+An Advanced Collaborative Routing Algorithm for Optimizing Entanglement and Resource Efficiency
+An Advanced Collaborative Routing Algorithm for Optimizing Entanglement and Resource Efficiency in Quantum Networks
+An Analysis of the Coordination Gap between Joint and Modular Learning for Job Shop Scheduling with Transportation Resources
+An on-demand Resource Allocation Algorithm for a Quantum Network Hub and its Performance Analysis
+Anti-Disturbance Path Tracking Control for USV Based on Quantum-Inspired Optimization and Dynamic Game Theory
+Approximately Optimal Toll Design for Efficiency and Equity in Arc-Based Traffic Assignment Models
+Aquas: Enhancing Domain Specialization through Holistic Hardware-Software Co-Optimization based on MLIR
+Arithmetic Gradient Optimized Deep Residual Path Planning for UAVs
+Artificial intelligence, machine learning, and deep learning in cloud, edge, and quantum computing: A review of trends, challenges, and future directions
+Artificial intelligence: new uses and impacts on military command and control
+Artificially intelligent Maxwell's demon for optimal control of open quantum systems
+Asymptotically Optimal Competitive Ratio for Online Allocation of Reusable Resources
+Asynchronous entanglement routing for the quantum internet
+Asynchronous Routing for Multipartite Entanglement in Quantum Networks
+Automatic Protection Switching in an Entanglement-Based Quantum Network
+Beyond Entanglement Routing: Source Assignment and All-Optical Switching-Based Distribution
+Blockchain-Based Self-Sovereign Identity for Routing in Inter-Domain Networks
+Bloom Filters at Fifty: From Probabilistic Foundations to Modern Engineering and Applications
+Bound on Entanglement in Neural Quantum States.
+Bridging Superconducting and Neutral-Atom Platforms for Efficient Fault-Tolerant Quantum Architectures
+Calculating the Capacity Region of a Quantum Switch
+CCEA: A Clustering Co-Evolutionary Algorithm for Collaborative Multi-Load AGV Scheduling and Conflict-Free Routing in Smart Workshops
+Challenges and opportunities in quantum optimization
+Cold War Museology
+Combining quantum processors with real-time classical communication
+Computational Power of Random Quantum Circuits in Arbitrary Geometries
+Conflict-Free Multi-AGV Path Planning in Narrow Passages Using an Improved GQPSO
+Conflict-Free Routing of Twin Reclaimers in the Stockyard Based on a Time-Space Network Model
+Continuously distributing entanglement in quantum networks with regular topologies
+Deterministic photon source of genuine three-qubit entanglement
+Development of Two-Dimensional Tensor Network Methods for the Variational Simulation of Quantum Many-Body States
+Did You Check the Right Pocket? Cost-Sensitive Store Routing for Memory-Augmented Agents
+Differentiated service entanglement routing for quantum networks
+Dimensioning of Quantum Memories for Distilled Quantum EPR Packets
+Directional quantum-squeezing-enabled nonreciprocal enhancement of entanglement
+Discrete Effort Distribution via Regret-Enabled Greedy Algorithm
+Distributed Quantum Routing with Fidelity Assurance in Memory-Free Networks
+DRM-ETP: A Dynamic Rate Matching-Based Entanglement Transport Protocol in Quantum Networks
+Dynamic Entanglement Routing Based on Stream Processing for Quantum Networks
+Dynamic RIS-Assisted THz Quantum Networks: Joint Optimization of Entanglement Generation and Fidelity under Channel Impairments
+Dynamic Scheduling in Fiber and Spaceborne Quantum Repeater Networks
+Effective routing design for remote entanglement generation on quantum networks
+Efficient Conflict Avoidance by Proactive 4D-Routing
+Efficient entanglement purification based on noise guessing decoding
+Efficient Entanglement Routing for Satellite-Aerial-Terrestrial Quantum Networks
+Efficient Entanglement Swapping in Quantum Networks for Multi-User Scenarios
+Efficient multiparty entanglement distribution with DODAG-X protocol
+Energy-time and time-bin entanglement: past, present and future
+Enhancing Entanglement Purification with Shared Randomness
+Enhancing Inter-Domain Route Selection Through Knowledge Graph and Reputation Mechanisms
+Entanglement buffering with multiple quantum memories
+Entanglement buffering with two quantum memories
+Entanglement percolation in random quantum networks
+Entanglement Purification With Finite Latency Classical Communication in Quantum Networks
+Entanglement Request Scheduling in Quantum Datacenter Networks
+Entanglement Request Scheduling in Quantum Networks Using Deep Q-Network
+Entanglement Routing Design Over Quantum Networks
+Entanglement Routing in Quantum Networks: A Comprehensive Survey
+Entanglement transference and non-inertial quantum reference frames
+Entanglement-assisted circuit knitting: Distributed quantum computing using limited entanglement resources
+Entanglement-assisted non-local optical interferometry in a quantum network
+Entanglement-Efficient Distribution of Quantum Circuits over Large-Scale Quantum Networks
+Entanglement-Reusable Dynamic Routing for Quantum Networks
+Evaluating Machine Learning Models for DDoS Detection in SDNs
+Exploring quantum materials and applications: a review
+Exploring Quantum Materials with Resonant Inelastic X-Ray Scattering
+Extended Tree Search for Robot Task and Motion Planning
+Fast quantum interconnects via constant-rate entanglement distillation
+Faulty towers: recovering a functioning quantum random access memory in the presence of defective routers
+FedCruise: Collaborative Cruise Guidance With Federated Policy Distillation in Multiple Ride-Hailing Platforms
+Fidelity-Guaranteed Entanglement Routing with Distributed Purification Planning
+FLAMA: Architecting Floating-Point Atomic Memory Operations for Heterogeneous HPC Systems
+Flexible Qubit Allocation of Network Resource States
+Fragmentation-Aware Entanglement Routing for Quantum Networks
+FreqCache: Frequency-Aware Adaptive Branch Routing for Training-Free Diffusion Acceleration
+From Entanglement Purification Scheduling to Fidelity-Constrained Entanglement Routing
+Fully chip-based Entanglement Purification
+Generating logical magic states with the aid of non-Abelian topological order
+Genuine Multipartite Entanglement Detection with Imperfect Measurements: Concept and Experiment
+Graph Reinforcement Learning for Calibration-Aware Quantum Circuit Routing
+Hash Tables as Engines of Randomness at the Limits of Computation: A Unified Review of Algorithms
+Heralded Entanglement of On-Demand Spin-Wave Solid-State Quantum Memories for Multiplexed Quantum Network Links
+Hierarchical memories: Simulating quantum LDPC codes with local gates
+Hybrid entanglement and bit-flip error correction in a scalable quantum network node
+Hybrid optimization for efficient 6G IoT traffic management and multi-routing strategy
+Hybrid Quantum-Classical Neural Networks for Downlink Beamforming Optimization
+IBM quantum computers: evolution, performance, and future directions
+Imacoqwa’s Arrow
+Improved Informed RRT-connect for UAV Path Planning
+IndexMem: Learned KV-Cache Eviction with Latent Memory for Long-Context LLM Inference
+Intelligent Deep Routing Agent for Optimized Entanglement Distribution in Quantum Communication Networks
+Introduction to Satellite Quantum Transmission Networks and Handover Inter Domain Systems for World Coverage Communications
+Joint Modeling and Performance Evaluation of Communication and Memory Systems in the Classical and the Quantum Internet: A Time-to-Live Approach
+Joint Swapping and Purification with Failures for Entanglement Distribution in Quantum Networks
+Large-scale multi-load AGVs conflict-free scheduling based on intelligent e-commerce warehouse
+Latency-Aware Backup Resource Optimization for Virtual Networks Against Single Facility Node Failure
+Latency-Aware Inter-domain Routing
+Learning Generalizable Neural Solvers for Combinatorial Optimization Problems
+Learning in Low-Dimensional Subspaces: Orthogonal Bottlenecks for Reinforcement Learning
+Learning to Branch in Combinatorial Optimization with Hybrid Convolutional and Attentional Graph Neural Networks
+Learning to Route Electric Trucks Under Operational Uncertainty
+Leveraging Programmable Data Plane for Network Intrusion Detection: A Survey
+Link-Based Pricing for Stabilizing Discrete-Time Routing Games
+Localized Entanglement Purification
+Low-Carb BGP: A Carbon-Aware Inter-Domain Routing Extension to BGP
+MadQCI: a heterogeneous and scalable SDN-QKD network deployed in production facilities
+Make Each Token Count: Towards Improving Long-Context Performance with KV Cache Eviction
+Massive quantum systems as interfaces of quantum mechanics and gravity
+Maximizing Entanglement Routing Rate in Quantum Networks: Approximation Algorithms
+MerLin: A Discovery Engine for Photonic and Hybrid QML
+MerLin: A Discovery Engine for Photonic and Hybrid Quantum Machine Learning
+Methods and means of conflict-free data exchange in the group of mobile robotic platforms
+Metropolitan-scale heralded entanglement of solid-state qubits
+Midterm Status Report of the ILC Technology Network
+Midterm Status Report of the ILC Technology Network Activities
+Modeling and Quantum-Hardware-Based Investigation of Entanglement Distribution and Classical Communication in Distributed Quantum Computing
+MoE Adapter for Large Audio Language Models: Sparsity, Disentanglement, and Gradient-Conflict-Free
+Multipath Inter-Domain Routing Protocols for Quantum Networks With Online Path Selection
+Multi-Tree Quantum Routing in Realistic Topologies
+Nearest-Neighbourless Asymptotically Optimal Motion Planning with Fully Connected Informed Trees
+Near-field strong coupling and entanglement of quantum emitters for room-temperature quantum technologies
+Network Digital Twin for 6G and Beyond
+Networked Quantum Services†
+No-Go Theorems for Universal Entanglement Purification
+Observation as Participation: The Detection Theory of Energy Quantum Theory
+Observation of residual entanglement in chip-based entanglement purification
+On noise in swap ASAP repeater chains: exact analytics, distributions and tight approximations
+On the Concurrent Multipath Entanglement Distribution in Quantum Networks
+On Utility-optimal Entanglement Routing in Quantum Networks
+On-Demand Resource Allocation for a Quantum Network Hub
+Online Resource Allocation with Cancellations
+Online Rounding Schemes for $ k $-Rental Problems
+Optimal resource requirements for connected quantum sub-networks
+Optimal routing and end-to-end entanglement distribution in quantum networks
+Optimal Scheduling in a Quantum Switch
+Optimization algorithms benchmarking and intra-architecture gate mapping studies for the variational quantum eigensolver
+Optimization of quantum-repeater networks using stochastic automatic differentiation
+Optimizing SPHINCS+ for Low-Power Devices
+Over-squashing in Graph Neural Networks: A comprehensive survey
+Overview of Startups Developing AI for the Energy Sector
+Path Percolation in Quantum Communication Networks
+Path-Based Quantum Meta-Learning for Adaptive Optimization of Reconfigurable Intelligent Surfaces
+Perfect chiral quantum routing
+Poster: Few-Shot Inter-Domain Routing Threat Detection with Large-Scale Multi-Modal Pre-Training
+Practical Quantum Advantage on Partially Fault-Tolerant Quantum Computer
+Preemption-Enhanced Benchmark Suite for FPGAs
+Proving an Arrow of Time under Universal Time
+Purification scheduling control for throughput maximization in quantum networks
+Purification Strategy Optimization for Entanglement Routing in Quantum Networks
+Purification-enabled Entanglement Capability-Prioritized Routing in Quantum Networks
+Q-DDCA: Decentralized Dynamic Congestion Avoid Routing in Large-Scale Quantum Networks
+Quantum algorithms for scientific computing
+Quantum Artificial Intelligence: A Brief Survey
+Quantum Circuit Switching with One-Way Repeaters in Star Networks
+Quantum Communication Network Routing With Circuit and Packet Switching Strategies
+Quantum Communication Networks Enhanced by Distributed Quantum Memories
+Quantum Computing: Navigating the Future of Computation, Challenges, and Technological Breakthroughs
+Quantum coordinates, localisation of events, and the quantum hole argument
+Quantum cryptography: Theoretical foundations and practical implementations for the protection of critical infrastructure
+Quantum Data Center Infrastructures: A Scalable Architectural Design Perspective
+Quantum Entanglement Path Selection and Qubit Allocation via Adversarial Group Neural Bandits
+Quantum federated learning: a comprehensive literature review of foundations, challenges, and future directions
+Quantum key distribution over an encoded repeater chain with sequential swapping
+Quantum Key Distribution Routing Protocol in Quantum Networks: Overview and Challenges
+Quantum Machine Learning for 6G Space-Air-Ground Integrated Networks: A Comprehensive Tutorial and Survey
+Quantum Network Optimization: From Optimal Routing to Fair Resource Allocation
+Quantum Network Routing Design with Dynamic Requests Scheduling in Multi-User Environments
+Quantum Routing Beyond Pathfinding: Multipartite Entanglement Complementation
+Quantum routing with teleportation
+Quantum-Enhanced Federated Learning for Metaverse-Empowered Vehicular Networks
+Quantum-network nodes with real-time noise mitigation using spectator qubits
+Real-Time Conflict-Free Path Planning for Multi-AGVs Based on Deep Reinforcement Learning
+Reinforcement learning and the Metaverse: a symbiotic collaboration
+Reinforcement Learning for Entanglement Distribution in Quantum Networks
+Reinforcement Learning for Entanglement Swapping in Quantum Networks
+Reinforcement Learning for Flexible Entanglement Routing
+RELiQ: Scalable Entanglement Routing via Reinforcement Learning in Quantum Networks
+Request Scheduling in Quantum Networks
+Resource Efficient Link-Set Configuration Based Entanglement Routing
+RetentiveKV: State-Space Memory for Uncertainty-Aware Multimodal KV Cache Eviction
+RL with Residual GCNs for CVRP
+Roadmap on quantum thermodynamics
+Robust Belief-State Policy Learning for Quantum Network Routing Under Decoherence and Time-Varying Conditions
+Robust self-supervised denoising of voltage imaging data using CellMincer
+Routing and Spectrum Allocation in Broadband Quantum Entanglement Distribution
+Routing Entanglement in Complex Quantum Networks Using GHZ States
+Satellite-Terrestrial Quantum Networks and the Global Quantum Internet
+SatQNet: Satellite-assisted Entanglement Routing Using Directed Line GNNs
+SatQNet: Satellite-assisted Quantum Network Entanglement Routing Using Directed Line Graph Neural Networks
+Scalable and Effective Graph Neural Networks via Trainable Random Walk Sampling
+Scalable and fault-tolerant preparation of encoded k-uniform states
+Scaling and networking a modular photonic quantum computer
+Scheduling Entanglement Flows in Multi-channel Quantum Networks
+Scheduling Ground-Based Telescope Observations with Uncertain Nights
+Scientific software development in the AI era: reproducibility, MLOps, and applications in soft matter physics
+SC-Route: A Scalable Cross-Layer Secure Routing Method for Multi-Hop Inter-Domain Wireless Networks
+Secure Communication in Drone Networks
+Seizing windows of opportunity in green global value chains
+Service-the-Longest-Queue Among d Choices Policy for Quantum Entanglement Switching
+Shapley-guided pruning for efficient graph neural architecture prediction in distributed learning environments
+Simulating a Quantum Switch With Concurrent Demands
+Simulation of Fidelity in Entanglement-Based Networks with Repeater Chains
+Simultaneous Feeder Routing and Conductor Selection in Rural Distribution Networks Using an Exact MINLP Approach
+Smart Road Allocation through Auction-Based Mechanisms for Congestion Prevention
+Spatio-Temporal Datacenter Selection and Routing in Bandwidth-Limited Optical Satellite Networks
+Spatio-temporal economic planning weighted routing model for agricultural land-use management in peri-urban zones: a case study of the Kyiv agglomeration
+State of the Art in Parallel and Distributed Systems: Emerging Trends and Challenges
+Stochastic Multipath Routing for High-Throughput Entanglement Distribution
+Stochastic Multipath Routing for High-Throughput Entanglement Distribution in Quantum Repeater Networks
+Streaming quantum state purification
+Structural Property of the Optimal Entanglement Policy for Quantum Network Switch: An MDP Approach
+Surrogate Structure-Specific Probabilistic Dynamic Responses using Partial Information
+Swapping-Based Entanglement Routing Design for Congestion Mitigation in Quantum Networks
+SwappingBoost: Optimizing Entanglement Routing by Mitigating Bottlenecks in Quantum Networks
+Tailoring Fusion-Based Photonic Quantum Computing Schemes to Quantum Emitters
+Task Concurrency and Compatibility in Measurement-Based Quantum Networks
+Temporal Framework for Causality-Preserving Scheduling of Measurements in Quantum Networks
+Testing quantum theory on curved spacetime with quantum networks
+The ALF (Algorithms for Lattice Fermions) project release 2.4. Documentation for the auxiliary-field quantum Monte Carlo code
+The Open Ant: A Robot Platform for Reinforcement Learning Research
+The pace of pastoral mobility: Exploring adaptations to climate and socio-economic change in Western India
+The Universe Does Not Expand Equally - And Here Is the Second Round with the Black Hole
+Tierkreis: A Dataflow Framework for Hybrid Quantum-Classical Computing
+To Optimize Human-in-the-Loop Learning in Repeated Routing Games
+To Purify or Not to Purify: Entanglement Purification under Input Fidelity Asymmetry in Quantum Networks
+Topology analysis and evolution trend prediction of secure propagation networks
+Topology Design with Resource Allocation and Entanglement Distribution for Quantum Networks
+Toward a 2D Local Implementation of Quantum Low-Density Parity-Check Codes
+Toward Hop-Independent Fidelity in Quantum Data Centers: Resource Requirements for Entanglement Purification
+Traffic-Aware Initial Shared State for Proactive Entanglement Routing in Quantum Networks
+Trends in quantum reinforcement learning: State‐of‐the‐arts and the road ahead
+Tripartite Quantum Entanglement with Squeezed Optomechanics
+Tunable Generation of Spatial Entanglement in Nonlinear Waveguide Arrays
+Two-Stage Deep Q Learning Routing in Entanglement Networks
+Universal quantum state purification with energy-preserving operations
+Value Bonuses using Ensemble Errors for Exploration in Reinforcement Learning
+VBGP: Flexible Multipath Selection for the Inter-Domain Routing Evolution
+Vehicle-drone collaborative distribution path planning
+WORKSWORLD: A Domain for Integrated Numeric Planning and Scheduling of Distributed Pipelined Workflows
+ZBR: Zone-based routing in quantum networks with efficient entanglement distribution

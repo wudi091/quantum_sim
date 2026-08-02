@@ -1,0 +1,10 @@
+## 9. 已经形成的稳定认识
+
+1. “拓扑会被路由动作改变”不能单独作为 B。动态纠缠拓扑、异步路由、中间 ebit 队列和主动 Swap 已被多条文献覆盖。
+2. “内存有限”也不能单独作为 B。碎片化、连接预留、buffer、hub 资源分配、memory-equipped scheduling 都已存在。
+3. “换成 RL”不能成为贡献。RELiQ、DQN 请求调度、two-stage Q-learning、Adaptive Entanglement Generation 已覆盖多个动作层次。
+4. exact token/slot 适合作为正确模拟器实现细节，但若动作掩码已经读取 exact state，它本身不是新的决策问题。
+5. Release、rollback、eviction、salvage 一族必须直接面对经典资源管理祖先；此前多轮均未达到稳定新颖性。
+6. 如果继续坚持纯逻辑 `Create / Swap / Consume`，最可能形成论文的方向是多请求执行与调度，而不是单请求简单路径；单条无纯化链路的 Swap 顺序通常结构过于简单。
+7. 经典问题迁移到量子网络是可行的，但论文故事应写成“量子逻辑状态导致经典假设失效或需要新实例化”，而不是“把经典算法名称替换成量子术语”。
+
