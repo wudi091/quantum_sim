@@ -1,4 +1,7 @@
 sequence==1.0.0
 numpy
 networkx
+scipy
 tqdm
+ortools
+gymnasium>=0.29
