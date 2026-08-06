@@ -54,6 +54,8 @@ class EpisodeSpec:
         node_set = set(self.nodes)
         if any(u not in node_set or v not in node_set or u == v for u, v in self.edges):
             raise ValueError("edges must connect distinct declared nodes")
+        if any(request.arrival > self.horizon for request in self.requests):
+            raise ValueError("request arrival cannot exceed the episode horizon")
         if not 0 < self.physical.generation_probability <= 1:
             raise ValueError("generation_probability must be in (0, 1]")
         if not 0 <= self.physical.swap_probability <= 1:

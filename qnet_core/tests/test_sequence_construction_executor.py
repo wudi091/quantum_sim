@@ -1,0 +1,584 @@
+import unittest
+from dataclasses import replace
+from unittest.mock import patch
+
+from qnet_core.command_api import ResourceClaim
+from qnet_core.construction_api import (
+    ConstructionDAG,
+    ConstructionOperation,
+    LogicalSegment,
+    OperationKind,
+    ResourceDemand,
+)
+from qnet_core.construction_decoder import CapacityFeasibilityOracle
+from qnet_core.construction_plans import balanced_path_dag, left_deep_path_dag
+from qnet_core.sequence_backend import SequenceBackend
+from qnet_core.sequence_construction_executor import SequenceConstructionExecutor
+from qnet_core.spec import EpisodeSpec, PhysicalConfig
+
+
+class SequenceConstructionExecutorTests(unittest.TestCase):
+    @staticmethod
+    def _backend() -> SequenceBackend:
+        return SequenceBackend(EpisodeSpec(
+            seed=101,
+            nodes=(0, 1, 2, 3, 4),
+            edges=((0, 1), (1, 2), (2, 3), (3, 4)),
+            requests=(),
+            horizon=100,
+            physical=PhysicalConfig(
+                generation_probability=1.0,
+                swap_probability=1.0,
+                memory_capacity=2,
+                node_memory_capacity=4,
+                quantum_distance_m=1.0,
+            ),
+        ))
+
+    @staticmethod
+    def _capacities():
+        capacities = {
+            "link:0-1": 1,
+            "link:1-2": 1,
+            "link:2-3": 1,
+            "link:3-4": 1,
+            "genlane:0-1": 1,
+            "genlane:1-2": 1,
+            "genlane:2-3": 1,
+            "genlane:3-4": 1,
+            "bsm:1": 1,
+            "bsm:2": 1,
+            "bsm:3": 1,
+        }
+        capacities.update({f"memory:{node}": 4 for node in range(5)})
+        return capacities
+
+    def test_logical_only_initial_segments_are_rejected(self):
+        dag = left_deep_path_dag("r", (0, 1))
+        segment = LogicalSegment("initial", "r", 0, 1, 0)
+        with self.assertRaisesRegex(ValueError, "logical-only initial_segments"):
+            SequenceConstructionExecutor(
+                (dag,),
+                self._backend(),
+                self._capacities(),
+                initial_segments=(segment,),
+                horizon_ps=200_000,
+            )
+
+    def test_sequence_generation_is_started_as_one_physical_batch(self):
+        dag = left_deep_path_dag("r", (0, 1, 2))
+        executor = SequenceConstructionExecutor((dag,), self._backend(), self._capacities(), horizon_ps=200_000)
+        generations = executor.ready_operations()
+        self.assertEqual(len(generations), 2)
+        executor.launch(generations)
+        before = executor.snapshot()
+        self.assertEqual(len(before.in_flight), 2)
+        batch = executor.advance_to_next_event()
+        self.assertEqual(len(batch.events), 2)
+        self.assertTrue(all(event.success for event in batch.events))
+        self.assertEqual(len(executor.available_segments()), 2)
+        self.assertEqual(batch.physical_time_ps, executor.physical_time_ps)
+        self.assertEqual(
+            batch.physical_time_ps,
+            executor.snapshot().physical_time_ps,
+        )
+        self.assertEqual(executor.backend.resources()[0].born, batch.physical_time_ps)
+
+    def test_same_path_constructions_have_different_sequence_completion_times(self):
+        route = (0, 1, 2, 3, 4)
+
+        def run(dag):
+            executor = SequenceConstructionExecutor((dag,), self._backend(), self._capacities(), horizon_ps=1_000_000)
+            while executor.ready_operations():
+                executor.launch(executor.ready_operations())
+                executor.advance_to_next_event()
+            return executor
+
+        left = run(left_deep_path_dag("r", route, sequential_generation=True))
+        balanced = run(balanced_path_dag("r", route))
+        self.assertNotEqual(left.event_log[-1].physical_time_ps, balanced.event_log[-1].physical_time_ps)
+        self.assertGreater(left.event_log[-1].physical_time_ps, balanced.event_log[-1].physical_time_ps)
+        self.assertTrue(all(event.success for event in left.event_log + balanced.event_log))
+
+    def test_same_edge_multi_request_generation_uses_distinct_lanes(self):
+        backend = SequenceBackend(EpisodeSpec(
+            seed=103,
+            nodes=(0, 1),
+            edges=((0, 1),),
+            requests=(),
+            horizon=100,
+            physical=PhysicalConfig(
+                generation_probability=1.0,
+                memory_capacity=2,
+                node_memory_capacity=2,
+                max_width=2,
+                quantum_distance_m=1.0,
+            ),
+        ))
+        dags = (
+            left_deep_path_dag("r0", (0, 1)),
+            left_deep_path_dag("r1", (0, 1)),
+        )
+        executor = SequenceConstructionExecutor(
+            dags,
+            backend,
+            {
+                "link:0-1": 2,
+                "genlane:0-1": 2,
+                "memory:0": 2,
+                "memory:1": 2,
+            },
+            horizon_ps=200_000,
+        )
+
+        executor.launch(executor.ready_operations())
+        batch = executor.advance_to_next_event()
+
+        self.assertEqual(len(batch.events), 2)
+        self.assertTrue(all(event.success for event in batch.events))
+        self.assertEqual(
+            {resource.lane for resource in backend.resources()},
+            {0, 1},
+        )
+        self.assertEqual(len(executor.available_segments()), 2)
+
+    def test_generation_batch_rolls_back_if_later_prepare_raises(self):
+        backend = self._backend()
+        before_protocol_counts = {
+            node: len(router.protocols) for node, router in backend.nodes.items()
+        }
+        real_prepare = backend._prepare_generation
+        calls = 0
+
+        def fail_second(*args):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise RuntimeError("injected prepare failure")
+            return real_prepare(*args)
+
+        with patch.object(backend, "_prepare_generation", side_effect=fail_second):
+            with self.assertRaisesRegex(RuntimeError, "injected prepare failure"):
+                backend.begin_generation(
+                    (ResourceClaim(0, 1, 0), ResourceClaim(2, 3, 0)),
+                    "allocation",
+                )
+
+        self.assertFalse(backend.pairs)
+        self.assertEqual(
+            {node: len(router.protocols) for node, router in backend.nodes.items()},
+            before_protocol_counts,
+        )
+        self.assertEqual(backend.node_free_slots(0), 4)
+        self.assertEqual(backend.node_free_slots(1), 4)
+
+    def test_swap_launch_exception_restores_ready_state_and_reservations(self):
+        dag = left_deep_path_dag("r", (0, 1, 2))
+        backend = self._backend()
+        executor = SequenceConstructionExecutor(
+            (dag,), backend, self._capacities(), horizon_ps=200_000
+        )
+        executor.launch(executor.ready_operations())
+        executor.advance_to_next_event()
+        swap = executor.ready_operations()[0]
+        counter_before = backend._counter
+
+        with patch.object(
+            backend._EntanglementSwappingA,
+            "create",
+            side_effect=RuntimeError("injected swap failure"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "injected swap failure"):
+                executor.launch((swap,))
+
+        self.assertEqual(backend._counter, counter_before)
+        self.assertFalse(executor.has_in_flight)
+        self.assertEqual(executor.ready_operations(), (swap,))
+        self.assertNotIn(swap.op_id, dag.started)
+        self.assertNotIn(swap.op_id, dag.dead)
+        self.assertTrue(all(
+            resource.reserved_by is None for resource in backend.resources()
+        ))
+
+    def test_snapshot_tracks_resident_memory_and_releases_swap_inputs(self):
+        dag = left_deep_path_dag("r", (0, 1, 2))
+        backend = self._backend()
+        executor = SequenceConstructionExecutor(
+            (dag,), backend, self._capacities(), horizon_ps=200_000
+        )
+        executor.launch(executor.ready_operations())
+        executor.advance_to_next_event()
+
+        generated = executor.snapshot()
+        self.assertEqual(dict(generated.reservations)["memory:1"], 2)
+        self.assertEqual(dict(generated.reservations)["link:0-1"], 1)
+        self.assertNotIn("genlane:0-1", dict(generated.reservations))
+        backend_state = dict(generated.backend_state)
+        self.assertIn("node_memory", backend_state)
+        self.assertIn("pair_reservations", backend_state)
+        self.assertIn("timeline_pending_event_count", backend_state)
+
+        executor.launch(executor.ready_operations())
+        in_flight = executor.snapshot()
+        self.assertEqual(dict(in_flight.reservations)["bsm:1"], 1)
+        executor.advance_to_next_event()
+        swapped = executor.snapshot()
+        reservations = dict(swapped.reservations)
+        self.assertEqual(reservations["memory:0"], 1)
+        self.assertEqual(reservations["memory:2"], 1)
+        self.assertNotIn("memory:1", reservations)
+        self.assertNotIn("link:0-1", reservations)
+        self.assertNotIn("link:1-2", reservations)
+
+    def test_cross_epoch_launch_is_rejected_by_conservative_backend(self):
+        backend = SequenceBackend(EpisodeSpec(
+            seed=107,
+            nodes=(0, 1, 2, 3, 4),
+            edges=((0, 1), (1, 2), (3, 4)),
+            requests=(),
+            horizon=100,
+            physical=PhysicalConfig(
+                generation_probability=1.0,
+                swap_probability=1.0,
+                node_memory_capacity=4,
+                quantum_distance_m=1.0,
+            ),
+        ))
+        first = left_deep_path_dag("r0", (0, 1, 2))
+        second = left_deep_path_dag("r1", (3, 4))
+        capacities = self._capacities()
+        capacities.update({
+            "link:3-4": 1,
+            "genlane:3-4": 1,
+            "memory:3": 4,
+            "memory:4": 4,
+        })
+        executor = SequenceConstructionExecutor(
+            (first, second), backend, capacities, horizon_ps=200_000
+        )
+        first_generation = tuple(
+            operation for operation in executor.ready_operations()
+            if operation.request_id == "r0"
+        )
+        executor.launch(first_generation)
+        executor.advance_to_next_event()
+        swap = next(
+            operation for operation in executor.dags["r0"].operations
+            if operation.kind == "SWAP"
+        )
+        executor.launch((swap,))
+        second_generation = next(
+            operation for operation in executor.dags["r1"].operations
+            if operation.kind == "GEN"
+        )
+        with self.assertRaisesRegex(ValueError, "operations are in flight"):
+            executor.launch((second_generation,))
+        executor.advance_to_next_event()
+        self.assertFalse(executor.has_in_flight)
+
+    def test_horizon_timeout_settles_all_remaining_operations(self):
+        backend = self._backend()
+        operations = (
+            ConstructionOperation(
+                "short", "r", OperationKind.RELEASE, duration_ps=1
+            ),
+            ConstructionOperation(
+                "late", "r", OperationKind.RELEASE, duration_ps=2
+            ),
+        )
+        executor = SequenceConstructionExecutor(
+            (ConstructionDAG("r", operations),),
+            backend,
+            self._capacities(),
+            horizon_ps=1,
+        )
+        executor.launch(operations)
+        batch = executor.advance_to_next_event()
+        self.assertTrue(batch.terminal)
+        self.assertEqual(len(batch.events), 2)
+        self.assertFalse(executor.has_in_flight)
+        self.assertTrue(executor.terminated)
+        self.assertEqual(
+            {event.failure_cause for event in batch.events},
+            {"", "horizon_timeout"},
+        )
+
+    def test_snapshot_refreshes_logical_fidelity_after_wait(self):
+        backend = self._backend()
+        dag = left_deep_path_dag("r", (0, 1))
+        executor = SequenceConstructionExecutor(
+            (dag,), backend, self._capacities(), horizon_ps=200_000_000
+        )
+        executor.launch(executor.ready_operations())
+        executor.advance_to_next_event()
+        initial = executor.snapshot().segments[0].fidelity
+        executor.wait_until(executor.physical_time_ps + 50_000_000)
+        current = executor.snapshot().segments[0].fidelity
+        self.assertLess(current, initial)
+
+    def test_physical_completion_before_nominal_window_beats_horizon_timeout(self):
+        backend = SequenceBackend(EpisodeSpec(
+            seed=109,
+            nodes=(0, 1),
+            edges=((0, 1),),
+            requests=(),
+            horizon=100,
+            physical=PhysicalConfig(
+                generation_probability=1.0,
+                quantum_distance_m=1000.0,
+            ),
+        ))
+        dag = left_deep_path_dag("r", (0, 1))
+        executor = SequenceConstructionExecutor(
+            (dag,),
+            backend,
+            {
+                "link:0-1": 1,
+                "genlane:0-1": 1,
+                "memory:0": 2,
+                "memory:1": 2,
+            },
+            horizon_ps=20_000_000,
+        )
+        executor.launch(executor.ready_operations())
+
+        batch = executor.advance_to_next_event()
+
+        self.assertTrue(batch.events[0].success)
+        self.assertLess(batch.physical_time_ps, executor.horizon_ps)
+        self.assertEqual(batch.physical_time_ps, executor.snapshot().physical_time_ps)
+
+    def test_launch_rejects_forged_operation_payload(self):
+        dag = left_deep_path_dag("r", (0, 1))
+        backend = self._backend()
+        executor = SequenceConstructionExecutor(
+            (dag,), backend, self._capacities(), horizon_ps=200_000
+        )
+        operation = executor.ready_operations()[0]
+        forged = replace(operation, output_endpoints=(1, 2))
+        with self.assertRaisesRegex(ValueError, "canonical operation"):
+            executor.launch((forged,))
+        self.assertEqual(executor.ready_operations(), (operation,))
+        self.assertFalse(executor.has_in_flight)
+
+    def test_launch_rejects_missing_physical_output_hold(self):
+        operation = left_deep_path_dag("r", (0, 1)).operations[0]
+        forged_dag_operation = replace(operation, output_resource_hold=ResourceDemand())
+        executor = SequenceConstructionExecutor(
+            (ConstructionDAG("r", (forged_dag_operation,)),),
+            self._backend(),
+            self._capacities(),
+            horizon_ps=200_000,
+        )
+        with self.assertRaisesRegex(ValueError, "output resource hold is incomplete"):
+            executor.launch((forged_dag_operation,))
+
+    def test_launch_rejects_physical_output_hold_amount_above_one(self):
+        backend = SequenceBackend(EpisodeSpec(
+            seed=115,
+            nodes=(0, 1),
+            edges=((0, 1),),
+            requests=(),
+            horizon=100,
+            physical=PhysicalConfig(
+                generation_probability=1.0,
+                memory_capacity=2,
+                node_memory_capacity=2,
+                max_width=2,
+                quantum_distance_m=1.0,
+            ),
+        ))
+        first = left_deep_path_dag("r0", (0, 1)).operations[0]
+        second = left_deep_path_dag("r1", (0, 1)).operations[0]
+        second = replace(
+            second,
+            output_resource_hold=ResourceDemand.from_mapping({
+                "link:0-1": 1,
+                "memory:0": 2,
+                "memory:1": 2,
+            }),
+        )
+        capacities = {
+            "link:0-1": 2,
+            "genlane:0-1": 2,
+            "memory:0": 2,
+            "memory:1": 2,
+        }
+        executor = SequenceConstructionExecutor(
+            (ConstructionDAG("r0", (first,)), ConstructionDAG("r1", (second,))),
+            backend,
+            capacities,
+            horizon_ps=200_000,
+        )
+        executor.launch((first,))
+        executor.advance_to_next_event()
+        snapshot_oracle = CapacityFeasibilityOracle.from_snapshot(executor.snapshot())
+        self.assertFalse(snapshot_oracle.check((second,)).feasible)
+        with self.assertRaisesRegex(ValueError, "must reserve exactly one"):
+            executor.launch((second,))
+
+    def test_launch_rejects_nonphysical_swap_output_hold(self):
+        dag = left_deep_path_dag("r", (0, 1, 2))
+        swap = next(operation for operation in dag.operations if operation.kind == OperationKind.SWAP)
+        forged = replace(
+            swap,
+            output_resource_hold=ResourceDemand.from_mapping({
+                "memory:0": 1,
+                "memory:2": 1,
+                "memory:1": 1,
+            }),
+        )
+        dag = ConstructionDAG(
+            "r",
+            tuple(forged if operation.op_id == swap.op_id else operation for operation in dag.operations),
+        )
+        executor = SequenceConstructionExecutor(
+            (dag,), self._backend(), self._capacities(), horizon_ps=200_000
+        )
+        executor.launch(tuple(operation for operation in executor.ready_operations()))
+        executor.advance_to_next_event()
+        with self.assertRaisesRegex(ValueError, "contains non-physical resources"):
+            executor.launch(executor.ready_operations())
+
+    def test_swap_output_endpoints_must_match_physical_outer_nodes(self):
+        dag = left_deep_path_dag("r", (0, 1, 2))
+        swap = next(operation for operation in dag.operations if operation.kind == OperationKind.SWAP)
+        wrong_swap = replace(
+            swap,
+            output_endpoints=(1, 2),
+            output_resource_hold=ResourceDemand.from_mapping({
+                "memory:1": 1,
+                "memory:2": 1,
+            }),
+        )
+        dag = ConstructionDAG(
+            "r",
+            tuple(wrong_swap if operation.op_id == swap.op_id else operation for operation in dag.operations),
+        )
+        executor = SequenceConstructionExecutor(
+            (dag,), self._backend(), self._capacities(), horizon_ps=200_000
+        )
+        generations = tuple(operation for operation in executor.ready_operations())
+        executor.launch(generations)
+        executor.advance_to_next_event()
+        with self.assertRaisesRegex(ValueError, "output endpoints do not match"):
+            executor.launch(executor.ready_operations())
+
+    def test_launch_rejects_cross_request_segment_consumption(self):
+        first = left_deep_path_dag("r0", (0, 1)).operations[0]
+        release = ConstructionOperation(
+            "r1:release", "r1", OperationKind.RELEASE,
+            input_segment_ids=(first.output_segment_id or "",),
+        )
+        executor = SequenceConstructionExecutor(
+            (ConstructionDAG("r0", (first,)), ConstructionDAG("r1", (release,))),
+            self._backend(), self._capacities(), horizon_ps=200_000,
+        )
+        executor.launch((first,))
+        executor.advance_to_next_event()
+        with self.assertRaisesRegex(ValueError, "another request's segment"):
+            executor.launch((release,))
+
+    def test_dynamic_dag_operation_id_collision_is_rejected(self):
+        first = left_deep_path_dag("r0", (0, 1)).operations[0]
+        second = left_deep_path_dag("r1", (2, 3)).operations[0]
+        executor = SequenceConstructionExecutor(
+            (ConstructionDAG("r0", (first,)), ConstructionDAG("r1", (second,))),
+            self._backend(), self._capacities(), horizon_ps=200_000,
+        )
+        executor.dags["r1"].add_operation(
+            replace(second, op_id=first.op_id, output_segment_id="r1:extra")
+        )
+        with self.assertRaisesRegex(ValueError, "operation id is shared"):
+            executor.ready_operations()
+
+    def test_dynamic_dag_output_id_collision_is_rejected(self):
+        first = left_deep_path_dag("r0", (0, 1)).operations[0]
+        second = left_deep_path_dag("r1", (2, 3)).operations[0]
+        executor = SequenceConstructionExecutor(
+            (ConstructionDAG("r0", (first,)), ConstructionDAG("r1", (second,))),
+            self._backend(), self._capacities(), horizon_ps=200_000,
+        )
+        executor.dags["r1"].add_operation(
+            replace(second, op_id="r1:extra", output_segment_id=first.output_segment_id)
+        )
+        with self.assertRaisesRegex(ValueError, "output segment id is shared"):
+            executor.ready_operations()
+
+    def test_declared_duration_is_a_logical_completion_lower_bound(self):
+        backend = self._backend()
+        duration = 2 * backend.generation_duration_ps
+        operation = replace(
+            left_deep_path_dag("r", (0, 1)).operations[0],
+            duration_ps=duration,
+        )
+        executor = SequenceConstructionExecutor(
+            (ConstructionDAG("r", (operation,)),),
+            backend,
+            self._capacities(),
+            horizon_ps=duration + backend.generation_duration_ps,
+        )
+        executor.launch((operation,))
+        batch = executor.advance_to_next_event()
+        self.assertTrue(batch.events[0].success)
+        self.assertGreaterEqual(batch.physical_time_ps, duration)
+        self.assertEqual(batch.physical_time_ps, executor.event_log[-1].physical_time_ps)
+
+    def test_pending_epoch_refreshes_unrelated_segment_fidelity(self):
+        backend = SequenceBackend(EpisodeSpec(
+            seed=113,
+            nodes=(0, 1),
+            edges=((0, 1),),
+            requests=(),
+            horizon=200,
+            physical=PhysicalConfig(
+                generation_probability=1.0,
+                memory_lifetime=1000,
+                quantum_distance_m=1.0,
+            ),
+        ))
+        generation = left_deep_path_dag("r", (0, 1)).operations[0]
+        first_release = ConstructionOperation(
+            "release:short", "r", OperationKind.RELEASE,
+            duration_ps=50_000_000,
+        )
+        second_release = ConstructionOperation(
+            "release:long", "r", OperationKind.RELEASE,
+            duration_ps=100_000_000,
+        )
+        dag = ConstructionDAG("r", (generation, first_release, second_release))
+        executor = SequenceConstructionExecutor(
+            (dag,),
+            backend,
+            {
+                "link:0-1": 1,
+                "genlane:0-1": 1,
+                "memory:0": 2,
+                "memory:1": 2,
+            },
+            horizon_ps=150_000_000,
+        )
+        executor.launch((generation,))
+        executor.advance_to_next_event()
+        initial = executor.snapshot().segments[0].fidelity
+        executor.launch((first_release, second_release))
+        executor.advance_to_next_event()
+        refreshed = executor.snapshot().segments[0].fidelity
+        self.assertLess(refreshed, initial)
+
+    def test_executor_rejects_cross_dag_output_segment_collision(self):
+        first = left_deep_path_dag("r0", (0, 1)).operations[0]
+        second = left_deep_path_dag("r1", (0, 1)).operations[0]
+        first = replace(first, output_segment_id="shared")
+        second = replace(second, output_segment_id="shared")
+        with self.assertRaisesRegex(ValueError, "shared by multiple operations"):
+            SequenceConstructionExecutor(
+                (ConstructionDAG("r0", (first,)), ConstructionDAG("r1", (second,))),
+                self._backend(),
+                self._capacities(),
+                horizon_ps=200_000,
+            )
+
+
+if __name__ == "__main__":
+    unittest.main()

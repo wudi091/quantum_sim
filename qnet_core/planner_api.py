@@ -11,6 +11,21 @@ COMMIT = -1
 
 
 @dataclass(frozen=True)
+class PlanFeedback:
+    """Simulator-neutral result of the preceding allocation/execution round."""
+
+    feedback_id: int
+    time: int
+    phase: str
+    plan_id: str
+    request_id: str
+    reached_node: int
+    accepted: bool
+    succeeded: bool
+    reason: str = ""
+
+
+@dataclass(frozen=True)
 class PlanDescriptor:
     plan_id: str
     request_id: str
@@ -58,6 +73,7 @@ class PlanningSnapshot:
     metrics: dict[str, float]
     phase: str = "primary"
     link_capacities: tuple[dict[str, object], ...] = ()
+    feedback: tuple[PlanFeedback, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.phase:

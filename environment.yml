@@ -1,0 +1,12 @@
+name: quantum-sim
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+      - sequence==1.0.0
+      - numpy
+      - networkx
+      - scipy
+      - tqdm

@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections import defaultdict
 import itertools
 from typing import Iterable
 
 import networkx as nx
 
 from .command_api import ResourceClaim, SwapAction, SwapLane
-from .planner_api import PlanDescriptor, PlanningSnapshot
+from .planner_api import PlanDescriptor, PlanFeedback, PlanningSnapshot
 from .physical_api import PhysicalBackend, PhysicalCapabilities
 from .planning_spec import PlanningSpec, RequestSpec
 
@@ -37,9 +38,15 @@ class SharedRoutingEnv:
         spec: PlanningSpec,
         backend: PhysicalBackend,
         candidate_count: int = 3,
+        request_driven_generation: bool = False,
+        local_candidates: bool = False,
+        best_effort_allocations: bool = False,
     ):
         self.spec = spec
         self.candidate_count = max(1, int(candidate_count))
+        self.request_driven_generation = bool(request_driven_generation)
+        self.local_candidates = bool(local_candidates)
+        self.best_effort_allocations = bool(best_effort_allocations)
         self.graph = nx.Graph()
         self.graph.add_nodes_from(spec.nodes)
         self.graph.add_edges_from(spec.edges)
@@ -70,11 +77,19 @@ class SharedRoutingEnv:
         self.allocation_claims = 0
         self.allocation_successes = 0
         self.released_surplus_pairs = 0
-        self.phase = "allocate" if self.capabilities.max_width > 1 else "primary"
+        self.phase = (
+            "allocate"
+            if self.request_driven_generation or self.capabilities.max_width > 1
+            else "primary"
+        )
         self._active_allocation_ids: set[str] = set()
         self._allocated_pair_ids: set[str] = set()
         self._prepared_time: int | None = None
         self._candidates: dict[str, PlanDescriptor] = {}
+        self._allocation_pair_ids: dict[str, set[str]] = defaultdict(set)
+        self._feedback: tuple[PlanFeedback, ...] = ()
+        self._feedback_counter = 0
+        self.dropped_pairs = 0
 
     @property
     def time(self) -> int:
@@ -106,13 +121,27 @@ class SharedRoutingEnv:
             if not carried and state.frontier != state.spec.source:
                 state.frontier = state.spec.source
         if self.phase == "allocate":
-            self._candidates = self._build_allocation_candidates()
+            self._candidates = (
+                self._build_local_allocation_candidates()
+                if self.local_candidates
+                else self._build_allocation_candidates()
+            )
         elif self.phase == "recover":
-            self._candidates = self._build_recovery_candidates()
+            self._candidates = (
+                self._build_local_recovery_candidates()
+                if self.local_candidates
+                else self._build_recovery_candidates()
+            )
         else:
             self.generated_eprs += len(self.backend.generate_elementary_pairs())
             self._candidates = self._build_candidates()
         self._prepared_time = self.time
+
+    def _fidelity_hop_bound(self, request: RequestSpec) -> int:
+        calculator = getattr(self.backend, "fidelity_hop_bound", None)
+        if calculator is None:
+            return max(1, int(self._initial_hops[request.id]))
+        return int(calculator(request.required_fidelity, request.max_storage_slots))
 
     def _available_pair(self, u: int, v: int) -> str | None:
         matches = [
@@ -198,6 +227,100 @@ class SharedRoutingEnv:
                         break
                 if slot >= self.candidate_count:
                     break
+        return candidates
+
+    def _build_local_allocation_candidates(self) -> dict[str, PlanDescriptor]:
+        """Expose a one-hop request catalogue for local planners.
+
+        Resource acceptance is deliberately decided by the environment after
+        the planner selects a batch.  This is the asynchronous request model
+        from the paper: the planner can see topology and safe bounds, but not
+        the remote node's mutable memory state.
+        """
+        candidates: dict[str, PlanDescriptor] = {}
+        for state in self.requests.values():
+            request = state.spec
+            if not state.active or request.arrival > self.time:
+                continue
+            neighbors = sorted(self.graph.neighbors(state.frontier))
+            slot = 0
+            for neighbor in neighbors:
+                route = (int(state.frontier), int(neighbor))
+                plan_id = f"a{self.time}:{request.id}:{slot}"
+                claim = ResourceClaim(route[0], route[1], 0)
+                candidates[plan_id] = PlanDescriptor(
+                    plan_id=plan_id,
+                    request_id=request.id,
+                    route_nodes=route,
+                    reached_node=route[-1],
+                    elementary_pair_ids=(),
+                    swap_actions=(),
+                    duration=0,
+                    remaining_hops=int(self._distances[neighbor][request.destination]),
+                    completes_request=neighbor == request.destination,
+                    kind="allocation",
+                    width=1,
+                    claims=(claim,),
+                    allocation_id=plan_id,
+                )
+                slot += 1
+            drop_id = f"a{self.time}:{request.id}:drop"
+            candidates[drop_id] = PlanDescriptor(
+                plan_id=drop_id,
+                request_id=request.id,
+                route_nodes=(int(state.frontier),),
+                reached_node=int(state.frontier),
+                elementary_pair_ids=(),
+                swap_actions=(),
+                duration=0,
+                remaining_hops=int(self._distances[state.frontier][request.destination]),
+                completes_request=False,
+                kind="drop",
+                width=1,
+            )
+        return candidates
+
+    def _build_local_recovery_candidates(self) -> dict[str, PlanDescriptor]:
+        candidates: dict[str, PlanDescriptor] = {}
+        for state in self.requests.values():
+            request = state.spec
+            if not state.active or request.arrival > self.time:
+                continue
+            carried = self._carried_ids(state)
+            if len(carried) > 1:
+                carried = carried[:1]
+            pairs_by_neighbor: dict[int, list[str]] = defaultdict(list)
+            for pair_id in sorted(self._allocation_pair_ids.get(request.id, ())):
+                pair = self.backend.resource(pair_id)
+                if pair is None:
+                    continue
+                if state.frontier not in pair.endpoints:
+                    continue
+                neighbor = pair.right if pair.left == state.frontier else pair.left
+                pairs_by_neighbor[int(neighbor)].append(pair_id)
+            slot = 0
+            for neighbor, pair_ids in sorted(pairs_by_neighbor.items()):
+                for pair_id in pair_ids:
+                    route = (int(state.frontier), int(neighbor))
+                    input_ids = list(carried) + [pair_id]
+                    actions = self._compile_actions(
+                        request.id, route, input_ids, bool(carried)
+                    )
+                    plan_id = f"r{self.time}:{request.id}:{slot}"
+                    candidates[plan_id] = PlanDescriptor(
+                        plan_id=plan_id,
+                        request_id=request.id,
+                        route_nodes=route,
+                        reached_node=int(neighbor),
+                        elementary_pair_ids=(pair_id,),
+                        swap_actions=actions,
+                        duration=1,
+                        remaining_hops=int(self._distances[neighbor][request.destination]),
+                        completes_request=neighbor == request.destination,
+                        kind="recovery",
+                        width=1,
+                    )
+                    slot += 1
         return candidates
 
     def _build_recovery_candidates(self) -> dict[str, PlanDescriptor]:
@@ -401,6 +524,9 @@ class SharedRoutingEnv:
                 "carried_pair_ids": self._carried_ids(state),
                 "delivered_pairs": state.delivered_pairs,
                 "demand_pairs": state.spec.demand_pairs,
+                "required_fidelity": state.spec.required_fidelity,
+                "fidelity_hop_bound": self._fidelity_hop_bound(state.spec),
+                "max_storage_slots": state.spec.max_storage_slots,
                 "completed_at": state.completed_at,
                 "expired_at": state.expired_at,
             })
@@ -424,6 +550,7 @@ class SharedRoutingEnv:
             metrics=self.metrics(),
             phase=self.phase,
             link_capacities=link_capacities,
+            feedback=self._feedback,
         )
 
     def _request_remaining_hops(self, state: RequestState) -> float:
@@ -463,37 +590,101 @@ class SharedRoutingEnv:
             return self._commit_allocations(plan_ids)
         return self._commit_execution(plan_ids)
 
+    def _feedback_for(
+        self,
+        plan: PlanDescriptor,
+        *,
+        accepted: bool,
+        succeeded: bool,
+        reason: str,
+    ) -> PlanFeedback:
+        self._feedback_counter += 1
+        return PlanFeedback(
+            feedback_id=self._feedback_counter,
+            time=self.time,
+            phase=self.phase,
+            plan_id=plan.plan_id,
+            request_id=plan.request_id,
+            reached_node=plan.reached_node,
+            accepted=accepted,
+            succeeded=succeeded,
+            reason=reason,
+        )
+
     def _commit_allocations(self, plan_ids: Iterable[str]) -> dict[str, object]:
         self._prepare_slot()
         plans = [self._candidates[plan_id] for plan_id in plan_ids]
         request_ids: set[str] = set()
         claims: set[ResourceClaim] = set()
         for plan in plans:
-            if plan.kind != "allocation":
-                raise ValueError("allocation phase accepts allocation plans only")
+            if plan.kind not in {"allocation", "drop"}:
+                raise ValueError("allocation phase accepts allocation or drop plans only")
             if plan.request_id in request_ids:
                 raise ValueError("a batch may allocate at most one plan per request")
             request_ids.add(plan.request_id)
+            if self.best_effort_allocations or plan.kind == "drop":
+                continue
             overlap = claims & set(plan.claims)
             if overlap:
                 raise ValueError(f"allocation claims overlap: {overlap}")
             claims.update(plan.claims)
-        self.backend.validate_claim_batch(claims)
+        if not self.best_effort_allocations:
+            self.backend.validate_claim_batch(claims)
 
         generated = 0
         self.allocation_claims += sum(len(plan.claims) for plan in plans)
         self._active_allocation_ids = set()
         self._allocated_pair_ids = set()
+        self._allocation_pair_ids = defaultdict(set)
+        feedback: list[PlanFeedback] = []
         for plan in sorted(plans, key=lambda item: item.plan_id):
+            state = self.requests[plan.request_id]
+            if plan.kind == "drop":
+                for pair_id in self._carried_ids(state):
+                    self.backend.discard_pair(pair_id)
+                self._set_carried(state, ())
+                state.frontier = state.spec.source
+                self.dropped_pairs += 1
+                feedback.append(self._feedback_for(
+                    plan, accepted=True, succeeded=True, reason="drop"
+                ))
+                continue
             allocation_id = plan.allocation_id or plan.plan_id
             self._active_allocation_ids.add(allocation_id)
+            accepted = self.backend.can_allocate_claims(plan.claims)
+            if not accepted and self.best_effort_allocations:
+                feedback.append(self._feedback_for(
+                    plan, accepted=False, succeeded=False, reason="resource_rejected"
+                ))
+                continue
             outcomes = self.backend.generate_claimed_pairs(plan.claims, allocation_id)
+            plan_generated = False
             for pair_id in outcomes.values():
                 if pair_id is not None:
                     self._allocated_pair_ids.add(pair_id)
+                    self._allocation_pair_ids[plan.request_id].add(pair_id)
                     generated += 1
+                    plan_generated = True
+            if plan_generated:
+                feedback.append(self._feedback_for(
+                    plan, accepted=True, succeeded=True, reason="accepted"
+                ))
+            else:
+                feedback.append(self._feedback_for(
+                    plan,
+                    accepted=accepted,
+                    succeeded=False,
+                    reason="generation_failed" if accepted else "resource_rejected",
+                ))
+                if accepted and self._carried_ids(state):
+                    for pair_id in self._carried_ids(state):
+                        self.backend.discard_pair(pair_id)
+                    self._set_carried(state, ())
+                    state.frontier = state.spec.source
+                    self.dropped_pairs += 1
         self.generated_eprs += generated
         self.allocation_successes += generated
+        self._feedback = tuple(feedback)
         self.phase = "recover"
         self._prepared_time = None
         self._candidates = {}
@@ -505,6 +696,7 @@ class SharedRoutingEnv:
             "failed_now": 0,
             "expired_now": 0,
             "generated_now": generated,
+            "dropped_pairs_now": sum(item.reason == "drop" for item in feedback),
             "phase": "allocate",
             "phase_after": "recover",
             "metrics": self.metrics(),
@@ -546,6 +738,7 @@ class SharedRoutingEnv:
         batch_duration = 1
         batch_start = self.time
         delivered_now = 0
+        feedback: list[PlanFeedback] = []
         for plan in sorted(plans, key=lambda item: item.plan_id):
             state = self.requests[plan.request_id]
             request_remaining_before = self._request_remaining_hops(state)
@@ -568,10 +761,17 @@ class SharedRoutingEnv:
                     else (lane_result.output_pair_id,)
                 )
             if not output_ids:
+                for pair_id in old_carried:
+                    if self.backend.has_resource(pair_id):
+                        self.backend.discard_pair(pair_id)
                 state.frontier = state.spec.source
                 self._set_carried(state, ())
                 self.failed_plans += 1
                 failed_now += 1
+                self.dropped_pairs += 1
+                feedback.append(self._feedback_for(
+                    plan, accepted=True, succeeded=False, reason="swap_failed"
+                ))
                 delta = request_remaining_before - self._request_remaining_hops(state)
                 progress_hops += delta
                 positive_progress_hops += max(delta, 0.0)
@@ -598,6 +798,12 @@ class SharedRoutingEnv:
                 if state.delivered_pairs >= state.spec.demand_pairs:
                     state.completed_at = finish_time
                     completed_now += 1
+            feedback.append(self._feedback_for(
+                plan,
+                accepted=True,
+                succeeded=True,
+                reason="delivered" if plan.completes_request else "forwarded",
+            ))
             for pair_id in old_carried:
                 if self.backend.has_resource(pair_id) and pair_id not in output_ids:
                     self.backend.discard_pair(pair_id)
@@ -623,6 +829,7 @@ class SharedRoutingEnv:
                     self.released_surplus_pairs += 1
             self._allocated_pair_ids.clear()
             self._active_allocation_ids.clear()
+            self._allocation_pair_ids.clear()
 
         for subslot in range(batch_duration):
             self.backend.advance_slot()
@@ -644,6 +851,7 @@ class SharedRoutingEnv:
             self.phase = "allocate"
         self._prepared_time = None
         self._candidates = {}
+        self._feedback = tuple(feedback)
         potential_after = self.progress_potential()
         return {
             "time": self.time,
@@ -659,6 +867,9 @@ class SharedRoutingEnv:
             "progress_hops_now": progress_hops,
             "positive_progress_hops_now": positive_progress_hops,
             "lost_progress_hops_now": lost_progress_hops,
+            "dropped_pairs_now": sum(
+                item.reason in {"swap_failed"} for item in feedback
+            ),
             "remaining_hops_before": remaining_before,
             "remaining_hops_after_plans": remaining_after_plans,
             "remaining_hops_after": self.remaining_hops(),
@@ -691,6 +902,7 @@ class SharedRoutingEnv:
             "remaining_hops": self.remaining_hops(),
             "progress_potential": self.progress_potential(),
             "delivered_pairs": float(self.delivered_pairs),
+            "dropped_pairs": float(self.dropped_pairs),
             "pair_throughput": self.delivered_pairs / max(self.time, 1),
             "recovery_attempts": float(self.recovery_attempts),
             "recovery_successes": float(self.recovery_successes),

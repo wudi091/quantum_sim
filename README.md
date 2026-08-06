@@ -18,7 +18,8 @@ mutate the backend or advance physical time.
   reproduction utilities.
 - `algorithms/qddca`: Q-DDCA planning adapter.
 - `algorithms/qcast`: Q-CAST planning adapter.
-- `QDDCA`: pristine upstream Q-DDCA reference code based on SimQN.
+- `QDDCA`: upstream Q-DDCA reference code based on SimQN, isolated from the
+  project test suite by a package-level discovery shim.
 - `QCAST`: upstream Kotlin/Maven Q-CAST reference simulator.
 
 The upstream `QDDCA` and `QCAST` directories are references. The runnable

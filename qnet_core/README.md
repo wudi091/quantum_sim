@@ -28,6 +28,13 @@ does not receive SeQUeNCe objects.
 - `runtime.py`: the only module that wires `SharedRoutingEnv` to
   `SequenceBackend`;
 - `gym_env.py`: masked fixed-size observation/action wrapper;
+- `construction_api.py`: neutral operation/DAG/snapshot/event contracts;
+- `construction_decoder.py`: exact canonical resource-feasibility mask;
+- `construction_executor.py`: deterministic contract/reference executor;
+- `sequence_construction_executor.py`: event-driven SeQUeNCe construction
+  adapter with physical timestamps and event feedback;
+- `construction_catalog.py` / `construction_evaluate.py`: bounded joint
+  `(path, construction)` catalogue and baseline evaluator;
 - `evaluate.py`: seeded Q-DDCA/Q-CAST comparison entry point.
 
 ## Planner contract
@@ -48,6 +55,13 @@ time increment.
 The Q-DDCA and Q-CAST implementations live in the top-level `algorithms`
 package. They only score and pack candidates from the snapshot.
 
+Q-DDCA-specific paper reproduction also lives under `algorithms/qddca`; the
+core contains no policy or experiment implementation:
+
+```bash
+python -m algorithms.qddca.reproduce --experiment exp1 --quick
+```
+
 The module dependency is deliberately one-way:
 
 ```text
@@ -56,6 +70,27 @@ planner -> PlanningSnapshot <- SharedRoutingEnv -> PhysicalBackend
                                                    v
 runtime.py composition root -> SequenceBackend -> SeQUeNCe
 ```
+
+The event-driven construction path is separate from the legacy atomic-slot
+environment.  A minimal fixed-plan run is:
+
+```python
+from algorithms.caappo import ShortestPathLeftDeepPolicy
+from qnet_core.construction_catalog import build_route_construction_catalogue
+from qnet_core.construction_evaluate import run_joint_plan_baseline
+
+catalogue = build_route_construction_catalogue(spec.planning, candidate_count=3)
+selection = ShortestPathLeftDeepPolicy().select(catalogue)
+result = run_joint_plan_baseline(spec, selection)
+```
+
+`SequenceConstructionExecutor.snapshot()` is read-only. Generation and swap
+protocols are started through the executor, SeQUeNCe is advanced to the next
+physical event, and outcomes are returned as neutral `ExecutionEvent` values.
+The adapter currently advertises conservative swap concurrency because the
+SeQUeNCe router protocol state is not yet scheduled by a shared BSM arbiter;
+the deterministic executor remains the concurrency oracle for DAG and mask
+tests.
 
 `SharedRoutingEnv` accepts only `PlanningSpec` plus an injected
 `PhysicalBackend`. It never imports `SequenceBackend`, reads `PhysicalConfig`,

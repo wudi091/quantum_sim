@@ -29,5 +29,6 @@ Thumbs.db
 .claude/
 ideaspark_run/
 idea-stage/
+refine-logs/
 scripts/
 .pi-subagents/
