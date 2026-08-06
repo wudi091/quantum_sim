@@ -54,6 +54,14 @@ class SequenceConstructionExecutor:
         self.backend = backend
         self.capacities = {str(key): int(value) for key, value in capacities.items()}
         self.oracle = CapacityFeasibilityOracle(self.capacities)
+        self._request_required_fidelity = {
+            request.id: float(request.required_fidelity)
+            for request in backend.spec.requests
+        }
+        self._request_endpoints = {
+            request.id: frozenset((request.source, request.destination))
+            for request in backend.spec.requests
+        }
         self.horizon_ps = int(
             backend.spec.horizon * backend.spec.physical.slot_duration_ps
             if horizon_ps is None else horizon_ps
@@ -77,6 +85,24 @@ class SequenceConstructionExecutor:
         self._counter = 0
         self._terminated = False
         self.event_log: list[ExecutionEvent] = []
+
+    def _effective_required_fidelity(self, operation: ConstructionOperation) -> float:
+        """Apply the request-level delivery threshold to terminal outputs.
+
+        A repair DAG is supplied by the planner, so its DTO threshold cannot
+        be trusted as the request's service-level contract.  Intermediate
+        segments keep their operation-local threshold; only an output whose
+        endpoints equal the request endpoints is a terminal delivery gate.
+        """
+
+        request_threshold = self._request_required_fidelity.get(operation.request_id)
+        if request_threshold is None or operation.output_endpoints is None:
+            return operation.required_fidelity
+        if frozenset(operation.output_endpoints) != self._request_endpoints.get(
+            operation.request_id, frozenset()
+        ):
+            return operation.required_fidelity
+        return max(operation.required_fidelity, request_threshold)
 
     @property
     def physical_time_ps(self) -> int:
@@ -138,12 +164,18 @@ class SequenceConstructionExecutor:
             for pending in self._pending.values()
             for segment_id in pending.operation.input_segment_ids
         }
+        physically_owned = {
+            segment_id
+            for pending in self._pending.values()
+            if pending.operation.kind in {OperationKind.GEN, OperationKind.SWAP}
+            for segment_id in pending.operation.input_segment_ids
+        }
         # Never synchronize while a protocol owns its input pair.  Use the
         # backend's read-only view for unrelated pairs so expiration remains
         # visible during another operation's in-flight window.
         if self._pending:
             for segment_id, physical_id in tuple(self._physical_by_segment.items()):
-                if segment_id in consumed:
+                if segment_id in physically_owned:
                     continue
                 resource = self.backend.resource_without_sync(physical_id)
                 if resource is None:
@@ -203,6 +235,23 @@ class SequenceConstructionExecutor:
             events.append(event)
             self.event_log.append(event)
         return tuple(events)
+
+    def _next_expiration_time_ps(self) -> int | None:
+        """Return the earliest physical memory expiration after ``now``."""
+
+        state = dict(self.backend.construction_state())
+        raw_events = state.get("expiration_events", ())
+        times = []
+        for item in raw_events:
+            if len(item) < 2:
+                continue
+            try:
+                timestamp = int(item[1])
+            except (TypeError, ValueError):
+                continue
+            if timestamp > self.physical_time_ps:
+                times.append(timestamp)
+        return min(times) if times else None
 
     def available_segments(self) -> tuple[LogicalSegment, ...]:
         return tuple(
@@ -651,7 +700,15 @@ class SequenceConstructionExecutor:
             if resource is None:
                 success = False
                 failure_cause = "physical_output_missing"
-            elif resource.fidelity < operation.required_fidelity:
+            elif any(
+                self._usage().get(resource_id, 0) + amount
+                > self.capacities.get(resource_id, 0)
+                for resource_id, amount in operation.output_resource_hold.items()
+            ):
+                self.backend.discard_pair(physical_pair_id)
+                success = False
+                failure_cause = "post_completion_capacity"
+            elif resource.fidelity < self._effective_required_fidelity(operation):
                 self.backend.discard_pair(physical_pair_id)
                 success = False
                 failure_cause = "fidelity_reject"
@@ -707,7 +764,7 @@ class SequenceConstructionExecutor:
         self.event_log.append(event)
         return event
 
-    def advance_to_next_event(self) -> ExecutionEventBatch:
+    def advance_to_next_event(self, boundary_ps: int | None = None) -> ExecutionEventBatch:
         if self._terminated:
             return ExecutionEventBatch(self.physical_time_ps, (), 0, terminal=True)
         self._available_segment_ids()
@@ -724,7 +781,16 @@ class SequenceConstructionExecutor:
             return ExecutionEventBatch(self.physical_time_ps, (), 0, terminal=True)
         pending_all = tuple(self._pending.values())
         nominal_next_time = min(pending.completion_time_ps for pending in pending_all)
-        target_time = min(nominal_next_time, self.horizon_ps)
+        boundaries = [nominal_next_time, self.horizon_ps]
+        expiration_time = self._next_expiration_time_ps()
+        if expiration_time is not None:
+            boundaries.append(expiration_time)
+        if boundary_ps is not None:
+            boundary_ps = int(boundary_ps)
+            if boundary_ps < self.physical_time_ps or boundary_ps > self.horizon_ps:
+                raise ValueError("boundary time must lie in [current_time, horizon]")
+            boundaries.append(boundary_ps)
+        target_time = min(boundaries)
         previous = self.physical_time_ps
         self.backend.run_prepared_protocols(
             (
@@ -775,7 +841,8 @@ class SequenceConstructionExecutor:
                 if future_logical:
                     logical_target = min(future_logical)
                     self.backend.advance_physical_to(
-                        min(logical_target, self.horizon_ps), synchronize=False
+                        min(logical_target, target_time, self.horizon_ps),
+                        synchronize=False,
                     )
             else:
                 self.backend.advance_physical_to(target_time, synchronize=False)
@@ -859,6 +926,16 @@ class SequenceConstructionExecutor:
             if owner is not None:
                 raise ValueError(f"repair operation id already exists: {operation.op_id}")
             self._validate_output_hold(operation)
+            if (
+                operation.output_endpoints is not None
+                and frozenset(operation.output_endpoints)
+                == self._request_endpoints.get(request_id, frozenset())
+                and operation.required_fidelity
+                < self._request_required_fidelity.get(request_id, operation.required_fidelity)
+            ):
+                raise ValueError(
+                    "repair terminal operation cannot lower request required_fidelity"
+                )
             if any(predecessor in dag.dead for predecessor in operation.predecessors):
                 raise ValueError("repair operation cannot depend on a dead predecessor")
             for segment_id in operation.input_segment_ids:
@@ -873,6 +950,43 @@ class SequenceConstructionExecutor:
                     )
         dag.repair(operations)
         self._operation_owners.update({operation.op_id: request_id for operation in operations})
+
+    def repair_options(
+        self, request_id: str
+    ) -> tuple[tuple[ConstructionOperation, ...], ...]:
+        if request_id not in self.dags:
+            raise KeyError(request_id)
+        dag = self.dags[request_id]
+        available = self._available_segment_ids()
+        next_version = dag.version + 1
+        ordinal = max((operation.ordinal for operation in dag.operations), default=0) + 1
+        options: list[tuple[ConstructionOperation, ...]] = []
+        for dead in sorted(
+            (operation for operation in dag.operations if operation.op_id in dag.dead),
+            key=lambda operation: operation.canonical_key,
+        ):
+            if not set(dead.input_segment_ids).issubset(available):
+                continue
+            retry = replace(
+                dead,
+                op_id=f"{dead.op_id}:repair:{next_version}",
+                output_segment_id=(
+                    None
+                    if dead.output_segment_id is None
+                    else f"{dead.output_segment_id}:repair:{next_version}"
+                ),
+                predecessors=tuple(
+                    predecessor
+                    for predecessor in dead.predecessors
+                    if predecessor in dag.completed
+                ),
+                ordinal=ordinal,
+                dag_version=next_version,
+                required_fidelity=self._effective_required_fidelity(dead),
+            )
+            ordinal += 1
+            options.append((retry,))
+        return tuple(options)
 
     def release_segment(self, segment_id: str) -> LogicalSegment | None:
         segment = self._segments.get(segment_id)
@@ -915,6 +1029,11 @@ class SequenceConstructionExecutor:
             raise RuntimeError("wait_until cannot skip in-flight operations")
         if target_time_ps < self.physical_time_ps or target_time_ps > self.horizon_ps:
             raise ValueError("target time must lie in [current_time, horizon]")
+        expiration_time = self._next_expiration_time_ps()
+        target_time_ps = min(
+            target_time_ps,
+            expiration_time if expiration_time is not None else target_time_ps,
+        )
         duration = target_time_ps - self.physical_time_ps
         self.backend.advance_physical_to(target_time_ps)
         self._available_segment_ids()

@@ -21,7 +21,7 @@
 - `qnet_core`、`algorithms`、`qcast_paper` 测试集均通过；
 - 未发现已撤销的 `AllocationRequest`、`AllocationResult` 或 `generate_allocation_batch` 残留引用。
 
-这些结果证明当前 construction-aware event foundation 可以运行，并且 SeQUeNCe 是唯一物理后端；它们不等价于已经完成多 demand-pair、在线到达/expiration/repair 或生产级 PPO。
+这些结果证明当前 construction-aware event foundation 可以运行，并且 SeQUeNCe 是唯一物理后端；多 demand-pair 交付、到达/deadline/expiration 的事件边界和基础 retry/drop repair head 已有可运行实现，但这仍不等价于生产级 PPO、完整 SWAP repair 或已完成论文实验。
 
 ## 2. Problem Anchor
 

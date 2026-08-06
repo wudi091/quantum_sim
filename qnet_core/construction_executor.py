@@ -6,7 +6,7 @@ resources.  It is a test/reference backend, not a replacement for SeQUeNCe.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import heapq
 import random
 from typing import Iterable, Mapping
@@ -243,6 +243,28 @@ class ConstructionDAGExecutor:
                     raise ValueError(
                         "operation cannot consume another request's segment"
                     )
+            if operation.kind == OperationKind.SWAP:
+                # The neutral oracle keeps a permissive malformed-SWAP branch
+                # for failure/repair contract tests.  Whenever two logical
+                # inputs are present, enforce the same outer-endpoint
+                # invariant as the SeQUeNCe adapter.
+                if len(operation.input_segment_ids) == 2:
+                    left = self.segments.get(operation.input_segment_ids[0])
+                    right = self.segments.get(operation.input_segment_ids[1])
+                    if left is None or right is None:
+                        raise ValueError("SWAP input segment is not available")
+                    intersection = set(left.endpoints) & set(right.endpoints)
+                    if len(intersection) != 1:
+                        raise ValueError("SWAP inputs must share exactly one middle node")
+                    middle = next(iter(intersection))
+                    expected_outer = {
+                        next(node for node in left.endpoints if node != middle),
+                        next(node for node in right.endpoints if node != middle),
+                    }
+                    if set(operation.output_endpoints or ()) != expected_outer:
+                        raise ValueError(
+                            f"SWAP output endpoints do not match logical outer endpoints: {operation.op_id}"
+                        )
         result = self.oracle.check(operations)
         if not result.feasible:
             raise ValueError(result.reason)
@@ -326,6 +348,52 @@ class ConstructionDAGExecutor:
                 output_id = operation.output_segment_id
                 fidelity = min((segment.fidelity for segment in input_segments), default=1.0)
                 output_fidelity = fidelity
+                if output_fidelity < operation.required_fidelity:
+                    cause = "fidelity_reject"
+                    dag.mark_dead(operation.op_id)
+                    event = ExecutionEvent(
+                        event_id=pending.event_id,
+                        operation_id=operation.op_id,
+                        request_id=operation.request_id,
+                        attempt_id=pending.attempt_id,
+                        event_kind=operation.kind.lower(),
+                        physical_time_ps=self.physical_time_ps,
+                        success=False,
+                        failure_cause=cause,
+                        consumed_segment_ids=consumed,
+                        surviving_segment_ids=tuple(sorted(self._available_segments())),
+                        output_segment_id=None,
+                        output_fidelity=output_fidelity,
+                        released_resources=pending.reserved.entries,
+                        in_flight_operation_ids=tuple(sorted(self._in_flight)),
+                    )
+                    self.event_log.append(event)
+                    return event
+                if any(
+                    self._usage().get(resource_id, 0) + amount
+                    > self.capacities.get(resource_id, 0)
+                    for resource_id, amount in operation.output_resource_hold.items()
+                ):
+                    cause = "post_completion_capacity"
+                    dag.mark_dead(operation.op_id)
+                    event = ExecutionEvent(
+                        event_id=pending.event_id,
+                        operation_id=operation.op_id,
+                        request_id=operation.request_id,
+                        attempt_id=pending.attempt_id,
+                        event_kind=operation.kind.lower(),
+                        physical_time_ps=self.physical_time_ps,
+                        success=False,
+                        failure_cause=cause,
+                        consumed_segment_ids=consumed,
+                        surviving_segment_ids=tuple(sorted(self._available_segments())),
+                        output_segment_id=None,
+                        output_fidelity=output_fidelity,
+                        released_resources=pending.reserved.entries,
+                        in_flight_operation_ids=tuple(sorted(self._in_flight)),
+                    )
+                    self.event_log.append(event)
+                    return event
                 self.segments[output_id] = LogicalSegment(
                     output_id,
                     operation.request_id,
@@ -361,13 +429,23 @@ class ConstructionDAGExecutor:
         self.event_log.append(event)
         return event
 
-    def advance_to_next_event(self) -> ExecutionEventBatch:
+    def advance_to_next_event(self, boundary_ps: int | None = None) -> ExecutionEventBatch:
         if self._terminated:
             return ExecutionEventBatch(self.physical_time_ps, (), 0, terminal=True)
         if not self._heap:
             self.terminate()
             return ExecutionEventBatch(self.physical_time_ps, (), 0, terminal=True)
         next_time = min(self._heap[0][0], self.horizon_ps)
+        if boundary_ps is not None:
+            boundary_ps = int(boundary_ps)
+            if boundary_ps < self.physical_time_ps or boundary_ps > self.horizon_ps:
+                raise ValueError("boundary time must lie in [current_time, horizon]")
+            if self.physical_time_ps < boundary_ps < next_time:
+                duration = boundary_ps - self.physical_time_ps
+                self.physical_time_ps = boundary_ps
+                return ExecutionEventBatch(
+                    self.physical_time_ps, (), duration, terminal=False
+                )
         duration = max(0, next_time - self.physical_time_ps)
         self.physical_time_ps = next_time
         pending: list[_Pending] = []
@@ -465,6 +543,42 @@ class ConstructionDAGExecutor:
                     )
         self.dags[request_id].repair(operations)
         self._operation_owners.update({operation.op_id: request_id for operation in operations})
+
+    def repair_options(
+        self, request_id: str
+    ) -> tuple[tuple[ConstructionOperation, ...], ...]:
+        if request_id not in self.dags:
+            raise KeyError(request_id)
+        dag = self.dags[request_id]
+        available = self._available_segments()
+        next_version = dag.version + 1
+        ordinal = max((operation.ordinal for operation in dag.operations), default=0) + 1
+        options: list[tuple[ConstructionOperation, ...]] = []
+        for dead in sorted(
+            (operation for operation in dag.operations if operation.op_id in dag.dead),
+            key=lambda operation: operation.canonical_key,
+        ):
+            if not set(dead.input_segment_ids).issubset(available):
+                continue
+            retry = replace(
+                dead,
+                op_id=f"{dead.op_id}:repair:{next_version}",
+                output_segment_id=(
+                    None
+                    if dead.output_segment_id is None
+                    else f"{dead.output_segment_id}:repair:{next_version}"
+                ),
+                predecessors=tuple(
+                    predecessor
+                    for predecessor in dead.predecessors
+                    if predecessor in dag.completed
+                ),
+                ordinal=ordinal,
+                dag_version=next_version,
+            )
+            ordinal += 1
+            options.append((retry,))
+        return tuple(options)
 
     def release_segment(self, segment_id: str) -> LogicalSegment | None:
         segment = self.segments.get(segment_id)

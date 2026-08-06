@@ -61,6 +61,86 @@ class JointConstructionBatchEnv:
         self._core: ConstructionBatchEnv | None = None
         self.selected: dict[str, RouteConstructionCandidate] = {}
         self._repairable: set[str] = set()
+        self._admission_order: tuple[str, ...] = tuple(
+            sorted(request.id for request in spec.requests)
+        )
+        self._admission_index = 0
+        self._admission_preview_usage: dict[str, int] = {}
+
+    def _admission_capacities(self) -> dict[str, int]:
+        capacities: dict[str, int] = {}
+        for raw_u, raw_v in self.spec.edges:
+            u, v = sorted((raw_u, raw_v))
+            capacities[f"link:{u}-{v}"] = self.spec.physical.memory_capacity
+            capacities[f"genlane:{u}-{v}"] = self.spec.physical.max_width
+        for node in self.spec.nodes:
+            capacities[f"bsm:{node}"] = 1
+            degree = sum(node in edge for edge in self.spec.edges)
+            capacities[f"memory:{node}"] = (
+                self.spec.physical.node_memory_capacity
+                if self.spec.physical.node_memory_capacity is not None
+                else max(1, degree * self.spec.physical.memory_capacity)
+            )
+        return capacities
+
+    @staticmethod
+    def _candidate_footprint(candidate: RouteConstructionCandidate) -> dict[str, int]:
+        """Conservative per-resource footprint used only for admission masking."""
+
+        footprint: dict[str, int] = {}
+        for operation in candidate.dag.operations:
+            for resource, amount in operation.resource_demand.items():
+                footprint[resource] = max(footprint.get(resource, 0), amount)
+            for resource, amount in operation.output_resource_hold.items():
+                footprint[resource] = max(footprint.get(resource, 0), amount)
+        return footprint
+
+    def _admission_observation(self) -> dict[str, object]:
+        next_request = (
+            self._admission_order[self._admission_index]
+            if self._admission_index < len(self._admission_order)
+            else None
+        )
+        legal = {
+            request_id: tuple(candidate.candidate_id for candidate in values)
+            for request_id, values in self._by_request.items()
+        }
+        if next_request is not None:
+            legal[next_request] = tuple(
+                candidate.candidate_id
+                for candidate in self.legal_admission_candidates(next_request)
+            )
+        return {
+            "request_order": self._admission_order,
+            "next_request_id": next_request,
+            "admission_index": self._admission_index,
+            "selected_candidate_ids": tuple(
+                (request_id, self.selected[request_id].candidate_id)
+                for request_id in self._admission_order
+                if request_id in self.selected
+            ),
+            "preview_usage": tuple(sorted(self._admission_preview_usage.items())),
+            "legal_candidate_ids": tuple(
+                (request_id, tuple(candidate_ids))
+                for request_id, candidate_ids in sorted(legal.items())
+            ),
+        }
+
+    def legal_admission_candidates(
+        self, request_id: str
+    ) -> tuple[RouteConstructionCandidate, ...]:
+        if request_id not in self._by_request:
+            raise KeyError(request_id)
+        capacities = self._admission_capacities()
+        legal = []
+        for candidate in self._by_request[request_id]:
+            footprint = self._candidate_footprint(candidate)
+            if all(
+                amount <= capacities.get(resource, 0)
+                for resource, amount in footprint.items()
+            ):
+                legal.append(candidate)
+        return tuple(legal)
 
     @property
     def core(self) -> ConstructionBatchEnv:
@@ -77,6 +157,8 @@ class JointConstructionBatchEnv:
         self._core = None
         self.selected = {}
         self._repairable = set()
+        self._admission_index = 0
+        self._admission_preview_usage = {}
         return JointStep(
             JointPhase.ADMISSION,
             None,
@@ -84,7 +166,92 @@ class JointConstructionBatchEnv:
             self._by_request,
             0.0,
             False,
-            {"event_kind": "reset", "duration_ps": 0},
+            {
+                "event_kind": "reset",
+                "duration_ps": 0,
+                "admission_observation": self._admission_observation(),
+            },
+        )
+
+    def select_admission(
+        self,
+        request_id: str,
+        value: RouteConstructionCandidate | str,
+    ) -> JointStep:
+        """Commit one autoregressive route/construction choice."""
+
+        if self.phase != JointPhase.ADMISSION:
+            raise RuntimeError("admission selection is only legal in ADMISSION phase")
+        if self._admission_index >= len(self._admission_order):
+            raise RuntimeError("all admission choices have already been selected")
+        expected_request = self._admission_order[self._admission_index]
+        if request_id != expected_request:
+            raise ValueError(
+                f"admission choices must follow canonical order; expected {expected_request}"
+            )
+        options = self._by_request[request_id]
+        if isinstance(value, str):
+            matches = [candidate for candidate in options if candidate.candidate_id == value]
+            if len(matches) != 1:
+                raise ValueError(f"unknown candidate for request {request_id}: {value}")
+            candidate = matches[0]
+        else:
+            candidate = value
+            if candidate not in options:
+                raise ValueError(f"candidate does not belong to request {request_id}")
+        if candidate not in self.legal_admission_candidates(request_id):
+            raise ValueError(
+                f"candidate is infeasible under current admission preview: {candidate.candidate_id}"
+            )
+        self.selected[request_id] = candidate
+        for resource, amount in self._candidate_footprint(candidate).items():
+            self._admission_preview_usage[resource] = (
+                self._admission_preview_usage.get(resource, 0) + amount
+            )
+        self._admission_index += 1
+        if self._admission_index < len(self._admission_order):
+            return JointStep(
+                JointPhase.ADMISSION,
+                None,
+                (),
+                self._by_request,
+                0.0,
+                False,
+                {
+                    "event_kind": "admission_choice",
+                    "duration_ps": 0,
+                    "selected_candidate": candidate.candidate_id,
+                    "admission_observation": self._admission_observation(),
+                },
+            )
+        return self._commit_admission()
+
+    def _commit_admission(self) -> JointStep:
+        self._core = ConstructionBatchEnv(
+            self.spec,
+            self.selected,
+            alpha=self.alpha,
+            beta=self.beta,
+            chi=self.chi,
+            auto_settle_failures=False,
+        )
+        core_step = self._core.reset()
+        self.phase = JointPhase.TERMINAL if core_step.terminated else JointPhase.EXECUTION
+        return JointStep(
+            self.phase,
+            core_step.observation,
+            core_step.ready_operations,
+            {},
+            0.0,
+            core_step.terminated,
+            {
+                "event_kind": "admission",
+                "duration_ps": 0,
+                "selected_candidates": tuple(
+                    (request_id, self.selected[request_id].candidate_id)
+                    for request_id in self._admission_order
+                ),
+            },
         )
 
     def admit(
@@ -112,33 +279,13 @@ class JointConstructionBatchEnv:
                 if candidate not in options:
                     raise ValueError(f"candidate does not belong to request {request_id}")
             chosen[request_id] = candidate
-        self.selected = chosen
-        self._core = ConstructionBatchEnv(
-            self.spec,
-            chosen,
-            alpha=self.alpha,
-            beta=self.beta,
-            chi=self.chi,
-            auto_settle_failures=False,
-        )
-        core_step = self._core.reset()
-        self.phase = JointPhase.TERMINAL if core_step.terminated else JointPhase.EXECUTION
-        return JointStep(
-            self.phase,
-            core_step.observation,
-            core_step.ready_operations,
-            {},
-            0.0,
-            core_step.terminated,
-            {
-                "event_kind": "admission",
-                "duration_ps": 0,
-                "selected_candidates": tuple(
-                    (request_id, chosen[request_id].candidate_id)
-                    for request_id in sorted(chosen)
-                ),
-            },
-        )
+        self.selected = {}
+        self._admission_index = 0
+        self._admission_preview_usage = {}
+        state = self.reset()
+        for request_id in self._admission_order:
+            state = self.select_admission(request_id, selection[request_id])
+        return state
 
     def step(self, operations: Sequence[ConstructionOperation] = ()) -> JointStep:
         if self.phase == JointPhase.ADMISSION:
@@ -150,12 +297,32 @@ class JointConstructionBatchEnv:
         core_step = self.core.step(operations)
         settled_ids = set(core_step.info.get("settled_request_ids", ()))
         self._repairable.difference_update(settled_ids)
+        # Expiration is a physical event boundary.  A request may still have
+        # an unrelated operation in flight from the same launch epoch; drain
+        # that suffix before exposing REPAIR/DROP, because repair is only
+        # legal on a quiescent request prefix.
+        expiration_request_ids = tuple(
+            core_step.info.get("observed_expiration_request_ids", ())
+        )
+        if (
+            expiration_request_ids
+            and self.core.executor.has_in_flight
+            and not core_step.terminated
+        ):
+            while self.core.executor.has_in_flight:
+                core_step = self.core.step(())
+                settled_ids.update(
+                    core_step.info.get("settled_request_ids", ())
+                )
+                self._repairable.difference_update(settled_ids)
         if core_step.terminated:
             self.phase = JointPhase.TERMINAL
-        elif core_step.info.get("observed_failures_now", 0):
+        elif core_step.info.get("observed_failures_now", 0) or expiration_request_ids:
             self._repairable.update(
                 request_id
-                for request_id in core_step.info.get("observed_failure_request_ids", ())
+                for request_id in tuple(core_step.info.get(
+                    "observed_failure_request_ids", ()
+                )) + expiration_request_ids
                 if request_id not in settled_ids
             )
             # A failed event can share a launch epoch with longer operations
@@ -181,6 +348,15 @@ class JointConstructionBatchEnv:
     @property
     def repairable_requests(self) -> tuple[str, ...]:
         return tuple(sorted(self._repairable))
+
+    def repair_options(
+        self, request_id: str
+    ) -> tuple[tuple[ConstructionOperation, ...], ...]:
+        if self.phase != JointPhase.REPAIR:
+            raise RuntimeError("repair options are only available in REPAIR phase")
+        if request_id not in self._repairable:
+            raise ValueError("request is not awaiting repair")
+        return self.core.repair_options(request_id)
 
     def repair(
         self,
@@ -237,6 +413,7 @@ class JointConstructionBatchEnv:
         if self._core is None:
             return {
                 "completed_requests": 0.0,
+                "delivered_pairs": 0.0,
                 "completion_rate": 0.0,
                 "censored_flow_time_ps": 0.0,
                 "risk_count": 0.0,

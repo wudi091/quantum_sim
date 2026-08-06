@@ -25,6 +25,19 @@ Implemented and tested:
   checked against post-completion capacity and the exact physical pair schema;
   SWAP outer endpoints and request ownership are validated; operation/output
   IDs are revalidated globally even after direct DAG mutation or repair.
+- sequential multi-pair delivery is compiled into one request DAG with fresh
+  operation/segment IDs and explicit intermediate RELEASE operations; the
+  construction evaluator reports delivered pairs and supports demand_pairs>1.
+- request-level fidelity is enforced at the SeQUeNCe terminal delivery gate,
+  again at neutral settlement, and cannot be weakened by a repair DAG.
+- the event boundary is the minimum of operation completion, SeQUeNCe memory
+  expiration, request arrival, deadline, and horizon; expiration is stamped at
+  its physical time and deadlines appear as neutral boundary events. Arrival
+  is intentionally a boundary-only transition because it changes eligibility
+  but has no physical success/failure outcome.
+- admission is autoregressive in canonical request order with a preview state
+  and legal candidate mask; the reference CAAPPO also has a retry/drop repair
+  head whose retry options are generated from the surviving DAG prefix.
 
 The current SeQUeNCe capability declaration is intentionally conservative:
 inter-epoch launch and mixed physical operation concurrency are rejected until
@@ -38,17 +51,18 @@ initial segments for contract tests.
 
 Remaining paper-complete gates:
 
-- demand_pairs/multi-lane end-to-end delivery in the construction evaluator;
-- one unified event queue for arrivals, deadlines, expiration, and online repair;
+- richer repair generation for failed SWAP branches and an independently
+  audited physical scheduler for inter-epoch/mixed operation concurrency;
 - a high-performance autodiff PPO implementation with GAE and a constraint
   critic; the current trainer is a NumPy reference implementation;
 - deterministic small-instance oracle, multi-seed confidence intervals,
   ablations, and the baseline experiment harness.
 
 This is a runnable construction-aware event foundation and a NumPy reference
-CAAPPO, not yet a complete CCFA paper system. In particular, multi-pair
-delivery, unified online arrivals/expiration/repair, and production-grade PPO
-remain outside the current claim.
+CAAPPO, not yet a complete CCFA paper system. The multi-pair evaluator,
+request-level fidelity gate, and event-boundary semantics are implemented;
+production-grade PPO, oracle-backed experiments, and statistically supported
+paper claims remain outside the current claim.
 
 Current regression commands, using the Conda environment
 `D:\\software\\miniconda3\\envs\\qnet312` (Python 3.12.13, SeQUeNCe 1.0.0):

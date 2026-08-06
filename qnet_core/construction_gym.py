@@ -44,9 +44,11 @@ class ConstructionBatchEnv:
         self.chi = float(chi)
         self.auto_settle_failures = bool(auto_settle_failures)
         self._executor: ConstructionDAGExecutor | object | None = None
-        self._terminal_segments: dict[str, str] = {}
+        self._terminal_segments: dict[str, tuple[str, ...]] = {}
+        self._delivered_terminal_segments: dict[str, set[str]] = {}
         self._settled: dict[str, RequestSettlement] = {}
         self._event_log: list[ExecutionEvent] = []
+        self._boundary_event_counter = 0
         self._last_time_ps = 0
         self._flow_cost_ps = 0
 
@@ -78,11 +80,15 @@ class ConstructionBatchEnv:
             tuple(self.selected_candidates[request.id].dag for request in self.spec.requests),
         )
         self._terminal_segments = {
-            request.id: self.selected_candidates[request.id].terminal_segment_id
+            request.id: self.selected_candidates[request.id].all_terminal_segment_ids
             for request in self.spec.requests
+        }
+        self._delivered_terminal_segments = {
+            request.id: set() for request in self.spec.requests
         }
         self._settled = {}
         self._event_log = []
+        self._boundary_event_counter = 0
         self._last_time_ps = self.time_ps
         self._flow_cost_ps = 0
         return self._step_result(0.0, False, {"event_kind": "reset"})
@@ -119,6 +125,35 @@ class ConstructionBatchEnv:
         failed: list[str] = []
         observed_failures: list[str] = []
         event_time = self.time_ps
+
+        def settle_deadline(request_id: str, deadline: int) -> None:
+            self._boundary_event_counter += 1
+            snapshot = self.executor.snapshot()
+            event = ExecutionEvent(
+                event_id=f"deadline-{self._boundary_event_counter:08d}",
+                operation_id=f"{request_id}:deadline",
+                request_id=request_id,
+                attempt_id=f"{request_id}:deadline:{deadline}",
+                event_kind="deadline",
+                physical_time_ps=deadline,
+                success=False,
+                failure_cause="deadline",
+                in_flight_operation_ids=tuple(
+                    item.operation_id for item in snapshot.in_flight
+                ),
+            )
+            self._event_log.append(event)
+            self._event_log.sort(
+                key=lambda item: (item.physical_time_ps, item.event_id)
+            )
+            self._settled[request_id] = RequestSettlement(
+                request_id,
+                self._arrival_ps(request_id),
+                deadline,
+                False,
+            )
+            failed.append(request_id)
+
         for request in self.spec.requests:
             if request.id in self._settled:
                 continue
@@ -127,23 +162,51 @@ class ConstructionBatchEnv:
                 deadline is not None
                 and interval_start_ps < deadline < event_time
             ):
-                self._settled[request.id] = RequestSettlement(
-                    request.id,
-                    self._arrival_ps(request.id),
-                    deadline,
-                    False,
-                )
-                failed.append(request.id)
+                settle_deadline(request.id, deadline)
         for event in events:
             if event.request_id in self._settled:
                 continue
-            terminal = (
-                event.output_segment_id
-                == self._terminal_segments.get(event.request_id)
-            )
+            terminal_ids = self._terminal_segments.get(event.request_id, ())
+            terminal = event.output_segment_id in terminal_ids
             if event.success and terminal:
+                request = next(
+                    request for request in self.spec.requests
+                    if request.id == event.request_id
+                )
+                if (
+                    event.output_fidelity is None
+                    or float(event.output_fidelity) + 1e-12 < request.required_fidelity
+                ):
+                    observed_failures.append(event.request_id)
+                    if self.auto_settle_failures:
+                        self._settled[event.request_id] = RequestSettlement(
+                            event.request_id,
+                            self._arrival_ps(event.request_id),
+                            event.physical_time_ps,
+                            False,
+                        )
+                        failed.append(event.request_id)
+                    continue
                 deadline = self._deadline_ps(event.request_id)
-                if deadline is None or event.physical_time_ps <= deadline:
+                if deadline is not None and event.physical_time_ps > deadline:
+                    self._settled[event.request_id] = RequestSettlement(
+                        event.request_id,
+                        self._arrival_ps(event.request_id),
+                        deadline,
+                        False,
+                    )
+                    failed.append(event.request_id)
+                    continue
+                self._delivered_terminal_segments[event.request_id].add(
+                    event.output_segment_id or ""
+                )
+                delivered_pairs = len(self._delivered_terminal_segments[event.request_id])
+                demand_pairs = next(
+                    request.demand_pairs
+                    for request in self.spec.requests
+                    if request.id == event.request_id
+                )
+                if delivered_pairs >= demand_pairs:
                     self._settled[event.request_id] = RequestSettlement(
                         event.request_id,
                         self._arrival_ps(event.request_id),
@@ -152,13 +215,6 @@ class ConstructionBatchEnv:
                     )
                     completed += 1
                     continue
-                self._settled[event.request_id] = RequestSettlement(
-                    event.request_id,
-                    self._arrival_ps(event.request_id),
-                    deadline,
-                    False,
-                )
-                failed.append(event.request_id)
                 continue
             if not event.success:
                 observed_failures.append(event.request_id)
@@ -176,13 +232,7 @@ class ConstructionBatchEnv:
                 continue
             deadline = self._deadline_ps(request.id)
             if deadline is not None and deadline == event_time:
-                self._settled[request.id] = RequestSettlement(
-                    request.id,
-                    self._arrival_ps(request.id),
-                    deadline,
-                    False,
-                )
-                failed.append(request.id)
+                settle_deadline(request.id, deadline)
         return completed, tuple(failed), tuple(dict.fromkeys(observed_failures))
 
     def _release_settled_resources(self) -> None:
@@ -200,7 +250,20 @@ class ConstructionBatchEnv:
     def _advance(self) -> tuple[tuple[ExecutionEvent, ...], int]:
         previous = self.time_ps
         if self.executor.has_in_flight:
-            batch = self.executor.advance_to_next_event()
+            future_boundaries = [
+                self._arrival_ps(request.id)
+                for request in self.spec.requests
+                if request.id not in self._settled
+                and self._arrival_ps(request.id) > previous
+            ] + [
+                deadline
+                for request in self.spec.requests
+                if request.id not in self._settled
+                for deadline in (self._deadline_ps(request.id),)
+                if deadline is not None and deadline > previous
+            ]
+            boundary_ps = min(future_boundaries) if future_boundaries else None
+            batch = self.executor.advance_to_next_event(boundary_ps=boundary_ps)
         else:
             future_arrivals = [
                 self._arrival_ps(request.id) for request in self.spec.requests
@@ -269,6 +332,9 @@ class ConstructionBatchEnv:
         if self._executor is None:
             raise RuntimeError("environment must be reset first")
         interval_start_ps = self.time_ps
+        delivered_pairs_before = sum(
+            len(values) for values in self._delivered_terminal_segments.values()
+        )
         unsettled_at_start = {
             request.id for request in self.spec.requests
             if request.id not in self._settled
@@ -284,6 +350,9 @@ class ConstructionBatchEnv:
         events, duration = self._advance()
         completed_now, failed_ids, observed_failures = self._settle_events(
             events, interval_start_ps
+        )
+        delivered_pairs_after = sum(
+            len(values) for values in self._delivered_terminal_segments.values()
         )
         self._release_settled_resources()
         terminated = False
@@ -331,9 +400,18 @@ class ConstructionBatchEnv:
             {
                 "duration_ps": duration,
                 "completed_now": completed_now,
+                "delivered_pairs_now": delivered_pairs_after - delivered_pairs_before,
+                "delivered_pairs_total": delivered_pairs_after,
                 "failed_events_now": failed_now,
                 "observed_failures_now": len(observed_failures),
                 "observed_failure_request_ids": tuple(observed_failures),
+                "observed_expiration_request_ids": tuple(
+                    sorted({
+                        event.request_id
+                        for event in events
+                        if event.failure_cause == "expiration"
+                    })
+                ),
                 "settled_request_ids": tuple(sorted(self._settled)),
                 "settled": len(self._settled),
                 "risk_count": sum(not settlement.success for settlement in self._settled.values()),
@@ -366,6 +444,17 @@ class ConstructionBatchEnv:
                 "repair_operation_ids": tuple(operation.op_id for operation in operations),
             },
         )
+
+    def repair_options(
+        self, request_id: str
+    ) -> tuple[tuple[ConstructionOperation, ...], ...]:
+        if self._executor is None:
+            raise RuntimeError("environment must be reset first")
+        if self.auto_settle_failures:
+            raise RuntimeError("repair requires auto_settle_failures=False")
+        if request_id in self._settled:
+            return ()
+        return tuple(self.executor.repair_options(request_id))
 
     def drop(self, request_id: str) -> ConstructionStep:
         if self._executor is None:
@@ -430,8 +519,12 @@ class ConstructionBatchEnv:
         )
         flow = censored_flow_time(settlements, self.horizon_ps)
         completed = sum(settlement.success for settlement in settlements)
+        delivered_pairs = sum(
+            len(values) for values in self._delivered_terminal_segments.values()
+        )
         return {
             "completed_requests": float(completed),
+            "delivered_pairs": float(delivered_pairs),
             "completion_rate": completed / max(len(settlements), 1),
             "censored_flow_time_ps": float(flow),
             "risk_count": float(len(settlements) - completed),

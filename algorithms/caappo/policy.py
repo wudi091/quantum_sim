@@ -41,6 +41,7 @@ class PolicySample:
     selected_indices: tuple[int, ...] = ()
     seed_legal_indices: tuple[int, ...] = ()
     seed_index: int = -1
+    repair_action: int = -1
 
 
 @dataclass(frozen=True)
@@ -59,6 +60,7 @@ class PPOTransition:
     seed_index: int = -1
     episode_risk_cost: float | None = None
     risk_advantage: float | None = None
+    repair_action: int = -1
 
 
 class RelationAwareDAGEncoder:
@@ -149,6 +151,8 @@ class CAAPPOPolicy:
         self._operation_weights: np.ndarray | None = None
         self._value_weights: np.ndarray | None = None
         self._constraint_weights: np.ndarray | None = None
+        self._admission_context_dim = 8
+        self._repair_weights: np.ndarray | None = None
 
     @staticmethod
     def _candidate_feature(candidate: RouteConstructionCandidate) -> np.ndarray:
@@ -166,13 +170,42 @@ class CAAPPOPolicy:
             float(peak_live),
         ), dtype=np.float64)
 
+    def _candidate_feature_with_context(
+        self,
+        candidate: RouteConstructionCandidate,
+        context: Sequence[float] | None = None,
+    ) -> np.ndarray:
+        values = np.zeros(self._admission_context_dim, dtype=np.float64)
+        if context is not None:
+            context_array = np.asarray(tuple(context), dtype=np.float64)
+            if context_array.ndim != 1 or context_array.shape[0] != self._admission_context_dim:
+                raise ValueError(
+                    f"admission context must have {self._admission_context_dim} entries"
+                )
+            values = context_array
+        return np.concatenate((self._candidate_feature(candidate), values))
+
     def _ensure_candidate_weights(self, dimension: int) -> None:
         if self._candidate_weights is None:
             self._candidate_weights = self.rng.normal(0.0, 0.05, dimension)
+        elif self._candidate_weights.shape[0] != dimension:
+            if self._candidate_weights.shape[0] == 5 and dimension == 13:
+                self._candidate_weights = np.concatenate((
+                    self._candidate_weights,
+                    np.zeros(dimension - 5, dtype=np.float64),
+                ))
+            else:
+                raise ValueError("candidate actor dimension changed within a policy")
 
     def _ensure_operation_weights(self, dimension: int) -> None:
         if self._operation_weights is None:
             self._operation_weights = self.rng.normal(0.0, 0.05, dimension)
+
+    def _ensure_repair_weights(self, dimension: int) -> None:
+        if self._repair_weights is None:
+            self._repair_weights = self.rng.normal(0.0, 0.05, dimension)
+        elif self._repair_weights.shape[0] != dimension:
+            raise ValueError("repair actor dimension changed within a policy")
 
     def _operation_feature(self, feature: np.ndarray, ordinal: int) -> np.ndarray:
         """Feature used by the operation actor (state embedding + ordinal)."""
@@ -194,10 +227,42 @@ class CAAPPOPolicy:
     ) -> tuple[RouteConstructionCandidate, float]:
         if not candidates:
             raise ValueError("candidate catalogue is empty")
-        features = np.vstack([self._candidate_feature(candidate) for candidate in candidates])
+        features = np.vstack([
+            self._candidate_feature_with_context(candidate)
+            for candidate in candidates
+        ])
         self._ensure_candidate_weights(features.shape[1])
         probabilities = _softmax(features @ self._candidate_weights)
         index = int(np.argmax(probabilities) if deterministic else self.rng.choice(len(candidates), p=probabilities))
+        return candidates[index], float(np.log(max(probabilities[index], 1e-12)))
+
+    def select_candidate_context(
+        self,
+        candidates: Sequence[RouteConstructionCandidate],
+        context: Sequence[float],
+        *,
+        deterministic: bool = False,
+    ) -> tuple[RouteConstructionCandidate, float]:
+        """Autoregressive admission head conditioned on prior selections."""
+
+        # Test and research policies may override the legacy selector.  Keep
+        # that contract intact while the default CAAPPO head uses context.
+        if type(self).select_candidate is not CAAPPOPolicy.select_candidate:
+            return self.select_candidate(candidates, deterministic=deterministic)
+        if not candidates:
+            raise ValueError("candidate catalogue is empty")
+        features = np.vstack([
+            self._candidate_feature_with_context(candidate, context)
+            for candidate in candidates
+        ])
+        self._ensure_candidate_weights(features.shape[1])
+        assert self._candidate_weights is not None
+        probabilities = _softmax(features @ self._candidate_weights)
+        index = int(
+            np.argmax(probabilities)
+            if deterministic
+            else self.rng.choice(len(candidates), p=probabilities)
+        )
         return candidates[index], float(np.log(max(probabilities[index], 1e-12)))
 
     def operation_sample(
@@ -302,6 +367,50 @@ class CAAPPOPolicy:
             tuple(selected_indices),
             seed_legal_indices,
             seed_index,
+        )
+
+    def repair_sample(
+        self,
+        snapshot: ConstructionSnapshot,
+        repair_options: Sequence[tuple[ConstructionOperation, ...]],
+        *,
+        deterministic: bool = False,
+    ) -> PolicySample:
+        """Choose retry versus DROP through a learned binary repair head."""
+
+        operations = tuple(
+            operation for option in repair_options for operation in option
+        )
+        feature = self.encoder.encode(snapshot, operations)
+        if not repair_options:
+            return PolicySample(
+                PolicyAction(None, (), True),
+                0.0,
+                0.0,
+                feature,
+                repair_action=-1,
+            )
+        self._ensure_repair_weights(feature.shape[0])
+        assert self._repair_weights is not None
+        probability = self._sigmoid(float(feature @ self._repair_weights))
+        retry = bool(
+            probability >= 0.5
+            if deterministic
+            else self.rng.random() < probability
+        )
+        log_probability = math.log(
+            max(probability if retry else 1.0 - probability, 1e-12)
+        )
+        entropy = -(
+            probability * math.log(max(probability, 1e-12))
+            + (1.0 - probability) * math.log(max(1.0 - probability, 1e-12))
+        )
+        return PolicySample(
+            PolicyAction(None, (), not retry),
+            float(log_probability),
+            float(entropy),
+            feature,
+            repair_action=1 if retry else 0,
         )
 
     def joint_sample(
@@ -438,10 +547,21 @@ class CAAPPOPolicy:
                 probability if choose else 1.0 - probability,
                 1e-12,
             ))
-            gradient += (choose - probability) * action_features[index]
+            # The log-probability uses a 1e-12 floor.  Once a Bernoulli tail
+            # reaches that floor its numerical derivative is zero as well;
+            # keeping the analytic unsaturated derivative would disagree with
+            # the objective actually optimized.
+            if 1e-12 < probability < 1.0 - 1e-12:
+                gradient += (choose - probability) * action_features[index]
         return float(log_probability), gradient
 
-    def update(self, transitions: Sequence[PPOTransition], clip_epsilon: float = 0.2, risk_limit: float = 0.0) -> dict[str, float]:
+    def update(
+        self,
+        transitions: Sequence[PPOTransition],
+        clip_epsilon: float = 0.2,
+        risk_limit: float = 0.0,
+        lambda_risk_snapshot: float | None = None,
+    ) -> dict[str, float]:
         if clip_epsilon <= 0:
             raise ValueError("clip_epsilon must be positive")
         if not transitions:
@@ -451,7 +571,12 @@ class CAAPPOPolicy:
         constraint_losses = []
         costs = []
         policy_gradient = None
-        old_lambda = self.lambda_risk
+        repair_gradient = None
+        old_lambda = (
+            self.lambda_risk
+            if lambda_risk_snapshot is None
+            else float(lambda_risk_snapshot)
+        )
         assert self._operation_weights is not None or self._candidate_weights is not None
         for transition in transitions:
             self._ensure_value_weights(transition.feature.shape[0])
@@ -469,7 +594,24 @@ class CAAPPOPolicy:
             self._constraint_weights += (
                 self.learning_rate * constraint_error * transition.feature
             )
-            if (
+            if transition.repair_action >= 0:
+                self._ensure_repair_weights(transition.feature.shape[0])
+                assert self._repair_weights is not None
+                repair_probability = self._sigmoid(
+                    float(transition.feature @ self._repair_weights)
+                )
+                choose_retry = float(transition.repair_action == 1)
+                log_probability = math.log(max(
+                    repair_probability
+                    if choose_retry
+                    else 1.0 - repair_probability,
+                    1e-12,
+                ))
+                score_gradient = (
+                    choose_retry - repair_probability
+                ) * transition.feature
+                actor_kind = "repair"
+            elif (
                 transition.ordered_operation_ids
                 and self._operation_weights is not None
             ):
@@ -487,9 +629,11 @@ class CAAPPOPolicy:
                     transition.seed_index,
                     self._operation_weights,
                 )
+                actor_kind = "operation"
             else:
                 log_probability = transition.old_log_probability
                 score_gradient = None
+                actor_kind = "none"
             ratio = math.exp(max(
                 -20.0,
                 min(20.0, log_probability - transition.old_log_probability),
@@ -516,12 +660,21 @@ class CAAPPOPolicy:
                     effective_advantage < 0.0 and ratio < 1.0 - clip_epsilon
                 )
                 if clipped_active:
-                    if policy_gradient is None:
-                        policy_gradient = np.zeros_like(score_gradient)
-                    policy_gradient += effective_advantage * ratio * score_gradient
+                    if actor_kind == "repair":
+                        if repair_gradient is None:
+                            repair_gradient = np.zeros_like(score_gradient)
+                        repair_gradient += effective_advantage * ratio * score_gradient
+                    else:
+                        if policy_gradient is None:
+                            policy_gradient = np.zeros_like(score_gradient)
+                        policy_gradient += effective_advantage * ratio * score_gradient
         if policy_gradient is not None and self._operation_weights is not None:
             self._operation_weights += (
                 self.learning_rate * policy_gradient / max(len(transitions), 1)
+            )
+        if repair_gradient is not None and self._repair_weights is not None:
+            self._repair_weights += (
+                self.learning_rate * repair_gradient / max(len(transitions), 1)
             )
         episode_cost_values = [
             transition.episode_risk_cost
@@ -548,10 +701,11 @@ class CAAPPOPolicy:
 
     def update_routes(
         self,
-        records: Sequence[tuple[Sequence[RouteConstructionCandidate], int, float]],
+        records: Sequence[tuple],
         advantage: float,
         clip_epsilon: float = 0.2,
         risk_cost: float = 0.0,
+        lambda_risk: float | None = None,
     ) -> dict[str, float]:
         """Update the admission actor on joint episode returns.
 
@@ -564,11 +718,21 @@ class CAAPPOPolicy:
         if not records:
             return {"route_policy_loss": 0.0}
         losses = []
-        effective_advantage = float(advantage - self.lambda_risk * risk_cost)
+        effective_advantage = float(
+            advantage - (self.lambda_risk if lambda_risk is None else lambda_risk) * risk_cost
+        )
         route_gradient = None
-        for candidates, index, old_log_probability in records:
+        for record in records:
+            if len(record) == 3:
+                candidates, index, old_log_probability = record
+                context = None
+            elif len(record) == 4:
+                candidates, index, old_log_probability, context = record
+            else:
+                raise ValueError("route record must contain 3 or 4 fields")
             features = np.vstack([
-                self._candidate_feature(candidate) for candidate in candidates
+                self._candidate_feature_with_context(candidate, context)
+                for candidate in candidates
             ])
             self._ensure_candidate_weights(features.shape[1])
             assert self._candidate_weights is not None

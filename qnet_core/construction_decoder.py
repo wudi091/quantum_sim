@@ -37,10 +37,21 @@ class CapacityFeasibilityOracle:
         cls, snapshot: ConstructionSnapshot
     ) -> "CapacityFeasibilityOracle":
         usage = dict(snapshot.reservations)
+        declared = dict(snapshot.resource_capacities)
+        overcommitted = [
+            resource
+            for resource, amount in usage.items()
+            if amount > declared.get(resource, 0)
+        ]
+        if overcommitted:
+            raise ValueError(
+                "snapshot reservations exceed capacity: "
+                f"{sorted(overcommitted)[0]}"
+            )
         return cls(
             {
-                resource: max(0, capacity - usage.get(resource, 0))
-                for resource, capacity in snapshot.resource_capacities
+                resource: capacity - usage.get(resource, 0)
+                for resource, capacity in declared.items()
             },
             {
                 segment.segment_id: segment.held_resources

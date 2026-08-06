@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable
 
-from qnet_core.construction_catalog import RouteConstructionCandidate, candidates_by_request
+from qnet_core.construction_catalog import RouteConstructionCandidate
 from qnet_core.construction_decoder import CapacityFeasibilityOracle
 from qnet_core.joint_construction_gym import JointConstructionBatchEnv, JointPhase
 from qnet_core.spec import EpisodeSpec
@@ -40,21 +40,45 @@ class CAAPPORolloutTrainer:
 
     def _select_routes(
         self,
+        env: JointConstructionBatchEnv,
         candidates: tuple[RouteConstructionCandidate, ...],
         deterministic: bool,
     ) -> tuple[
         dict[str, RouteConstructionCandidate],
-        list[tuple[tuple[RouteConstructionCandidate, ...], int, float]],
+        list[tuple],
+        object,
     ]:
+        state = env.reset()
         selected: dict[str, RouteConstructionCandidate] = {}
-        records: list[tuple[tuple[RouteConstructionCandidate, ...], int, float]] = []
-        for request_id, values in candidates_by_request(candidates).items():
-            candidate, log_probability = self.policy.select_candidate(
-                values, deterministic=deterministic
+        records: list[tuple] = []
+        request_order = tuple(sorted(env.admission_candidates))
+        for request_index, request_id in enumerate(request_order):
+            values = env.legal_admission_candidates(request_id)
+            if not values:
+                raise ValueError(f"no legal admission candidate for request {request_id}")
+            admission = state.info.get("admission_observation", {})
+            preview_usage = dict(admission.get("preview_usage", ()))
+            scale = max(
+                1.0,
+                float(sum(dict(env._admission_capacities()).values())),
+            )
+            context = (
+                float(request_index) / max(len(request_order), 1),
+                float(len(selected)) / max(len(request_order), 1),
+                float(sum(preview_usage.values())) / scale,
+                float(len(preview_usage)) / max(len(env._admission_capacities()), 1),
+                float(sum(candidate.hop_count for candidate in selected.values())),
+                float(sum(len(candidate.dag.operations) for candidate in selected.values())),
+                float(len(values)) / max(len(env.admission_candidates[request_id]), 1),
+                float(request_index == len(request_order) - 1),
+            )
+            candidate, log_probability = self.policy.select_candidate_context(
+                values, context, deterministic=deterministic
             )
             selected[request_id] = candidate
-            records.append((values, values.index(candidate), log_probability))
-        return selected, records
+            records.append((values, values.index(candidate), log_probability, context))
+            state = env.select_admission(request_id, candidate)
+        return selected, records, state
 
     def run_episode(
         self,
@@ -64,7 +88,6 @@ class CAAPPORolloutTrainer:
         deterministic: bool = False,
         update: bool = True,
     ) -> EpisodeTrainingResult:
-        selected, route_records = self._select_routes(candidates, deterministic)
         env = JointConstructionBatchEnv(
             spec,
             candidates,
@@ -72,8 +95,9 @@ class CAAPPORolloutTrainer:
             beta=self.beta,
             chi=self.chi,
         )
-        env.reset()
-        state = env.admit(selected)
+        selected, route_records, state = self._select_routes(
+            env, candidates, deterministic
+        )
         rewards: list[float] = []
         risk_increments: list[float] = []
         cumulative_risk = 0.0
@@ -91,8 +115,25 @@ class CAAPPORolloutTrainer:
         while not state.terminated:
             if state.phase == JointPhase.REPAIR:
                 for request_id in env.repairable_requests:
-                    state = env.drop(request_id)
+                    repair_options = env.repair_options(request_id)
+                    repair_sample = None
+                    if (
+                        type(self.policy).repair_sample is CAAPPOPolicy.repair_sample
+                        and type(self.policy).update is CAAPPOPolicy.update
+                        and state.observation is not None
+                    ):
+                        repair_sample = self.policy.repair_sample(
+                            state.observation,
+                            repair_options,
+                            deterministic=deterministic,
+                        )
+                    if repair_sample is not None and repair_sample.repair_action == 1:
+                        state = env.repair(request_id, repair_options[0])
+                    else:
+                        state = env.drop(request_id)
                     record_outcome()
+                    if repair_sample is not None:
+                        transitions.append((repair_sample, len(rewards) - 1))
                 continue
             if state.observation is None:
                 raise RuntimeError("execution state lacks a construction observation")
@@ -150,12 +191,15 @@ class CAAPPORolloutTrainer:
                 sample.seed_index,
                 episode_risk_cost=risk_cost,
                 risk_advantage=risk_advantages[reward_index],
+                repair_action=sample.repair_action,
             )
             for sample, reward_index in transitions
         )
+        lambda_snapshot = self.policy.lambda_risk
         policy_stats = self.policy.update(
             ppo_transitions,
             risk_limit=self.risk_limit,
+            lambda_risk_snapshot=lambda_snapshot,
         ) if update and not deterministic else {}
         if update and not deterministic:
             policy_stats.update(
@@ -163,6 +207,7 @@ class CAAPPORolloutTrainer:
                     route_records,
                     sum(rewards),
                     risk_cost=risk_cost,
+                    lambda_risk=lambda_snapshot,
                 )
             )
         return EpisodeTrainingResult(sum(rewards), env.metrics(), policy_stats)

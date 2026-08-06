@@ -32,8 +32,6 @@ def run_joint_plan_baseline(
 ) -> ConstructionEvaluation:
     """Execute one fixed joint catalogue choice through the SeQUeNCe adapter."""
 
-    if any(request.demand_pairs != 1 for request in spec.requests):
-        raise ValueError("the first construction evaluator supports demand_pairs=1 only")
     missing = [request.id for request in spec.requests if request.id not in selected]
     if missing:
         raise ValueError(f"missing selected construction plans: {missing}")
@@ -44,8 +42,10 @@ def run_joint_plan_baseline(
     )
     horizon_ps = spec.horizon * spec.physical.slot_duration_ps
     terminal_segments = {
-        candidate.request_id: candidate.terminal_segment_id for candidate in candidates
+        candidate.request_id: frozenset(candidate.all_terminal_segment_ids)
+        for candidate in candidates
     }
+    delivered_segments = {request.id: set() for request in spec.requests}
     settled: dict[str, RequestSettlement] = {}
     event_trace: list[object] = []
 
@@ -101,16 +101,32 @@ def run_joint_plan_baseline(
             batch = executor.advance_to_next_event()
             event_trace.extend(batch.events)
             for event in batch.events:
+                request = next(
+                    item for item in spec.requests if item.id == event.request_id
+                )
                 if (
                     event.success
-                    and event.output_segment_id == terminal_segments.get(event.request_id)
-                ):
-                    settled[event.request_id] = RequestSettlement(
-                        event.request_id,
-                        arrival_ps(event.request_id),
-                        event.physical_time_ps,
-                        True,
+                    and event.output_segment_id in terminal_segments.get(
+                        event.request_id, frozenset()
                     )
+                    and event.output_fidelity is not None
+                    and float(event.output_fidelity) + 1e-12
+                    >= request.required_fidelity
+                    and (
+                        request.deadline is None
+                        or event.physical_time_ps
+                        <= request.deadline * spec.physical.slot_duration_ps
+                    )
+                ):
+                    delivered_segments[event.request_id].add(event.output_segment_id)
+                    if len(delivered_segments[event.request_id]) >= request.demand_pairs:
+                        settled[event.request_id] = RequestSettlement(
+                            event.request_id,
+                            arrival_ps(event.request_id),
+                            event.physical_time_ps,
+                            True,
+                        )
+                        executor.release_request(event.request_id)
             continue
         future_arrivals = [arrival_ps(request.id) for request in spec.requests
                            if request.id not in settled and arrival_ps(request.id) > now]
@@ -137,6 +153,7 @@ def run_joint_plan_baseline(
     completed = sum(settlement.success for settlement in settlements)
     metrics = {
         "completed_requests": float(completed),
+        "delivered_pairs": float(sum(len(values) for values in delivered_segments.values())),
         "completion_rate": completed / max(len(settlements), 1),
         "censored_flow_time_ps": float(flow_time),
         "mean_censored_latency_ps": flow_time / max(len(settlements), 1),
