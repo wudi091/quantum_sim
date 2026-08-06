@@ -91,6 +91,7 @@ class SharedRoutingEnv:
     def _prepare_slot(self) -> None:
         if self._prepared_time == self.time:
             return
+        self.backend.synchronize()
         for state in self.requests.values():
             carried = tuple(
                 pair_id for pair_id in self._carried_ids(state)

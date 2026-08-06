@@ -314,6 +314,10 @@ class SequenceBackend:
                 continue
             pair.fidelity = min(pair.left_memory.fidelity, pair.right_memory.fidelity)
 
+    def synchronize(self) -> None:
+        """Refresh the routing index after Timeline-driven physical events."""
+        self._sync_pairs()
+
     def discard_pair(self, pair_id: str) -> ResourcePair | None:
         """Remove a pair and release both SeQUeNCe memories."""
         pair = self.pairs.pop(pair_id, None)
