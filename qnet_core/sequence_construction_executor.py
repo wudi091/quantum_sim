@@ -25,6 +25,7 @@ from .construction_api import (
 from .construction_decoder import CapacityFeasibilityOracle
 from .construction_repair import generate_repair_options
 from .sequence_backend import PreparedGeneration, PreparedSwap, SequenceBackend
+from .sequence_scheduler import SequenceConcurrencyScheduler
 
 
 @dataclass(frozen=True)
@@ -55,6 +56,18 @@ class SequenceConstructionExecutor:
         self.backend = backend
         self.capacities = {str(key): int(value) for key, value in capacities.items()}
         self.oracle = CapacityFeasibilityOracle(self.capacities)
+        self.scheduler = SequenceConcurrencyScheduler(
+            self.capacities,
+            supports_inter_epoch_launch=getattr(
+                backend, "supports_inter_epoch_launch", False
+            ),
+            supports_mixed_operation_concurrency=getattr(
+                backend, "supports_mixed_operation_concurrency", False
+            ),
+            supports_concurrent_swaps=getattr(
+                backend, "supports_concurrent_swaps", False
+            ),
+        )
         self._request_required_fidelity = {
             request.id: float(request.required_fidelity)
             for request in backend.spec.requests
@@ -81,6 +94,7 @@ class SequenceConstructionExecutor:
         self._refresh_global_registry()
         self._physical_by_segment: dict[str, str] = {}
         self._pending: dict[str, _Pending] = {}
+        self._generation_lanes: dict[tuple[int, int], set[int]] = {}
         self._expired_segments: list[LogicalSegment] = []
         self._attempts: dict[str, int] = {}
         self._counter = 0
@@ -278,7 +292,17 @@ class SequenceConstructionExecutor:
         ))
         if not getattr(self.backend, "supports_concurrent_swaps", False):
             swaps = [operation for operation in operations if operation.kind == OperationKind.SWAP]
-            if len(swaps) > 1:
+            pending_swaps = [
+                pending.operation
+                for pending in self._pending.values()
+                if pending.operation.kind == OperationKind.SWAP
+            ]
+            if pending_swaps:
+                operations = tuple(
+                    operation for operation in operations
+                    if operation.kind != OperationKind.SWAP
+                )
+            elif len(swaps) > 1:
                 first = swaps[0]
                 operations = tuple(
                     operation for operation in operations
@@ -289,7 +313,13 @@ class SequenceConstructionExecutor:
             swaps = [operation for operation in operations if operation.kind == OperationKind.SWAP]
             if generations and swaps:
                 operations = tuple(generations)
-        return operations
+        return self.scheduler.pack(
+            operations,
+            pending_operations=tuple(
+                pending.operation for pending in self._pending.values()
+            ),
+            segments=tuple(self._segments.values()),
+        )
 
     def _usage(self, demands: Iterable[ResourceDemand] = ()) -> dict[str, int]:
         usage: dict[str, int] = {}
@@ -312,14 +342,19 @@ class SequenceConstructionExecutor:
             for operation in operations
             for segment_id in operation.input_segment_ids
         }
+        pending_consumed = {
+            segment_id
+            for pending in self._pending.values()
+            for segment_id in pending.operation.input_segment_ids
+        }
         usage: dict[str, int] = {}
         for segment_id, segment in self._segments.items():
-            if segment_id in consumed:
+            if segment_id in consumed or segment_id in pending_consumed:
                 continue
             for resource, amount in segment.held_resources.items():
                 usage[resource] = usage.get(resource, 0) + amount
         for pending in self._pending.values():
-            for resource, amount in pending.operation.resource_demand.items():
+            for resource, amount in pending.operation.output_resource_hold.items():
                 usage[resource] = usage.get(resource, 0) + amount
         for operation in operations:
             for resource, amount in operation.output_resource_hold.items():
@@ -334,26 +369,6 @@ class SequenceConstructionExecutor:
             raise ValueError("launch requires at least one operation")
         if len({operation.op_id for operation in operations}) != len(operations):
             raise ValueError("duplicate operation in launch set")
-        if self._pending and not getattr(
-            self.backend, "supports_inter_epoch_launch", False
-        ):
-            raise ValueError("cannot launch while operations are in flight")
-        generation_count = sum(
-            operation.kind == OperationKind.GEN for operation in operations
-        )
-        swap_count = sum(
-            operation.kind == OperationKind.SWAP for operation in operations
-        )
-        if swap_count > 1 and not self.backend.supports_concurrent_swaps:
-            raise ValueError("physical backend does not support concurrent swaps")
-        if (
-            generation_count
-            and swap_count
-            and not self.backend.supports_mixed_operation_concurrency
-        ):
-            raise ValueError(
-                "physical backend does not support mixed generation/swap launch"
-            )
         available = self._available_segment_ids()
         for operation in operations:
             dag = self.dags.get(operation.request_id)
@@ -415,6 +430,15 @@ class SequenceConstructionExecutor:
                     raise ValueError(
                         f"GEN resource demand is incomplete for edge {edge}"
                     )
+        scheduler_result = self.scheduler.validate(
+            operations,
+            pending_operations=tuple(
+                pending.operation for pending in self._pending.values()
+            ),
+            segments=tuple(self._segments.values()),
+        )
+        if not scheduler_result.feasible:
+            raise ValueError(f"scheduler rejected launch: {scheduler_result.reason}")
         feasibility = self.oracle.check(operations)
         if not feasibility.feasible:
             raise ValueError(feasibility.reason)
@@ -481,7 +505,16 @@ class SequenceConstructionExecutor:
     def _generation_claims(
         self, operations: Iterable[ConstructionOperation]
     ) -> dict[str, ResourceClaim]:
-        lane_by_edge: dict[tuple[int, int], int] = {}
+        lane_by_edge: dict[tuple[int, int], set[int]] = {
+            edge: set(lanes) for edge, lanes in self._generation_lanes.items()
+        }
+        for pending in self._pending.values():
+            if pending.operation.kind != OperationKind.GEN:
+                continue
+            if pending.generation is None:
+                continue
+            edge = tuple(sorted(pending.generation.claim.endpoints))
+            lane_by_edge.setdefault(edge, set()).add(pending.generation.claim.lane)
         claims: dict[str, ResourceClaim] = {}
         topology_edges = {
             tuple(sorted(edge)) for edge in self.backend.spec.edges
@@ -494,12 +527,28 @@ class SequenceConstructionExecutor:
             edge = tuple(sorted(operation.output_endpoints))
             if edge not in topology_edges:
                 raise ValueError(f"GEN references non-topology edge {edge}")
-            lane = lane_by_edge.get(edge, 0)
-            if lane >= self.backend.spec.physical.max_width:
+            used = lane_by_edge.setdefault(edge, set())
+            lane = next(
+                (candidate for candidate in range(self.backend.spec.physical.max_width)
+                 if candidate not in used),
+                None,
+            )
+            if lane is None:
                 raise ValueError("GEN launch exceeds physical max_width")
-            lane_by_edge[edge] = lane + 1
+            used.add(lane)
             claims[operation.op_id] = ResourceClaim(edge[0], edge[1], lane)
         return claims
+
+    def _release_generation_lane(self, pending: _Pending) -> None:
+        if pending.operation.kind != OperationKind.GEN or pending.generation is None:
+            return
+        edge = tuple(sorted(pending.generation.claim.endpoints))
+        lanes = self._generation_lanes.get(edge)
+        if lanes is None:
+            return
+        lanes.discard(pending.generation.claim.lane)
+        if not lanes:
+            self._generation_lanes.pop(edge, None)
 
     def _make_swap_action(self, operation: ConstructionOperation) -> SwapAction:
         physical_ids = tuple(self._physical_by_segment[segment_id] for segment_id in operation.input_segment_ids)
@@ -536,6 +585,7 @@ class SequenceConstructionExecutor:
         prepared_swaps: list[PreparedSwap] = []
         marked_started: list[ConstructionOperation] = []
         staged_pending: dict[str, _Pending] = {}
+        prepared_swap_by_operation: dict[str, PreparedSwap] = {}
         allocation_id = None
         try:
             # Commit only the neutral DAG start markers first.  If a caller
@@ -545,6 +595,29 @@ class SequenceConstructionExecutor:
                     operation.op_id, available_at_launch
                 )
                 marked_started.append(operation)
+
+            swap_actions = {
+                operation.op_id: self._make_swap_action(operation)
+                for operation in operations
+                if operation.kind == OperationKind.SWAP
+            }
+            # Start SWAP protocols before GEN protocols.  SeQUeNCe's
+            # timeline can otherwise process a newly scheduled generation
+            # event before the already-prepared BSM handshake, even when the
+            # two operations use disjoint physical nodes.
+            for operation in sorted(operations, key=lambda item: item.canonical_key):
+                if operation.kind != OperationKind.SWAP:
+                    continue
+                attempt_id = attempt_ids[operation.op_id]
+                swap = self.backend.begin_swap(
+                    swap_actions[operation.op_id], attempt_id
+                )
+                if swap is None:
+                    raise ValueError(
+                        f"physical backend rejected swap: {operation.op_id}"
+                    )
+                prepared_swaps.append(swap)
+                prepared_swap_by_operation[operation.op_id] = swap
 
             if generation_ops:
                 allocation_id = f"generation-{self._counter + 1:08d}"
@@ -557,11 +630,6 @@ class SequenceConstructionExecutor:
                 if set(prepared_generations) != set(generation_claims.values()):
                     raise RuntimeError("physical backend returned incomplete generation handles")
 
-            swap_actions = {
-                operation.op_id: self._make_swap_action(operation)
-                for operation in operations
-                if operation.kind == OperationKind.SWAP
-            }
             for operation in sorted(operations, key=lambda item: item.canonical_key):
                 attempt_id = attempt_ids[operation.op_id]
                 generation = None
@@ -571,14 +639,7 @@ class SequenceConstructionExecutor:
                     generation = prepared_generations[claim]
                     duration = self.backend.generation_duration_ps
                 elif operation.kind == OperationKind.SWAP:
-                    swap = self.backend.begin_swap(
-                        swap_actions[operation.op_id], attempt_id
-                    )
-                    if swap is None:
-                        raise ValueError(
-                            f"physical backend rejected swap: {operation.op_id}"
-                        )
-                    prepared_swaps.append(swap)
+                    swap = prepared_swap_by_operation[operation.op_id]
                     duration = self.backend.swap_duration_ps
                 else:
                     duration = operation.duration_ps
@@ -606,6 +667,11 @@ class SequenceConstructionExecutor:
                 self._attempts.get(operation.op_id, 0) + 1
             )
         self._pending.update(staged_pending)
+        for operation in generation_ops:
+            prepared = staged_pending[operation.op_id].generation
+            if prepared is not None:
+                edge = tuple(sorted(prepared.claim.endpoints))
+                self._generation_lanes.setdefault(edge, set()).add(prepared.claim.lane)
         return tuple(attempt_ids[operation.op_id] for operation in operations)
 
     def snapshot(self) -> ConstructionSnapshot:
@@ -679,6 +745,7 @@ class SequenceConstructionExecutor:
         output_segment_id = None
         output_fidelity = None
         physical_pair_id = None
+        self._release_generation_lane(pending)
         if operation.kind == OperationKind.GEN:
             claim = pending.generation.claim if pending.generation is not None else None
             outcomes = self.backend.finish_generation((pending.generation,)) if pending.generation else {}

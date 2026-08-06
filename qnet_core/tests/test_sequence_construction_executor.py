@@ -142,6 +142,60 @@ class SequenceConstructionExecutorTests(unittest.TestCase):
         )
         self.assertEqual(len(executor.available_segments()), 2)
 
+    def test_same_edge_generation_across_epochs_uses_distinct_lanes(self):
+        backend = SequenceBackend(EpisodeSpec(
+            seed=104,
+            nodes=(0, 1),
+            edges=((0, 1),),
+            requests=(),
+            horizon=100,
+            physical=PhysicalConfig(
+                generation_probability=1.0,
+                memory_capacity=2,
+                node_memory_capacity=2,
+                max_width=2,
+                quantum_distance_m=1.0,
+            ),
+        ))
+        dags = (
+            left_deep_path_dag("r0", (0, 1)),
+            left_deep_path_dag("r1", (0, 1)),
+        )
+        executor = SequenceConstructionExecutor(
+            dags,
+            backend,
+            {
+                "link:0-1": 2,
+                "genlane:0-1": 2,
+                "memory:0": 2,
+                "memory:1": 2,
+            },
+            horizon_ps=200_000,
+        )
+
+        first = next(
+            operation
+            for operation in executor.ready_operations()
+            if operation.request_id == "r0"
+        )
+        executor.launch((first,))
+        second = next(
+            operation
+            for operation in executor.ready_operations()
+            if operation.request_id == "r1"
+        )
+        executor.launch((second,))
+        events = []
+        while executor.has_in_flight:
+            events.extend(executor.advance_to_next_event().events)
+
+        self.assertEqual(len(events), 2)
+        self.assertTrue(all(event.success for event in events))
+        self.assertEqual(
+            {resource.lane for resource in backend.resources()},
+            {0, 1},
+        )
+
     def test_generation_batch_rolls_back_if_later_prepare_raises(self):
         backend = self._backend()
         before_protocol_counts = {

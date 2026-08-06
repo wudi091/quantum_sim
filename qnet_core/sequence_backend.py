@@ -69,12 +69,17 @@ class PreparedSwap:
 class SequenceBackend:
     """Common physical state shared by all planners."""
 
-    # SeQUeNCe's router protocol instances share endpoint protocol state.  The
-    # adapter therefore advertises conservative swap concurrency until a
-    # backend-level BSM scheduler is added and separately validated.
+    # The construction executor now places launches through an explicit
+    # resource/protocol scheduler.  These capabilities describe what that
+    # scheduler is allowed to validate; subclasses can still opt out.
+    # Multiple protocol families still share SeQUeNCe's global timeline and
+    # Bell-diagonal state manager.  In SeQUeNCe 1.0.0, starting GEN and SWAP
+    # in the same launch can race even on disjoint links, so the adapter keeps
+    # same-epoch mixed-family packing conservative.  Inter-epoch launches are
+    # still supported when the resource scheduler proves them independent.
     supports_concurrent_swaps = False
     supports_mixed_operation_concurrency = False
-    supports_inter_epoch_launch = False
+    supports_inter_epoch_launch = True
 
     def __init__(self, spec: EpisodeSpec):
         self.spec = spec

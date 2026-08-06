@@ -25,6 +25,8 @@ does not receive SeQUeNCe objects.
   progress potential, and metrics;
 - `sequence_backend.py`: the routing index around SeQUeNCe's physical
   entities and protocols;
+- `sequence_scheduler.py`: conservative resource, segment, and physical-node
+  launch validation for the SeQUeNCe adapter;
 - `runtime.py`: the only module that wires `SharedRoutingEnv` to
   `SequenceBackend`;
 - `gym_env.py`: masked fixed-size observation/action wrapper;
@@ -92,10 +94,14 @@ physical event, and outcomes are returned as neutral `ExecutionEvent` values.
 The snapshot also carries the complete current operation universe, so a
 planner-side dependency encoder can see completed, ready, and blocked DAG
 relations without receiving simulator objects.
-The adapter currently advertises conservative swap concurrency because the
-SeQUeNCe router protocol state is not yet scheduled by a shared BSM arbiter;
-the deterministic executor remains the concurrency oracle for DAG and mask
-tests.
+The adapter currently advertises conservative protocol concurrency. SeQUeNCe
+1.0.0 can safely overlap independent GEN operations across epochs, but a
+GEN/SWAP overlap or concurrent SWAP protocols can race in the shared
+Bell-diagonal state manager. `SequenceConcurrencyScheduler` therefore checks
+resource capacity, input-segment exclusivity, post-completion holds, and
+physical-node conflicts, and rejects those unsupported combinations before
+starting a protocol. The deterministic executor remains the contract oracle
+for DAG and mask tests.
 
 `run_joint_plan_baseline()` is a fixed-plan SeQUeNCe evaluator with explicit
 arrival, deadline, expiration, failure, and horizon settlement boundaries. It

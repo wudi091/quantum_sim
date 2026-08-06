@@ -61,9 +61,13 @@ Implemented and tested:
   head whose retry options are generated from the surviving DAG prefix.
 
 The current SeQUeNCe capability declaration is intentionally conservative:
-inter-epoch launch and mixed physical operation concurrency are rejected until
-a separately validated scheduler exists. Multiple operations known to be
-physically compatible are packed into one launch epoch.
+inter-epoch launch is enabled for protocol-compatible operations, while
+same-epoch GEN/SWAP mixing, GEN/SWAP overlap across epochs, and concurrent
+SWAPs are rejected because SeQUeNCe 1.0.0 shares Bell-diagonal protocol state
+across those transitions. `SequenceConcurrencyScheduler` validates resource
+capacity, input-segment exclusivity, post-completion holds, and physical-node
+conflicts before the adapter starts a protocol. Multiple operations that pass
+those checks are packed deterministically into one launch epoch.
 
 The SeQUeNCe executor also rejects logical-only `initial_segments`; importing
 an existing physical state requires a future explicit logical-to-physical pair
@@ -72,8 +76,8 @@ initial segments for contract tests.
 
 Remaining paper-complete gates:
 
-- broader route-aware repair candidate families and an independently audited
-  physical scheduler for inter-epoch/mixed operation concurrency;
+- broader route-aware repair candidate families and a backend-level protocol
+  arbiter before enabling mixed GEN/SWAP or concurrent SWAP execution;
 - converged training and scaling evidence; the trainable PyTorch graph encoder
   and bounded failed-SWAP prefix repair are runnable, but convergence is not
   claimed;
@@ -84,9 +88,9 @@ Remaining paper-complete gates:
 This is a runnable construction-aware event foundation with a SeQUeNCe-backed
 Torch CAAPPO head, not yet a complete CCFA paper system. The multi-pair
 evaluator, request-level fidelity gate, deadline/expiration settlement, bounded
-nominal oracle, and reproducible sanity harness are implemented; production-
-grade physical scheduling, converged training, and statistically supported
-paper claims remain outside the current claim.
+nominal oracle, and reproducible sanity harness are implemented; mixed-protocol
+physical scheduling, converged training, and statistically supported paper
+claims remain outside the current claim.
 
 Current regression commands, using the Conda environment
 `D:\\software\\miniconda3\\envs\\qnet312` (Python 3.12.13, SeQUeNCe 1.0.0):
