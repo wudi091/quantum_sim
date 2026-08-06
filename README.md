@@ -3,10 +3,13 @@
 This repository contains a shared SeQUeNCe-backed quantum-network routing
 environment and two planning-only baselines: Q-DDCA and Q-CAST.
 
-The simulator owns request generation, EPR generation, memory accounting,
-entanglement swapping, resource locking, time advancement, TTL settlement,
-rewards, and metrics. A planner receives an immutable `PlanningSnapshot` and
-returns plan IDs. It cannot mutate the backend or advance physical time.
+The simulator owns request generation, resource locking, TTL settlement,
+rewards, and metrics. SeQUeNCe owns the physical layer: `QuantumRouter` and
+`MemoryArray` entities, per-link `QuantumChannel` and `BSMNode` hardware,
+single-heralded entanglement generation, BDS entanglement swapping, detector
+and channel losses, physical time, and memory expiration events. A planner
+receives an immutable `PlanningSnapshot` and returns plan IDs. It cannot
+mutate the backend or advance physical time.
 
 ## Packages
 
@@ -55,6 +58,13 @@ python -m qnet_core.evaluate \
 
 The two planners receive the same episode specification and physical random
 process. They differ only in the plans selected from the shared snapshot.
+
+The legacy probability fields remain in `PhysicalConfig` as compact scenario
+controls. `generation_probability` is translated into endpoint memory
+efficiency, while `swap_probability`, channel attenuation, detector
+efficiency, BSM success, and memory coherence are passed to SeQUeNCe
+components and protocols. The backend never samples an EPR or edits a Bell
+state directly.
 
 ## Runtime flow
 

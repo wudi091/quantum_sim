@@ -1,9 +1,11 @@
 # Shared SeQUeNCe routing core
 
 `qnet_core` is the algorithm-independent simulation boundary for this
-repository. The common side owns request generation, EPR generation, time
-advancement, resource locking, exchange execution, TTL settlement, rewards,
-and metrics.
+repository. The common side owns request generation, resource locking, TTL
+settlement, rewards, and metrics. `SequenceBackend` delegates the physical
+layer to SeQUeNCe: routers and memory arrays, quantum/classical channels, BSM
+devices, single-heralded generation, Bell-diagonal swapping, detector/channel
+loss, physical time, and memory expiration.
 
 The physical implementation is `SequenceBackend`, a small adapter around
 SeQUeNCe. Routing code only sees pair IDs and immutable planning contracts; it
@@ -17,8 +19,8 @@ does not receive SeQUeNCe objects.
   related planner contracts;
 - `env.py`: `SharedRoutingEnv`, including allocation, execution, settlement,
   progress potential, and metrics;
-- `sequence_backend.py`: SeQUeNCe memories, elementary-pair generation,
-  entanglement swapping, and resource lifetime;
+- `sequence_backend.py`: the routing index around SeQUeNCe's physical
+  entities and protocols;
 - `gym_env.py`: masked fixed-size observation/action wrapper;
 - `evaluate.py`: seeded Q-DDCA/Q-CAST comparison entry point.
 

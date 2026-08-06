@@ -1,15 +1,16 @@
-"""Small SeQUeNCe-backed resource kernel.
+"""SeQUeNCe-backed physical resource kernel.
 
-Routing code never receives SeQUeNCe objects.  This module owns memories,
-randomness, exchange execution, and resource lifetime; callers only use pair
-IDs and immutable snapshots.  Elementary generation is deliberately sampled
-by this shared kernel so every planner sees the same trace.
+The routing layer only sees pair identifiers and immutable metadata.  All
+physical behaviour lives in SeQUeNCe entities and protocols: memories, photon
+loss, detector/BSM success, swapping, and memory expiration are driven by the
+Timeline event queue.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import math
 from typing import Iterable
 
 from .planner_api import ResourceClaim, SwapAction, SwapLane
@@ -51,22 +52,12 @@ class LaneExecutionResult:
         return self.output_pair_id is not None
 
 
-class _ResourceManager:
-    def update(self, _protocol: object, memory: object, state: str) -> None:
-        if state == "RAW":
-            memory.reset()
-
-
-class _Node:  # replaced with sequence.topology.node.Node at runtime
-    pass
-
-
 class SequenceBackend:
-    """Common physical state for all planners."""
+    """Common physical state shared by all planners."""
 
     def __init__(self, spec: EpisodeSpec):
         self.spec = spec
-        self.time = 0
+        self.time = 0  # logical routing slots; SeQUeNCe uses ps internally
         self._counter = 0
         self.pairs: dict[str, ResourcePair] = {}
         self._claim_results: dict[
@@ -80,40 +71,146 @@ class SequenceBackend:
 
     def _build_sequence_world(self) -> None:
         try:
-            from sequence.components.memory import Memory
-            from sequence.components.optical_channel import ClassicalChannel
+            from sequence.components.optical_channel import (
+                ClassicalChannel,
+                QuantumChannel,
+            )
+            from sequence.entanglement_management.generation import (
+                EntanglementGenerationA,
+                EntanglementGenerationB,
+            )
+            from sequence.entanglement_management.swapping import (
+                EntanglementSwappingA,
+                EntanglementSwappingB,
+            )
             from sequence.kernel.timeline import Timeline
-            from sequence.topology.node import Node
-        except ImportError as exc:  # pragma: no cover - exercised in deployment env
+            from sequence.resource_management.memory_manager import MemoryInfo
+            from sequence.topology.node import BSMNode, QuantumRouter
+        except ImportError as exc:  # pragma: no cover - deployment guard
             raise RuntimeError(
                 "SeQUeNCe is required; install requirements.txt in Python 3.12+"
             ) from exc
 
-        class ResourceNode(Node):
-            def __init__(self, name: str, timeline: object, seed: int):
-                super().__init__(name, timeline, seed=seed)
-                self.resource_manager = _ResourceManager()
+        # Single-heralded generation and BDS swapping are the physical model
+        # used by this adapter.  These are process-global SeQUeNCe factories.
+        EntanglementGenerationA.set_global_type("single_heralded")
+        EntanglementGenerationB.set_global_type("single_heralded")
+        EntanglementSwappingA.set_formalism("bell_diagonal")
+        EntanglementSwappingB.set_formalism("bell_diagonal")
 
-        self._Memory = Memory
-        self._SwappingA = None
-        self._SwappingB = None
-        self.timeline = Timeline(stop_time=10 ** 23)
-        self.nodes = {
-            node: ResourceNode(str(node), self.timeline, self.spec.seed + node)
-            for node in self.spec.nodes
+        self._MemoryInfo = MemoryInfo
+        self._EntanglementGenerationA = EntanglementGenerationA
+        self._EntanglementSwappingA = EntanglementSwappingA
+        self._EntanglementSwappingB = EntanglementSwappingB
+        self.timeline = Timeline(stop_time=10 ** 23, formalism="bell_diagonal")
+
+        physical = self.spec.physical
+        coherence_time_s = physical.memory_lifetime * physical.slot_duration_ps * 1e-12
+        memory_template = {
+            "MemoryArray": {
+                "frequency": physical.memory_frequency_hz,
+                "coherence_time": coherence_time_s,
+                "efficiency": math.sqrt(physical.generation_probability),
+                "fidelity": physical.initial_fidelity,
+                "wavelength": physical.memory_wavelength_nm,
+            },
+            "EntanglementSwapping": {
+                "swapping_success_prob": physical.swap_probability,
+                "swapping_degradation": physical.swap_degradation,
+            },
         }
-        self._memories: dict[tuple[int, int], list[object]] = {}
-        # A zero-delay classical mesh keeps the physical result delivery in
-        # SeQUeNCe while avoiding a routing policy hidden in the backend.
-        for src in self.spec.nodes:
-            for dst in self.spec.nodes:
-                if src == dst:
+
+        self.nodes = {}
+        self._memory_owner_by_name: dict[str, object] = {}
+        for node in self.spec.nodes:
+            degree = sum(node in edge for edge in self.spec.edges)
+            memo_size = (
+                physical.node_memory_capacity
+                if physical.node_memory_capacity is not None
+                else max(1, degree * physical.memory_capacity)
+            )
+            router = QuantumRouter(
+                str(node),
+                self.timeline,
+                memo_size=memo_size,
+                seed=self.spec.seed + int(node),
+                component_templates=memory_template,
+                gate_fid=physical.swap_degradation,
+                meas_fid=1.0,
+            )
+            self.nodes[node] = router
+
+        self._edge_bsm: dict[tuple[int, int], object] = {}
+        detector = {
+            "efficiency": physical.detector_efficiency,
+            "dark_count": 0,
+            "time_resolution": 1,
+            "count_rate": max(physical.memory_frequency_hz, 1e12),
+        }
+        for raw_u, raw_v in self.spec.edges:
+            u, v = sorted((raw_u, raw_v))
+            edge = (u, v)
+            middle = BSMNode(
+                f"bsm-{u}-{v}",
+                self.timeline,
+                [str(u), str(v)],
+                seed=self._event_seed("bsm", u, v),
+                component_templates={
+                    "encoding_type": "single_heralded",
+                    "SingleHeraldedBSM": {
+                        "success_rate": physical.bsm_success_probability,
+                        "detectors": [detector.copy(), detector.copy()],
+                    },
+                },
+            )
+            # BSMNode creates the protocol but sequence 1.0 does not register
+            # it in ``protocols`` automatically.
+            middle.protocols.append(middle.eg)
+            self._edge_bsm[edge] = middle
+
+            for endpoint in (u, v):
+                channel = QuantumChannel(
+                    f"qc-{endpoint}-{middle.name}",
+                    self.timeline,
+                    physical.quantum_attenuation_db_per_m,
+                    physical.quantum_distance_m / 2,
+                    physical.quantum_polarization_fidelity,
+                    frequency=physical.memory_frequency_hz,
+                )
+                channel.set_ends(self.nodes[endpoint], middle.name)
+
+        # Entanglement generation and swapping communicate over classical
+        # channels.  Use physical propagation distance unless an explicit
+        # delay is configured.
+        routers = list(self.nodes.values())
+        for source in routers:
+            for target in routers:
+                if source is target:
                     continue
                 channel = ClassicalChannel(
-                    f"cc-{src}-{dst}", self.timeline, 0, self.spec.physical.classical_delay_ps
+                    f"cc-{source.name}-{target.name}",
+                    self.timeline,
+                    physical.quantum_distance_m,
+                    physical.classical_delay_ps,
                 )
-                channel.set_ends(self.nodes[src], self.nodes[dst].name)
+                channel.set_ends(source, target.name)
+
+        for (u, v), middle in self._edge_bsm.items():
+            for endpoint in (u, v):
+                router = self.nodes[endpoint]
+                for source, target in ((router, middle), (middle, router)):
+                    channel = ClassicalChannel(
+                        f"cc-{source.name}-{target.name}",
+                        self.timeline,
+                        physical.quantum_distance_m / 2,
+                        physical.classical_delay_ps,
+                    )
+                    channel.set_ends(source, target.name)
+
         self.timeline.init()
+        for router in self.nodes.values():
+            for memory in router.components[router.memo_arr_name]:
+                self._memory_owner_by_name[memory.name] = router
         self._sequence_ready = True
 
     def _new_id(self, prefix: str = "epr") -> str:
@@ -125,35 +222,114 @@ class SequenceBackend:
         payload = "|".join(map(str, (self.spec.seed, *parts))).encode()
         return int.from_bytes(hashlib.sha256(payload).digest()[:8], "big")
 
-    def _uniform(self, *parts: object) -> float:
-        return self._event_seed(*parts) / 2**64
+    def _run_until(self, target_ps: int, *, advance_clock: bool = True) -> None:
+        """Run all SeQUeNCe events through ``target_ps`` (inclusive)."""
+        target_ps = max(int(target_ps), int(self.timeline.now()))
+        old_stop = self.timeline.stop_time
+        self.timeline.stop_time = target_ps + 1
+        self.timeline.run()
+        if advance_clock and self.timeline.now() < target_ps:
+            self.timeline.time = target_ps
+        self.timeline.stop_time = old_stop
 
-    def _memory(self, node: int, pair_id: str) -> object:
-        memory = self._Memory(
-            f"mem-{pair_id}-{node}", self.timeline,
-            self.spec.physical.initial_fidelity, 1e9, 1.0, -1, 500,
-            cutoff_flag=False,
+    def _run_protocols(self, protocols: Iterable[object], window_ps: int) -> None:
+        """Process events until the supplied protocols finish or time out."""
+        tracked = tuple(protocols)
+        deadline = self.timeline.now() + window_ps
+        while any(protocol in protocol.owner.protocols for protocol in tracked):
+            if self.timeline.events.isempty():
+                break
+            next_time = self.timeline.events.top().time
+            if next_time > deadline:
+                break
+            self._run_until(next_time, advance_clock=False)
+
+    def _generation_window_ps(self) -> int:
+        delays = [
+            channel.delay
+            for router in self.nodes.values()
+            for channel in router.qchannels.values()
+        ]
+        delays.extend(
+            channel.delay
+            for router in list(self.nodes.values()) + list(self._edge_bsm.values())
+            for channel in router.cchannels.values()
         )
-        memory.fidelity = self.spec.physical.initial_fidelity
-        return memory
+        maximum = max(delays, default=1)
+        return max(10_000, 8 * maximum + 100)
+
+    def _swap_window_ps(self) -> int:
+        delays = [
+            channel.delay
+            for router in list(self.nodes.values()) + list(self._edge_bsm.values())
+            for channel in router.cchannels.values()
+        ]
+        return max(1_000, 2 * max(delays, default=1) + 100)
+
+    def _memory_owner(self, memory: object) -> object:
+        return self._memory_owner_by_name[memory.name]
+
+    def _memory_info(self, memory: object) -> object:
+        owner = self._memory_owner(memory)
+        return owner.resource_manager.memory_manager.get_info_by_memory(memory)
+
+    def _reserve_memory(self, memory: object) -> bool:
+        info = self._memory_info(memory)
+        if info.state != self._MemoryInfo.RAW:
+            return False
+        owner = self._memory_owner(memory)
+        owner.resource_manager.memory_manager.update(
+            memory, self._MemoryInfo.OCCUPIED
+        )
+        return True
+
+    def _release_memory(self, memory: object) -> None:
+        owner = self._memory_owner(memory)
+        owner.resource_manager.update(None, memory, self._MemoryInfo.RAW)
+
+    def _raw_memory(self, node: int) -> object | None:
+        owner = self.nodes[node]
+        for info in owner.resource_manager.memory_manager:
+            if info.state == self._MemoryInfo.RAW:
+                return info.memory
+        return None
+
+    @staticmethod
+    def _is_entangled(memory: object, node: int, remote_memory: object) -> bool:
+        entangled = memory.entangled_memory
+        return (
+            str(entangled.get("node_id")) == str(node)
+            and entangled.get("memo_id") == remote_memory.name
+            and memory.fidelity > 0
+        )
+
+    def _sync_pairs(self) -> None:
+        """Mirror SeQUeNCe memory state into the routing index."""
+        for pair_id, pair in list(self.pairs.items()):
+            if not self._is_entangled(pair.left_memory, pair.right, pair.right_memory):
+                self.discard_pair(pair_id)
+                continue
+            if not self._is_entangled(pair.right_memory, pair.left, pair.left_memory):
+                self.discard_pair(pair_id)
+                continue
+            pair.fidelity = min(pair.left_memory.fidelity, pair.right_memory.fidelity)
 
     def discard_pair(self, pair_id: str) -> ResourcePair | None:
-        """Remove a pair and reset both physical memories if it exists."""
+        """Remove a pair and release both SeQUeNCe memories."""
         pair = self.pairs.pop(pair_id, None)
         if pair is None:
             return None
-        pair.left_memory.reset()
-        pair.right_memory.reset()
+        self._release_memory(pair.left_memory)
+        self._release_memory(pair.right_memory)
         return pair
 
     def node_occupancy(self, node: int) -> int:
-        """Return the number of live pair endpoints occupying ``node``."""
+        self._sync_pairs()
         if node not in self.nodes:
             raise ValueError(f"unknown node {node}")
         return sum(node in pair.endpoints for pair in self.pairs.values())
 
     def node_free_slots(self, node: int) -> int | None:
-        """Return free node memory slots, or ``None`` for an unbounded node."""
         capacity = self.spec.physical.node_memory_capacity
         if capacity is None:
             if node not in self.nodes:
@@ -162,22 +338,112 @@ class SequenceBackend:
         return max(0, capacity - self.node_occupancy(node))
 
     def _edge_occupancy(self, u: int, v: int) -> int:
+        self._sync_pairs()
         edge = {u, v}
         return sum(set(pair.endpoints) == edge for pair in self.pairs.values())
+
+    def _prepare_generation(
+        self,
+        u: int,
+        v: int,
+        lane: int,
+        pair_id: str,
+    ) -> tuple[object, ...] | None:
+        left_memory = self._raw_memory(u)
+        right_memory = self._raw_memory(v)
+        if left_memory is None or right_memory is None:
+            return None
+        if not self._reserve_memory(left_memory) or not self._reserve_memory(right_memory):
+            if self._memory_info(left_memory).state == self._MemoryInfo.OCCUPIED:
+                self._release_memory(left_memory)
+            return None
+
+        middle = self._edge_bsm[(min(u, v), max(u, v))]
+        left = self.nodes[u]
+        right = self.nodes[v]
+        left_protocol = self._EntanglementGenerationA.create(
+            left, f"{pair_id}-a", middle.name, str(v), left_memory
+        )
+        right_protocol = self._EntanglementGenerationA.create(
+            right, f"{pair_id}-b", middle.name, str(u), right_memory
+        )
+        left.protocols.append(left_protocol)
+        right.protocols.append(right_protocol)
+        left_protocol.set_others(right_protocol.name, right.name, [right_memory.name])
+        right_protocol.set_others(left_protocol.name, left.name, [left_memory.name])
+        left_protocol.start()
+        right_protocol.start()
+        return (
+            u, v, lane, pair_id, left_memory, right_memory,
+            left_protocol, right_protocol,
+        )
+
+    def _finalize_generation(self, context: tuple[object, ...]) -> str | None:
+        (
+            u, v, lane, pair_id, left_memory, right_memory,
+            left_protocol, right_protocol,
+        ) = context
+        for protocol in (left_protocol, right_protocol):
+            if protocol in protocol.owner.protocols:
+                protocol.owner.protocols.remove(protocol)
+            for event in protocol.scheduled_events:
+                if event.time >= self.timeline.now():
+                    self.timeline.remove_event(event)
+        success = (
+            self._memory_info(left_memory).state == self._MemoryInfo.ENTANGLED
+            and self._memory_info(right_memory).state == self._MemoryInfo.ENTANGLED
+            and self._is_entangled(left_memory, v, right_memory)
+            and self._is_entangled(right_memory, u, left_memory)
+        )
+        if not success:
+            self._release_memory(left_memory)
+            self._release_memory(right_memory)
+            return None
+        self.pairs[pair_id] = ResourcePair(
+            pair_id,
+            u,
+            v,
+            left_memory,
+            right_memory,
+            min(left_memory.fidelity, right_memory.fidelity),
+            self.time,
+            lane=lane,
+        )
+        return pair_id
+
+    def _generate_batch(
+        self,
+        attempts: Iterable[tuple[int, int, int, str]],
+    ) -> dict[str, str | None]:
+        contexts: list[tuple[object, ...]] = []
+        outcomes: dict[str, str | None] = {}
+        for u, v, lane, pair_id in attempts:
+            context = self._prepare_generation(u, v, lane, pair_id)
+            if context is None:
+                outcomes[pair_id] = None
+            else:
+                contexts.append(context)
+        if contexts:
+            protocols = [
+                protocol
+                for context in contexts
+                for protocol in context[-2:]
+            ]
+            self._run_protocols(protocols, self._generation_window_ps())
+            for context in contexts:
+                requested_id = context[3]
+                outcomes[requested_id] = self._finalize_generation(context)
+        return outcomes
 
     def generate_claimed_pairs(
         self,
         claims: Iterable[ResourceClaim],
         allocation_id: str,
     ) -> dict[ResourceClaim, str | None]:
-        """Attempt reserved elementary generation for explicit link lanes.
-
-        Outcomes are independent of claim iteration order.  The physical draw
-        is keyed by ``(time, edge, lane)`` while ``allocation_id`` owns any
-        generated pair and makes repeated calls idempotent.
-        """
+        """Run one SeQUeNCe generation attempt for every explicit claim."""
         if not allocation_id:
             raise ValueError("allocation_id must be non-empty")
+        self._sync_pairs()
         claim_list = tuple(claims)
         if len(set(claim_list)) != len(claim_list):
             raise ValueError("duplicate resource claim")
@@ -188,129 +454,144 @@ class SequenceBackend:
                 raise ValueError("claim lane exceeds physical max_width")
 
         results: dict[ResourceClaim, str | None] = {}
-        ordered = sorted(claim_list, key=lambda item: (*item.endpoints, item.lane))
-        for claim in ordered:
+        pending: list[tuple[int, int, int, str]] = []
+        pending_claims: dict[str, ResourceClaim] = {}
+        pending_edges: dict[tuple[int, int], int] = {}
+        pending_nodes: dict[int, int] = {}
+        for claim in sorted(claim_list, key=lambda item: (*item.endpoints, item.lane)):
             u, v = claim.endpoints
             attempt_key = (self.time, allocation_id, claim.endpoints, claim.lane)
             if attempt_key in self._claim_results:
                 pair_id = self._claim_results[attempt_key]
                 results[claim] = pair_id if pair_id in self.pairs else None
                 continue
-
-            pair_id: str | None = None
-            edge_full = self._edge_occupancy(u, v) >= self.spec.physical.memory_capacity
+            edge = (u, v)
             left_free = self.node_free_slots(u)
             right_free = self.node_free_slots(v)
-            nodes_full = left_free == 0 or right_free == 0
-            draw = self._uniform("claimed-generation", self.time, u, v, claim.lane)
-            if (not edge_full and not nodes_full
-                    and draw <= self.spec.physical.generation_probability):
+            if (
+                self._edge_occupancy(u, v) + pending_edges.get(edge, 0)
+                >= self.spec.physical.memory_capacity
+                or (left_free is not None and pending_nodes.get(u, 0) >= left_free)
+                or (right_free is not None and pending_nodes.get(v, 0) >= right_free)
+            ):
+                pair_id = None
+                self._claim_results[attempt_key] = None
+                results[claim] = None
+            else:
                 digest = hashlib.sha256(
                     f"{self.time}|{allocation_id}|{u}|{v}|{claim.lane}".encode()
                 ).hexdigest()[:16]
-                pair_id = f"claim-{digest}"
-                left_memory = self._memory(u, pair_id)
-                right_memory = self._memory(v, pair_id)
-                left_memory.entangled_memory = {
-                    "node_id": str(v), "memo_id": right_memory.name,
-                }
-                right_memory.entangled_memory = {
-                    "node_id": str(u), "memo_id": left_memory.name,
-                }
-                phi_plus = [2 ** -0.5, 0, 0, 2 ** -0.5]
-                self.timeline.quantum_manager.set(
-                    [left_memory.qstate_key, right_memory.qstate_key], phi_plus
-                )
-                self.pairs[pair_id] = ResourcePair(
-                    pair_id, u, v, left_memory, right_memory,
-                    self.spec.physical.initial_fidelity, self.time,
-                    reserved_by=allocation_id, lane=claim.lane,
-                )
+                requested_id = f"claim-{digest}"
+                pending.append((u, v, claim.lane, requested_id))
+                pending_claims[requested_id] = claim
+                pending_edges[edge] = pending_edges.get(edge, 0) + 1
+                pending_nodes[u] = pending_nodes.get(u, 0) + 1
+                pending_nodes[v] = pending_nodes.get(v, 0) + 1
+
+        outcomes = self._generate_batch(pending)
+        for requested_id, claim in pending_claims.items():
+            pair_id = outcomes[requested_id]
+            if pair_id is not None:
+                self.pairs[pair_id].reserved_by = allocation_id
+            attempt_key = (self.time, allocation_id, claim.endpoints, claim.lane)
             self._claim_results[attempt_key] = pair_id
             results[claim] = pair_id
         return results
 
     def generate_elementary_pairs(self) -> tuple[str, ...]:
-        """Sample one generation attempt per free topology edge."""
-        generated: list[str] = []
+        """Attempt one physical generation round on every free topology edge."""
+        self._sync_pairs()
+        attempts: list[tuple[int, int, int, str]] = []
+        pending_nodes: dict[int, int] = {}
         for edge_index, (raw_u, raw_v) in enumerate(self.spec.edges):
             u, v = sorted((raw_u, raw_v))
-            occupied = sum(
-                1 for pair in self.pairs.values()
-                if set(pair.endpoints) == {u, v}
-            )
-            if occupied >= self.spec.physical.memory_capacity:
+            left_free = self.node_free_slots(u)
+            right_free = self.node_free_slots(v)
+            if (
+                self._edge_occupancy(u, v) >= self.spec.physical.memory_capacity
+                or (left_free is not None and pending_nodes.get(u, 0) >= left_free)
+                or (right_free is not None and pending_nodes.get(v, 0) >= right_free)
+            ):
                 continue
-            if self._uniform("generation", self.time, edge_index) > self.spec.physical.generation_probability:
-                continue
-            pair_id = f"epr-{self.time}-{edge_index}"
-            left_memory, right_memory = self._memory(u, pair_id), self._memory(v, pair_id)
-            left_memory.entangled_memory = {"node_id": str(v), "memo_id": right_memory.name}
-            right_memory.entangled_memory = {"node_id": str(u), "memo_id": left_memory.name}
-            phi_plus = [2 ** -0.5, 0, 0, 2 ** -0.5]
-            self.timeline.quantum_manager.set(
-                [left_memory.qstate_key, right_memory.qstate_key], phi_plus
-            )
-            self.pairs[pair_id] = ResourcePair(
-                pair_id, u, v, left_memory, right_memory,
-                self.spec.physical.initial_fidelity, self.time,
-            )
-            generated.append(pair_id)
-        return tuple(generated)
-
-    def _load_protocols(self):
-        if self._SwappingA is None:
-            from sequence.entanglement_management.swapping import EntanglementSwappingA, EntanglementSwappingB
-            self._SwappingA, self._SwappingB = EntanglementSwappingA, EntanglementSwappingB
+            pair_id = f"epr-{self.time}-{edge_index}-{self._counter}"
+            self._counter += 1
+            attempts.append((u, v, edge_index, pair_id))
+            pending_nodes[u] = pending_nodes.get(u, 0) + 1
+            pending_nodes[v] = pending_nodes.get(v, 0) + 1
+        outcomes = self._generate_batch(attempts)
+        return tuple(
+            pair_id for *_, pair_id in attempts
+            if outcomes[pair_id] is not None
+        )
 
     def _execute_swap(self, action: SwapAction) -> str | None:
-        """Execute one adjacent-pair swap and return the output pair ID."""
-        self._load_protocols()
+        """Execute one adjacent-pair swap through SeQUeNCe."""
         left = self.pairs.get(action.left_pair_id)
         right = self.pairs.get(action.right_pair_id)
-        if (left is None or right is None
-                or set(left.endpoints) & set(right.endpoints) != {action.middle}):
+        if (
+            left is None
+            or right is None
+            or set(left.endpoints) & set(right.endpoints) != {action.middle}
+        ):
             return None
         left_outer = left.right_memory if left.left == action.middle else left.left_memory
         right_outer = right.right_memory if right.left == action.middle else right.left_memory
         left_middle = left.left_memory if left.left == action.middle else left.right_memory
         right_middle = right.left_memory if right.left == action.middle else right.right_memory
         middle_node = self.nodes[action.middle]
+        left_outer_node = left.right if left.left == action.middle else left.left
+        right_outer_node = right.right if right.left == action.middle else right.left
+        if (
+            str(left_outer_node) != str(left_middle.entangled_memory["node_id"])
+            or str(right_outer_node) != str(right_middle.entangled_memory["node_id"])
+        ):
+            return None
+
         middle_node.set_seed(self._event_seed(
             "swap", self.time, action.middle,
             min(action.left_pair_id, action.right_pair_id),
             max(action.left_pair_id, action.right_pair_id),
         ))
-        left_outer_node = left.right if left.left == action.middle else left.left
-        right_outer_node = right.right if right.left == action.middle else right.left
-        if (str(left_outer_node) != str(left_middle.entangled_memory["node_id"])
-                or str(right_outer_node) != str(right_middle.entangled_memory["node_id"])):
-            return None
         left_node = self.nodes[left_outer_node]
         right_node = self.nodes[right_outer_node]
         suffix = self._new_id("swap")
-        end_left = self._SwappingB.create(left_node, f"{suffix}-l", left_outer)
-        middle = self._SwappingA.create(
-            middle_node, f"{suffix}-m", left_middle, right_middle,
+        end_left = self._EntanglementSwappingB.create(left_node, f"{suffix}-l", left_outer)
+        middle = self._EntanglementSwappingA.create(
+            middle_node,
+            f"{suffix}-m",
+            left_middle,
+            right_middle,
             success_prob=self.spec.physical.swap_probability,
-            degradation=self.spec.physical.swap_degradation,
         )
-        end_right = self._SwappingB.create(right_node, f"{suffix}-r", right_outer)
-        for node, protocol in ((left_node, end_left), (middle_node, middle), (right_node, end_right)):
+        end_right = self._EntanglementSwappingB.create(right_node, f"{suffix}-r", right_outer)
+        for node, protocol in (
+            (left_node, end_left),
+            (middle_node, middle),
+            (right_node, end_right),
+        ):
             node.protocols.append(protocol)
         end_left.set_others(middle.name, middle_node.name, [left_middle.name, right_middle.name])
         end_right.set_others(middle.name, middle_node.name, [left_middle.name, right_middle.name])
         middle.set_others(end_left.name, left_node.name, [left_outer.name])
         middle.set_others(end_right.name, right_node.name, [right_outer.name])
         middle.start()
-        self.timeline.run()
+        self._run_protocols((end_left, middle, end_right), self._swap_window_ps())
         success = bool(middle.is_success)
-        for node, protocols in ((left_node, (end_left,)), (middle_node, (middle,)), (right_node, (end_right,))):
-            node.protocols[:] = [protocol for protocol in node.protocols if protocol not in protocols]
+
         self.pairs.pop(left.pair_id, None)
         self.pairs.pop(right.pair_id, None)
         if not success:
+            self._release_memory(left_outer)
+            self._release_memory(right_outer)
             return None
+        if not (
+            self._is_entangled(left_outer, right_outer_node, right_outer)
+            and self._is_entangled(right_outer, left_outer_node, left_outer)
+        ):
+            self._release_memory(left_outer)
+            self._release_memory(right_outer)
+            return None
+
         pair_id = "long-" + hashlib.sha256(
             "|".join(sorted((left.pair_id, right.pair_id))).encode()
         ).hexdigest()[:16]
@@ -322,17 +603,17 @@ class SequenceBackend:
             pair_id,
             min(left_outer_node, right_outer_node),
             max(left_outer_node, right_outer_node),
-            low_memory, high_memory,
-            min(left_outer.fidelity, right_outer.fidelity), self.time,
+            low_memory,
+            high_memory,
+            min(low_memory.fidelity, high_memory.fidelity),
+            self.time,
         )
         return pair_id
 
     def execute_swap(self, action: SwapAction) -> bool:
-        """Execute one adjacent-pair swap through SeQUeNCe."""
         return self._execute_swap(action) is not None
 
     def execute_actions(self, actions: Iterable[SwapAction]) -> str | None:
-        """Execute a symbolic swap chain; ``@N`` references operation N."""
         outputs: dict[str, str] = {}
         last: str | None = None
         for index, action in enumerate(actions):
@@ -351,7 +632,6 @@ class SequenceBackend:
         lane: SwapLane,
         allocation_id: str | None = None,
     ) -> LaneExecutionResult:
-        """Execute one lane and report consumed and untouched resources."""
         original_ids = set(lane.elementary_pair_ids)
         lane_scope = set(original_ids)
         consumed: set[str] = set()
@@ -367,12 +647,8 @@ class SequenceBackend:
                     last = candidate
                     if allocation_id is not None:
                         self.pairs[candidate].reserved_by = allocation_id
-            untouched = tuple(sorted(
-                pair_id for pair_id in original_ids if pair_id in self.pairs
-            ))
-            return LaneExecutionResult(
-                lane.lane, last, (), untouched, untouched, None, 0,
-            )
+            untouched = tuple(sorted(pair_id for pair_id in original_ids if pair_id in self.pairs))
+            return LaneExecutionResult(lane.lane, last, (), untouched, untouched, None, 0)
 
         for index, action in enumerate(lane.swap_actions):
             attempted_swaps += 1
@@ -391,20 +667,16 @@ class SequenceBackend:
             if allocation_id is not None:
                 self.pairs[last].reserved_by = allocation_id
 
-        untouched = tuple(sorted(
-            pair_id for pair_id in original_ids if pair_id in self.pairs
-        ))
-        surviving = tuple(sorted(
-            pair_id for pair_id in lane_scope if pair_id in self.pairs
-        ))
+        untouched = tuple(sorted(pair_id for pair_id in original_ids if pair_id in self.pairs))
+        surviving = tuple(sorted(pair_id for pair_id in lane_scope if pair_id in self.pairs))
         return LaneExecutionResult(
-            lane=lane.lane,
-            output_pair_id=last,
-            consumed_pair_ids=tuple(sorted(consumed)),
-            untouched_pair_ids=untouched,
-            surviving_pair_ids=surviving,
-            failed_action_index=failed_action_index,
-            attempted_swaps=attempted_swaps,
+            lane.lane,
+            last,
+            tuple(sorted(consumed)),
+            untouched,
+            surviving,
+            failed_action_index,
+            attempted_swaps,
         )
 
     def execute_lanes(
@@ -412,7 +684,6 @@ class SequenceBackend:
         lanes: Iterable[SwapLane],
         allocation_id: str | None = None,
     ) -> tuple[LaneExecutionResult, ...]:
-        """Execute independent lanes in stable lane order."""
         lane_list = tuple(lanes)
         lane_ids = [lane.lane for lane in lane_list]
         if len(set(lane_ids)) != len(lane_ids):
@@ -423,7 +694,6 @@ class SequenceBackend:
         )
 
     def release_allocation(self, allocation_id: str) -> tuple[str, ...]:
-        """Release all surviving pairs reserved by an allocation."""
         released = []
         for pair in self.pairs.values():
             if pair.reserved_by == allocation_id:
@@ -432,8 +702,7 @@ class SequenceBackend:
         return tuple(sorted(released))
 
     def advance_slot(self) -> None:
+        """Advance logical time and let SeQUeNCe process physical events."""
         self.time += 1
-        lifetime = self.spec.physical.memory_lifetime
-        for pair_id, pair in list(self.pairs.items()):
-            if self.time - pair.born >= lifetime:
-                self.discard_pair(pair_id)
+        self._run_until(self.timeline.now() + self.spec.physical.slot_duration_ps)
+        self._sync_pairs()

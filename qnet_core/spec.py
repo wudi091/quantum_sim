@@ -34,6 +34,14 @@ class PhysicalConfig:
     classical_delay_ps: int = 0
     node_memory_capacity: int | None = None
     max_width: int = 1
+    quantum_distance_m: float = 1000.0
+    quantum_attenuation_db_per_m: float = 0.0
+    quantum_polarization_fidelity: float = 1.0
+    memory_frequency_hz: float = 2e8
+    slot_duration_ps: int = 1_000_000
+    detector_efficiency: float = 1.0
+    bsm_success_probability: float = 1.0
+    memory_wavelength_nm: int = 500
 
 
 @dataclass(frozen=True)
@@ -62,3 +70,23 @@ class EpisodeSpec:
             raise ValueError("max_width must be positive")
         if self.physical.max_width > self.physical.memory_capacity:
             raise ValueError("max_width cannot exceed per-edge memory_capacity")
+        if self.physical.memory_capacity < 1:
+            raise ValueError("memory_capacity must be positive")
+        if self.physical.memory_lifetime < 1:
+            raise ValueError("memory_lifetime must be positive")
+        if self.physical.quantum_distance_m <= 0:
+            raise ValueError("quantum_distance_m must be positive")
+        if self.physical.quantum_attenuation_db_per_m < 0:
+            raise ValueError("quantum_attenuation_db_per_m cannot be negative")
+        if not 0 <= self.physical.quantum_polarization_fidelity <= 1:
+            raise ValueError("quantum_polarization_fidelity must be in [0, 1]")
+        if self.physical.memory_frequency_hz <= 0:
+            raise ValueError("memory_frequency_hz must be positive")
+        if self.physical.slot_duration_ps < 1:
+            raise ValueError("slot_duration_ps must be positive")
+        if not 0 <= self.physical.detector_efficiency <= 1:
+            raise ValueError("detector_efficiency must be in [0, 1]")
+        if not 0 <= self.physical.bsm_success_probability <= 1:
+            raise ValueError("bsm_success_probability must be in [0, 1]")
+        if self.physical.memory_wavelength_nm < 1:
+            raise ValueError("memory_wavelength_nm must be positive")
