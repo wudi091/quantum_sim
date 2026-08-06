@@ -1,29 +1,41 @@
-# Shared quantum-routing core
+# Shared SeQUeNCe routing core
 
-This package defines the boundary between the common simulation and routing
-algorithms. The common side owns request generation, EPR generation, time
+`qnet_core` is the algorithm-independent simulation boundary for this
+repository. The common side owns request generation, EPR generation, time
 advancement, resource locking, exchange execution, TTL settlement, rewards,
-and metrics. A planner receives an immutable `PlanningSnapshot` and returns
-plan IDs (or `COMMIT`). It must not mutate the backend or call SeQUeNCe.
+and metrics.
 
-Episode metrics distinguish final request completion from intermediate
-resource progress. Evaluation reports successful and partial plan counts,
-cumulative `progress_hops`, and remaining active shortest-path distance.
-Plan-level rates are diagnostic rather than a standalone ranking because
-planners may choose different plan granularities.
+The physical implementation is `SequenceBackend`, a small adapter around
+SeQUeNCe. Routing code only sees pair IDs and immutable planning contracts; it
+does not receive SeQUeNCe objects.
 
-The PPO reward uses a graph-derived frontier-progress potential. It does not
-encode an expert route, fixed next-hop preference, or planner-specific action
-rule.
+## Main components
 
-One planning batch is exactly one physical time slot. A planner may select at
-most one candidate per request while constructing the batch; these selection
-microsteps have zero duration. Committing the compatible set atomically
-executes every selected exchange plan, including multi-hop swap chains, and
-advances logical time by one slot. Swap count is a physical work metric, not a
-time duration. An empty commit is a one-slot wait. The allocation control phase
-used by multi-width routing remains zero-duration; its recovery/execution batch
-is one slot.
+- `scenario.py`: deterministic Waxman-style topology and request generation;
+- `spec.py`: immutable episode, request, and physical configuration types;
+- `planner_api.py`: `PlanningSnapshot`, `PlanDescriptor`, `SwapAction`, and
+  related planner contracts;
+- `env.py`: `SharedRoutingEnv`, including allocation, execution, settlement,
+  progress potential, and metrics;
+- `sequence_backend.py`: SeQUeNCe memories, elementary-pair generation,
+  entanglement swapping, and resource lifetime;
+- `gym_env.py`: masked fixed-size observation/action wrapper;
+- `evaluate.py`: seeded Q-DDCA/Q-CAST comparison entry point.
 
-The SeQUeNCe implementation will live behind this contract. Q-DDCA, PPO,
-Greedy, and Random will use the same snapshot and commit path.
+## Planner contract
+
+Each planning step follows this boundary:
+
+```python
+snapshot = env.snapshot()
+plan_ids = planner.select(snapshot)
+env.commit(plan_ids)
+```
+
+`commit` is the only path that can execute exchanges or advance physical time.
+An empty commit is a one-slot wait. Multi-hop plans are atomic within that
+slot; swap count is recorded as physical work and is not treated as a separate
+time increment.
+
+The Q-DDCA and Q-CAST implementations live in the top-level `algorithms`
+package. They only score and pack candidates from the snapshot.

@@ -1,15 +1,19 @@
-# Algorithm layout
+# Routing algorithms
 
-Each routing or control algorithm owns one directory. Algorithm-specific
-candidate generation, optimization, training, checkpoints, and tests must stay
-inside that directory. Shared physical state, execution, and immutable
-contracts stay in `qnet_core`.
+Each algorithm is a planning-only adapter for the shared SeQUeNCe-backed
+environment in `qnet_core`.
 
-Current layout:
+Current implementations:
 
-- `con_method/`: the CON method described by `con_design.md`;
-- `conflict_aware_greedy/`: greedy schedule-portfolio baseline.
+- `qddca/legacy_planner.py`: Q-DDCA local scoring, retry history, and optional
+  rerouting;
+- `qcast/legacy_planner.py`: Q-CAST expected-throughput ranking.
 
-Future sequential, balanced, random, Q-DDCA, Q-CAST, M-PSES-like, and other
-baselines should each receive their own sibling directory instead of being
-added to a common algorithm file.
+Both planners receive an immutable `PlanningSnapshot` and return plan IDs.
+They do not create requests, mutate EPR resources, advance time, reject
+requests, or perform settlement. Those operations remain in
+`qnet_core.SharedRoutingEnv` and `qnet_core.SequenceBackend`.
+
+```python
+from algorithms import QCASTPlanner, QDDCAPlanner
+```

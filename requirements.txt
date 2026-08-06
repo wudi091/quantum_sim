@@ -3,5 +3,3 @@ numpy
 networkx
 scipy
 tqdm
-ortools
-gymnasium>=0.29
