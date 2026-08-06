@@ -1,26 +1,10 @@
-"""Immutable episode and physical configuration shared by every algorithm."""
+"""Composition-level episode and physical simulator configuration."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-
-@dataclass(frozen=True)
-class RequestSpec:
-    id: str
-    source: int
-    destination: int
-    arrival: int = 0
-    ttl: int | None = None
-    demand_pairs: int = 1
-
-    def __post_init__(self) -> None:
-        if self.demand_pairs < 1:
-            raise ValueError("demand_pairs must be positive")
-
-    @property
-    def deadline(self) -> int | None:
-        return None if self.ttl is None else self.arrival + self.ttl
+from .planning_spec import PlanningSpec, RequestSpec
 
 
 @dataclass(frozen=True)
@@ -53,6 +37,17 @@ class EpisodeSpec:
     horizon: int
     physical: PhysicalConfig = PhysicalConfig()
 
+    @property
+    def planning(self) -> PlanningSpec:
+        """Return the physical-config-free view consumed by routing."""
+        return PlanningSpec(
+            seed=self.seed,
+            nodes=self.nodes,
+            edges=self.edges,
+            requests=self.requests,
+            horizon=self.horizon,
+        )
+
     def __post_init__(self) -> None:
         if self.horizon < 1:
             raise ValueError("horizon must be positive")
@@ -63,6 +58,12 @@ class EpisodeSpec:
             raise ValueError("generation_probability must be in (0, 1]")
         if not 0 <= self.physical.swap_probability <= 1:
             raise ValueError("swap_probability must be in [0, 1]")
+        if not 0.5 <= self.physical.initial_fidelity <= 1:
+            raise ValueError("initial_fidelity must be in [0.5, 1]")
+        if not 0 <= self.physical.swap_degradation <= 1:
+            raise ValueError("swap_degradation must be in [0, 1]")
+        if self.physical.classical_delay_ps < 0:
+            raise ValueError("classical_delay_ps cannot be negative")
         if (self.physical.node_memory_capacity is not None
                 and self.physical.node_memory_capacity < 1):
             raise ValueError("node_memory_capacity must be positive when set")

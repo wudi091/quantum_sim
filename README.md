@@ -22,8 +22,7 @@ mutate the backend or advance physical time.
 - `QCAST`: upstream Kotlin/Maven Q-CAST reference simulator.
 
 The upstream `QDDCA` and `QCAST` directories are references. The runnable
-comparison backend in this repository is `qnet_core.SharedRoutingEnv` backed
-by `qnet_core.SequenceBackend`.
+comparison environment is assembled by `qnet_core.runtime.make_sequence_env`.
 
 ## Environment
 
@@ -75,9 +74,12 @@ ScenarioConfig + seed
 make_episode() -> EpisodeSpec
         |
         v
-SharedRoutingEnv
+make_sequence_env() [composition root]
         |
-        +--> SequenceBackend (SeQUeNCe memories, EPRs, swaps)
+        +--> EpisodeSpec.planning -> SharedRoutingEnv -> PhysicalBackend
+        |                                                    |
+        |                                                    v
+        +------------------------------------------> SequenceBackend -> SeQUeNCe
         |
         +--> PlanningSnapshot
                  |
@@ -88,8 +90,16 @@ SharedRoutingEnv
 env.commit(plan_ids) -> metrics
 ```
 
-`qnet_core.gym_env.SequenceGymEnv` exposes the same environment through a
-masked, fixed-size observation/action interface for PPO-style controllers.
+`qnet_core.runtime.make_sequence_gym_env` exposes the same environment through
+a masked, fixed-size observation/action interface for PPO-style controllers.
+
+The dependency is one-way. Planning and Gym code call the simulator-neutral
+`PhysicalBackend` protocol and consume immutable `PhysicalResource` views.
+`SharedRoutingEnv` receives a physical-config-free `PlanningSpec`; only the
+composition root sees both the episode specification and concrete backend.
+The composition root carries `PhysicalConfig` into `SequenceBackend`; only the
+backend imports SeQUeNCe and interprets those physical parameters. No
+SeQUeNCe entity is exposed to candidate construction or routing algorithms.
 
 ## Algorithm boundary
 
@@ -104,6 +114,6 @@ The stable public imports are:
 
 ```python
 from algorithms import QCASTPlanner, QDDCAPlanner
-from qnet_core.env import SharedRoutingEnv
 from qnet_core.planner_api import PlanningSnapshot
+from qnet_core.runtime import make_sequence_env
 ```

@@ -1,10 +1,10 @@
 import unittest
 from unittest.mock import patch
 
-from qnet_core.env import SharedRoutingEnv
 from qnet_core.gym_env import GymConfig, SequenceGymEnv
-from qnet_core.planners import GreedyPlanner, QCASTPlanner, QDDCAPlanner, RandomPlanner
+from qnet_core.planners import QCASTPlanner, QDDCAPlanner
 from qnet_core.reward import RewardConfig
+from qnet_core.runtime import make_sequence_env, make_sequence_gym_env
 from qnet_core.scenario import ScenarioConfig
 from qnet_core.spec import EpisodeSpec, PhysicalConfig, RequestSpec
 
@@ -32,7 +32,7 @@ class SequenceEnvironmentTests(unittest.TestCase):
         )
 
     def test_three_node_request_uses_shared_generation_and_settlement(self):
-        env = SharedRoutingEnv(EpisodeSpec(
+        env = make_sequence_env(EpisodeSpec(
             seed=11,
             nodes=(0, 1, 2),
             edges=((0, 1), (1, 2)),
@@ -64,12 +64,12 @@ class SequenceEnvironmentTests(unittest.TestCase):
             horizon=8,
             physical=PhysicalConfig(generation_probability=0.5),
         )
-        left, right = SharedRoutingEnv(spec).snapshot(), SharedRoutingEnv(spec).snapshot()
+        left, right = make_sequence_env(spec).snapshot(), make_sequence_env(spec).snapshot()
         self.assertEqual(left.resources, right.resources)
         self.assertEqual(left.candidates, right.candidates)
 
     def test_partial_plan_reports_frontier_progress_without_completion(self):
-        env = SharedRoutingEnv(EpisodeSpec(
+        env = make_sequence_env(EpisodeSpec(
             seed=29,
             nodes=(0, 1, 2),
             edges=((0, 1), (1, 2)),
@@ -95,7 +95,7 @@ class SequenceEnvironmentTests(unittest.TestCase):
         self.assertEqual(env.metrics()["progress_hops"], 1.0)
 
     def test_failed_extension_reports_lost_frontier_progress(self):
-        env = SharedRoutingEnv(EpisodeSpec(
+        env = make_sequence_env(EpisodeSpec(
             seed=31,
             nodes=(0, 1, 2),
             edges=((0, 1), (1, 2)),
@@ -123,7 +123,7 @@ class SequenceEnvironmentTests(unittest.TestCase):
         self.assertEqual(env.metrics()["progress_hops"], 0.0)
 
     def test_multi_hop_destination_plan_completes_at_deadline_in_one_slot(self):
-        env = SharedRoutingEnv(EpisodeSpec(
+        env = make_sequence_env(EpisodeSpec(
             seed=37,
             nodes=(0, 1, 2, 3),
             edges=((0, 1), (1, 2), (2, 3)),
@@ -163,14 +163,14 @@ class SequenceEnvironmentTests(unittest.TestCase):
                 memory_capacity=2,
             ),
         )
-        atomic = SharedRoutingEnv(spec)
+        atomic = make_sequence_env(spec)
         complete = next(
             plan for plan in atomic.snapshot().candidates
             if plan.completes_request
         )
         atomic.commit((complete.plan_id,))
 
-        qddca = SharedRoutingEnv(spec)
+        qddca = make_sequence_env(spec)
         planner = QDDCAPlanner()
         planner.reset(spec.seed)
         while not qddca.done:
@@ -182,7 +182,7 @@ class SequenceEnvironmentTests(unittest.TestCase):
         self.assertEqual(qddca.metrics()["completion_rate"], 1.0)
 
     def test_failed_multi_hop_plan_consumes_only_one_slot_and_counts_attempts(self):
-        env = SharedRoutingEnv(EpisodeSpec(
+        env = make_sequence_env(EpisodeSpec(
             seed=39,
             nodes=(0, 1, 2, 3, 4),
             edges=((0, 1), (1, 2), (2, 3), (3, 4)),
@@ -219,7 +219,7 @@ class SequenceEnvironmentTests(unittest.TestCase):
         self.assertEqual(env.requests["r0"].frontier, 0)
 
     def test_different_depth_plans_share_one_atomic_batch_slot(self):
-        env = SharedRoutingEnv(EpisodeSpec(
+        env = make_sequence_env(EpisodeSpec(
             seed=40,
             nodes=(0, 1, 2, 3, 4, 5),
             edges=((0, 1), (2, 3), (3, 4), (4, 5)),
@@ -256,7 +256,7 @@ class SequenceEnvironmentTests(unittest.TestCase):
         self.assertEqual(env.requests["long"].completed_at, 1)
 
     def test_batch_keeps_positive_and_lost_progress_separate(self):
-        env = SharedRoutingEnv(EpisodeSpec(
+        env = make_sequence_env(EpisodeSpec(
             seed=41,
             nodes=(0, 1, 2, 3, 4),
             edges=((0, 1), (2, 3), (3, 4)),
@@ -296,17 +296,17 @@ class SequenceEnvironmentTests(unittest.TestCase):
             horizon=8,
             physical=PhysicalConfig(generation_probability=1.0),
         )
-        env = SharedRoutingEnv(spec)
+        env = make_sequence_env(spec)
         snapshot = env.snapshot()
         before = snapshot.candidates
         valid = {plan.plan_id for plan in snapshot.candidates}
-        for planner in (GreedyPlanner(), QCASTPlanner(), QDDCAPlanner(), RandomPlanner(3)):
+        for planner in (QCASTPlanner(), QDDCAPlanner()):
             planner.reset(spec.seed)
             self.assertLessEqual(set(planner.select(snapshot)), valid)
             self.assertEqual(snapshot.candidates, before)
 
     def test_gym_wrapper_only_advances_on_stop(self):
-        env = SequenceGymEnv(GymConfig(
+        env = make_sequence_gym_env(GymConfig(
             max_requests=2,
             max_candidates_per_request=3,
             max_hops=3,
@@ -330,7 +330,7 @@ class SequenceEnvironmentTests(unittest.TestCase):
         self.assertEqual(info["phase"], "execute")
 
     def test_gym_wrapper_allows_empty_wait_commit(self):
-        env = SequenceGymEnv(GymConfig(
+        env = make_sequence_gym_env(GymConfig(
             max_requests=1,
             max_candidates_per_request=3,
             max_hops=2,
@@ -351,7 +351,7 @@ class SequenceEnvironmentTests(unittest.TestCase):
         self.assertEqual(env.core.time, 1)
 
     def test_candidate_exposes_remaining_hops(self):
-        env = SequenceGymEnv(GymConfig(
+        env = make_sequence_gym_env(GymConfig(
             max_requests=1,
             max_candidates_per_request=3,
             max_hops=3,
@@ -372,7 +372,7 @@ class SequenceEnvironmentTests(unittest.TestCase):
         )
 
     def test_potential_reward_values_partial_frontier_progress(self):
-        env = SequenceGymEnv(GymConfig(
+        env = make_sequence_gym_env(GymConfig(
             max_requests=1,
             max_candidates_per_request=3,
             max_hops=2,
@@ -399,7 +399,7 @@ class SequenceEnvironmentTests(unittest.TestCase):
 
     def test_multi_hop_reward_is_discounted_once_for_the_atomic_batch(self):
         gamma = 0.9
-        env = SequenceGymEnv(GymConfig(
+        env = make_sequence_gym_env(GymConfig(
             max_requests=1,
             max_candidates_per_request=3,
             max_hops=3,
@@ -431,7 +431,7 @@ class SequenceEnvironmentTests(unittest.TestCase):
         self.assertAlmostEqual(reward, gamma * 3.0)
 
     def test_potential_reward_penalizes_failed_frontier_reset(self):
-        env = SequenceGymEnv(GymConfig(
+        env = make_sequence_gym_env(GymConfig(
             max_requests=1,
             max_candidates_per_request=3,
             max_hops=2,
@@ -456,7 +456,7 @@ class SequenceEnvironmentTests(unittest.TestCase):
 
     def test_discounted_potential_shaping_telescopes_across_frontier_reset(self):
         gamma = 0.9
-        env = SequenceGymEnv(GymConfig(
+        env = make_sequence_gym_env(GymConfig(
             max_requests=1,
             max_candidates_per_request=3,
             max_hops=2,
@@ -490,7 +490,7 @@ class SequenceEnvironmentTests(unittest.TestCase):
         )
 
     def test_timeout_terminal_cancels_unfinished_progress(self):
-        env = SequenceGymEnv(GymConfig(
+        env = make_sequence_gym_env(GymConfig(
             max_requests=1,
             max_candidates_per_request=3,
             max_hops=3,
@@ -514,7 +514,7 @@ class SequenceEnvironmentTests(unittest.TestCase):
         self.assertEqual(info["progress_potential_after"], 0.0)
 
     def test_empty_atomic_slot_expires_request_at_deadline(self):
-        env = SharedRoutingEnv(EpisodeSpec(
+        env = make_sequence_env(EpisodeSpec(
             seed=23,
             nodes=(0, 1, 2, 3),
             edges=((0, 1), (1, 2), (2, 3)),
@@ -529,7 +529,7 @@ class SequenceEnvironmentTests(unittest.TestCase):
         self.assertEqual(result["metrics"]["timeout_rate"], 1.0)
 
     def test_qcast_width_two_delivers_two_pairs_through_public_phases(self):
-        env = SharedRoutingEnv(EpisodeSpec(
+        env = make_sequence_env(EpisodeSpec(
             seed=71,
             nodes=(0, 1, 2),
             edges=((0, 1), (1, 2)),
@@ -564,7 +564,7 @@ class SequenceEnvironmentTests(unittest.TestCase):
         self.assertEqual(env.phase, "allocate")
 
     def test_width_claims_enforce_internal_node_memory(self):
-        env = SharedRoutingEnv(EpisodeSpec(
+        env = make_sequence_env(EpisodeSpec(
             seed=73,
             nodes=(0, 1, 2),
             edges=((0, 1), (1, 2)),
@@ -587,7 +587,7 @@ class SequenceEnvironmentTests(unittest.TestCase):
             env.commit((wide,))
 
     def test_recovery_can_use_shared_surplus_detour(self):
-        env = SharedRoutingEnv(EpisodeSpec(
+        env = make_sequence_env(EpisodeSpec(
             seed=79,
             nodes=(0, 1, 2, 3),
             edges=((0, 1), (1, 3), (0, 2), (2, 3)),
@@ -631,7 +631,7 @@ class SequenceEnvironmentTests(unittest.TestCase):
         self.assertEqual(env.requests["r0"].completed_at, 1)
 
     def test_gym_exposes_width_phase_and_claim_conflicts(self):
-        env = SequenceGymEnv(GymConfig(
+        env = make_sequence_gym_env(GymConfig(
             max_requests=1,
             max_candidates_per_request=6,
             max_hops=2,

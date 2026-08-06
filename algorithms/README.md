@@ -1,7 +1,7 @@
 # Routing algorithms
 
-Each algorithm is a planning-only adapter for the shared SeQUeNCe-backed
-environment in `qnet_core`.
+Each algorithm is a planning-only adapter for the routing environment in
+`qnet_core`.
 
 Current implementations:
 
@@ -11,8 +11,9 @@ Current implementations:
 
 Both planners receive an immutable `PlanningSnapshot` and return plan IDs.
 They do not create requests, mutate EPR resources, advance time, reject
-requests, or perform settlement. Those operations remain in
-`qnet_core.SharedRoutingEnv` and `qnet_core.SequenceBackend`.
+requests, or perform settlement. Request lifecycle remains in
+`SharedRoutingEnv`; physical actions are delegated through the injected
+`qnet_core.physical_api.PhysicalBackend`.
 
 ```python
 from algorithms import QCASTPlanner, QDDCAPlanner

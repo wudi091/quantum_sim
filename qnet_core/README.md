@@ -14,13 +14,19 @@ does not receive SeQUeNCe objects.
 ## Main components
 
 - `scenario.py`: deterministic Waxman-style topology and request generation;
-- `spec.py`: immutable episode, request, and physical configuration types;
+- `planning_spec.py`: topology, requests, and horizon visible to routing;
+- `spec.py`: composition-level episode and physical configuration types;
+- `command_api.py`: simulator-neutral allocation and swap command DTOs;
 - `planner_api.py`: `PlanningSnapshot`, `PlanDescriptor`, `SwapAction`, and
   related planner contracts;
+- `physical_api.py`: simulator-neutral calls and immutable resource views used
+  by the routing environment;
 - `env.py`: `SharedRoutingEnv`, including allocation, execution, settlement,
   progress potential, and metrics;
 - `sequence_backend.py`: the routing index around SeQUeNCe's physical
   entities and protocols;
+- `runtime.py`: the only module that wires `SharedRoutingEnv` to
+  `SequenceBackend`;
 - `gym_env.py`: masked fixed-size observation/action wrapper;
 - `evaluate.py`: seeded Q-DDCA/Q-CAST comparison entry point.
 
@@ -41,3 +47,18 @@ time increment.
 
 The Q-DDCA and Q-CAST implementations live in the top-level `algorithms`
 package. They only score and pack candidates from the snapshot.
+
+The module dependency is deliberately one-way:
+
+```text
+planner -> PlanningSnapshot <- SharedRoutingEnv -> PhysicalBackend
+                                                   |
+                                                   v
+runtime.py composition root -> SequenceBackend -> SeQUeNCe
+```
+
+`SharedRoutingEnv` accepts only `PlanningSpec` plus an injected
+`PhysicalBackend`. It never imports `SequenceBackend`, reads `PhysicalConfig`,
+touches SeQUeNCe entities, or mutates the backend's pair inventory. Capacity
+checks, physical estimates, generation, swapping, resource ownership, and
+time advancement are backend calls.

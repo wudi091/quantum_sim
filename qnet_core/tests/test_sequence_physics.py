@@ -52,6 +52,41 @@ class SequencePhysicsTests(unittest.TestCase):
             ),
         ))
         self.assertEqual(backend.generate_elementary_pairs(), ())
+        self.assertEqual(backend.estimate_route_throughput((0, 1), 1), 0.0)
+        self.assertEqual(
+            backend.link_capacities()[0]["generation_probability"], 0.0
+        )
+
+    def test_classical_delay_uses_topology_distance(self):
+        backend = SequenceBackend(EpisodeSpec(
+            seed=19,
+            nodes=(0, 1, 2, 3),
+            edges=((0, 1), (1, 2), (2, 3)),
+            requests=(),
+            horizon=2,
+            physical=PhysicalConfig(quantum_distance_m=1000.0),
+        ))
+        self.assertEqual(backend.nodes[0].cchannels["3"].delay, 15_000_000)
+
+    def test_resource_view_refreshes_bds_fidelity(self):
+        backend = SequenceBackend(EpisodeSpec(
+            seed=23,
+            nodes=(0, 1),
+            edges=((0, 1),),
+            requests=(),
+            horizon=2,
+            physical=PhysicalConfig(
+                generation_probability=1.0,
+                memory_lifetime=2,
+                quantum_distance_m=1.0,
+                slot_duration_ps=1_000_000,
+            ),
+        ))
+        pair_id = backend.generate_elementary_pairs()[0]
+        initial = backend.resource(pair_id).fidelity
+        backend.advance_slot()
+        current = backend.resource(pair_id).fidelity
+        self.assertLess(current, initial)
 
 
 if __name__ == "__main__":

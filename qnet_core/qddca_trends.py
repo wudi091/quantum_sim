@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 from scipy.stats import spearmanr
 
-from .env import SharedRoutingEnv
+from .runtime import make_sequence_env
 from .planners import QDDCAPlanner
 from .spec import EpisodeSpec, PhysicalConfig, RequestSpec
 
@@ -75,7 +75,7 @@ def make_spec(window: int, seed: int, ttl: int = 30) -> EpisodeSpec:
 
 
 def run_case(window: int, max_try: int, reroute: bool, seed: int) -> dict[str, float]:
-    env = SharedRoutingEnv(make_spec(window, seed), candidate_count=3)
+    env = make_sequence_env(make_spec(window, seed), candidate_count=3)
     planner = QDDCAPlanner(max_try=max_try, allow_reroute=reroute, seed=seed)
     planner.reset(seed)
     while not env.done:

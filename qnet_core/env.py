@@ -1,19 +1,17 @@
-"""Algorithm-independent episode control on the SeQUeNCe resource kernel."""
+"""Algorithm-independent routing control over an opaque physical backend."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 import itertools
-import math
 from typing import Iterable
 
 import networkx as nx
 
-from .planner_api import (
-    PlanDescriptor, PlanningSnapshot, ResourceClaim, SwapAction, SwapLane,
-)
-from .sequence_backend import SequenceBackend
-from .spec import EpisodeSpec, RequestSpec
+from .command_api import ResourceClaim, SwapAction, SwapLane
+from .planner_api import PlanDescriptor, PlanningSnapshot
+from .physical_api import PhysicalBackend, PhysicalCapabilities
+from .planning_spec import PlanningSpec, RequestSpec
 
 
 @dataclass
@@ -32,16 +30,22 @@ class RequestState:
 
 
 class SharedRoutingEnv:
-    """One request/physics/settlement implementation for every planner."""
+    """One request and settlement implementation shared by every planner."""
 
-    def __init__(self, spec: EpisodeSpec, candidate_count: int = 3):
+    def __init__(
+        self,
+        spec: PlanningSpec,
+        backend: PhysicalBackend,
+        candidate_count: int = 3,
+    ):
         self.spec = spec
         self.candidate_count = max(1, int(candidate_count))
         self.graph = nx.Graph()
         self.graph.add_nodes_from(spec.nodes)
         self.graph.add_edges_from(spec.edges)
         self._distances = dict(nx.all_pairs_shortest_path_length(self.graph))
-        self.backend = SequenceBackend(spec)
+        self.backend: PhysicalBackend = backend
+        self.capabilities: PhysicalCapabilities = backend.capabilities
         self.requests = {
             request.id: RequestState(request, request.source)
             for request in spec.requests
@@ -66,7 +70,7 @@ class SharedRoutingEnv:
         self.allocation_claims = 0
         self.allocation_successes = 0
         self.released_surplus_pairs = 0
-        self.phase = "allocate" if spec.physical.max_width > 1 else "primary"
+        self.phase = "allocate" if self.capabilities.max_width > 1 else "primary"
         self._active_allocation_ids: set[str] = set()
         self._allocated_pair_ids: set[str] = set()
         self._prepared_time: int | None = None
@@ -95,7 +99,7 @@ class SharedRoutingEnv:
         for state in self.requests.values():
             carried = tuple(
                 pair_id for pair_id in self._carried_ids(state)
-                if pair_id in self.backend.pairs
+                if self.backend.has_resource(pair_id)
             )
             if len(carried) != len(self._carried_ids(state)):
                 self._set_carried(state, carried)
@@ -112,7 +116,7 @@ class SharedRoutingEnv:
 
     def _available_pair(self, u: int, v: int) -> str | None:
         matches = [
-            pair for pair in self.backend.pairs.values()
+            pair for pair in self.backend.resources()
             if pair.owner_request is None and set(pair.endpoints) == {u, v}
         ]
         if not matches:
@@ -137,23 +141,9 @@ class SharedRoutingEnv:
             left_ref = f"@{index}"
         return tuple(actions)
 
-    def _expected_throughput(self, hops: int, width: int) -> float:
-        """QCAST EXT for homogeneous generation and swapping probabilities."""
-        p = self.spec.physical.generation_probability
-        q = self.spec.physical.swap_probability
-        expected_bottleneck = 0.0
-        for minimum in range(1, width + 1):
-            tail = sum(
-                math.comb(width, successes)
-                * p**successes * (1.0 - p) ** (width - successes)
-                for successes in range(minimum, width + 1)
-            )
-            expected_bottleneck += tail**max(hops, 1)
-        return float(expected_bottleneck * q ** max(hops - 1, 0))
-
     def _build_allocation_candidates(self) -> dict[str, PlanDescriptor]:
         candidates: dict[str, PlanDescriptor] = {}
-        max_width = self.spec.physical.max_width
+        max_width = self.capabilities.max_width
         for state in self.requests.values():
             request = state.spec
             if not state.active or request.arrival > self.time:
@@ -184,7 +174,6 @@ class SharedRoutingEnv:
                         for u, v in zip(route, route[1:])
                     )
                     plan_id = f"a{self.time}:{request.id}:{slot}"
-                    hops = len(route) - 1
                     candidates[plan_id] = PlanDescriptor(
                         plan_id=plan_id,
                         request_id=request.id,
@@ -199,7 +188,9 @@ class SharedRoutingEnv:
                         width=width,
                         claims=claims,
                         allocation_id=plan_id,
-                        expected_throughput=self._expected_throughput(hops, width),
+                        expected_throughput=self.backend.estimate_route_throughput(
+                            route, width
+                        ),
                         memory_cost=2 * len(claims),
                     )
                     slot += 1
@@ -215,7 +206,7 @@ class SharedRoutingEnv:
         resource_graph = nx.Graph()
         resource_graph.add_nodes_from(self.graph.nodes)
         for pair_id in sorted(self._allocated_pair_ids):
-            pair = self.backend.pairs.get(pair_id)
+            pair = self.backend.resource(pair_id)
             if pair is None or pair.owner_request is not None:
                 continue
             edge = (min(pair.left, pair.right), max(pair.left, pair.right))
@@ -268,7 +259,7 @@ class SharedRoutingEnv:
                 )
                 if carried:
                     available_width = min(available_width, len(carried))
-                available_width = min(available_width, self.spec.physical.max_width)
+                available_width = min(available_width, self.capabilities.max_width)
                 for width in range(1, available_width + 1):
                     lanes: list[SwapLane] = []
                     flat_ids: list[str] = []
@@ -284,9 +275,8 @@ class SharedRoutingEnv:
                         lanes.append(SwapLane(lane_index, tuple(pair_ids), actions))
                         flat_ids.extend(pair_ids)
                     plan_id = f"r{self.time}:{request.id}:{slot}"
-                    realized_ext = sum(
-                        self.spec.physical.swap_probability ** len(lane.swap_actions)
-                        for lane in lanes
+                    realized_ext = self.backend.estimate_swap_throughput(
+                        len(lane.swap_actions) for lane in lanes
                     )
                     candidates[plan_id] = PlanDescriptor(
                         plan_id=plan_id,
@@ -422,14 +412,9 @@ class SharedRoutingEnv:
             "fidelity": pair.fidelity,
             "born": pair.born,
             "owner_request": pair.owner_request,
-        } for pair in sorted(self.backend.pairs.values(), key=lambda item: item.pair_id))
+        } for pair in self.backend.resources())
         candidates = tuple(self._candidates.values())
-        link_capacities = tuple({
-            "left": min(u, v),
-            "right": max(u, v),
-            "max_width": self.spec.physical.max_width,
-            "generation_probability": self.spec.physical.generation_probability,
-        } for u, v in self.spec.edges)
+        link_capacities = self.backend.link_capacities()
         return PlanningSnapshot(
             time=self.time,
             requests=request_rows,
@@ -483,8 +468,6 @@ class SharedRoutingEnv:
         plans = [self._candidates[plan_id] for plan_id in plan_ids]
         request_ids: set[str] = set()
         claims: set[ResourceClaim] = set()
-        node_claims: dict[int, int] = {}
-        edge_claims: dict[tuple[int, int], int] = {}
         for plan in plans:
             if plan.kind != "allocation":
                 raise ValueError("allocation phase accepts allocation plans only")
@@ -495,22 +478,7 @@ class SharedRoutingEnv:
             if overlap:
                 raise ValueError(f"allocation claims overlap: {overlap}")
             claims.update(plan.claims)
-            for claim in plan.claims:
-                edge_claims[claim.endpoints] = edge_claims.get(claim.endpoints, 0) + 1
-                for node in claim.endpoints:
-                    node_claims[node] = node_claims.get(node, 0) + 1
-        capacity = self.spec.physical.node_memory_capacity
-        for edge, count in edge_claims.items():
-            occupied = sum(
-                set(pair.endpoints) == set(edge)
-                for pair in self.backend.pairs.values()
-            )
-            if occupied + count > self.spec.physical.memory_capacity:
-                raise ValueError(f"edge {edge} memory capacity exceeded")
-        if capacity is not None:
-            for node, count in node_claims.items():
-                if self.backend.node_occupancy(node) + count > capacity:
-                    raise ValueError(f"node {node} memory capacity exceeded")
+        self.backend.validate_claim_batch(claims)
 
         generated = 0
         self.allocation_claims += sum(len(plan.claims) for plan in plans)
@@ -561,7 +529,7 @@ class SharedRoutingEnv:
                 inputs.update(self._carried_ids(self.requests[plan.request_id]))
             if inputs & pair_ids:
                 raise ValueError("two selected plans consume the same EPR pair")
-            if not inputs <= self.backend.pairs.keys():
+            if not inputs <= self.backend.resource_ids():
                 raise ValueError("selected plan references a missing EPR pair")
             pair_ids.update(inputs)
 
@@ -613,9 +581,7 @@ class SharedRoutingEnv:
             if not plan.completes_request:
                 partial_successes_now += 1
             for output_id in output_ids:
-                output = self.backend.pairs[output_id]
-                output.owner_request = state.spec.id
-                output.reserved_by = None
+                self.backend.assign_owner(output_id, state.spec.id)
             state.frontier = plan.reached_node
             self._set_carried(state, output_ids)
             finish_time = batch_start + batch_duration
@@ -633,7 +599,7 @@ class SharedRoutingEnv:
                     state.completed_at = finish_time
                     completed_now += 1
             for pair_id in old_carried:
-                if pair_id in self.backend.pairs and pair_id not in output_ids:
+                if self.backend.has_resource(pair_id) and pair_id not in output_ids:
                     self.backend.discard_pair(pair_id)
             delta = request_remaining_before - self._request_remaining_hops(state)
             progress_hops += delta
@@ -651,7 +617,7 @@ class SharedRoutingEnv:
             self.recovery_attempts += len(plans)
             self.recovery_successes += successful_now
             for pair_id in tuple(self._allocated_pair_ids):
-                pair = self.backend.pairs.get(pair_id)
+                pair = self.backend.resource(pair_id)
                 if pair is not None and pair.owner_request is None:
                     self.backend.discard_pair(pair_id)
                     self.released_surplus_pairs += 1

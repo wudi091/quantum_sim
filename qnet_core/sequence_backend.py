@@ -8,12 +8,18 @@ Timeline event queue.
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 import hashlib
 import math
 from typing import Iterable
 
-from .planner_api import ResourceClaim, SwapAction, SwapLane
+from .physical_api import (
+    LaneExecutionResult,
+    PhysicalCapabilities,
+    PhysicalResource,
+)
+from .command_api import ResourceClaim, SwapAction, SwapLane
 from .spec import EpisodeSpec
 
 
@@ -35,28 +41,16 @@ class ResourcePair:
         return self.left, self.right
 
 
-@dataclass(frozen=True)
-class LaneExecutionResult:
-    """Structured result for one independently executed swap lane."""
-
-    lane: int
-    output_pair_id: str | None
-    consumed_pair_ids: tuple[str, ...]
-    untouched_pair_ids: tuple[str, ...]
-    surviving_pair_ids: tuple[str, ...]
-    failed_action_index: int | None
-    attempted_swaps: int
-
-    @property
-    def success(self) -> bool:
-        return self.output_pair_id is not None
-
-
 class SequenceBackend:
     """Common physical state shared by all planners."""
 
     def __init__(self, spec: EpisodeSpec):
         self.spec = spec
+        self.capabilities = PhysicalCapabilities(
+            max_width=spec.physical.max_width,
+            memory_capacity=spec.physical.memory_capacity,
+            node_memory_capacity=spec.physical.node_memory_capacity,
+        )
         self.time = 0  # logical routing slots; SeQUeNCe uses ps internally
         self._counter = 0
         self.pairs: dict[str, ResourcePair] = {}
@@ -66,8 +60,28 @@ class SequenceBackend:
         self._topology_edges = {
             (min(u, v), max(u, v)) for u, v in self.spec.edges
         }
+        self._hop_distances = self._build_hop_distances()
         self._sequence_ready = False
         self._build_sequence_world()
+
+    def _build_hop_distances(self) -> dict[int, dict[int, int]]:
+        adjacency = {node: set() for node in self.spec.nodes}
+        for u, v in self.spec.edges:
+            adjacency[u].add(v)
+            adjacency[v].add(u)
+        distances: dict[int, dict[int, int]] = {}
+        for source in self.spec.nodes:
+            rows = {source: 0}
+            frontier = deque([source])
+            while frontier:
+                current = frontier.popleft()
+                for neighbor in adjacency[current]:
+                    if neighbor in rows:
+                        continue
+                    rows[neighbor] = rows[current] + 1
+                    frontier.append(neighbor)
+            distances[source] = rows
+        return distances
 
     def _build_sequence_world(self) -> None:
         try:
@@ -141,6 +155,7 @@ class SequenceBackend:
             self.nodes[node] = router
 
         self._edge_bsm: dict[tuple[int, int], object] = {}
+        self._edge_quantum_channels: dict[tuple[int, int], tuple[object, object]] = {}
         detector = {
             "efficiency": physical.detector_efficiency,
             "dark_count": 0,
@@ -168,6 +183,7 @@ class SequenceBackend:
             middle.protocols.append(middle.eg)
             self._edge_bsm[edge] = middle
 
+            quantum_channels = []
             for endpoint in (u, v):
                 channel = QuantumChannel(
                     f"qc-{endpoint}-{middle.name}",
@@ -178,6 +194,8 @@ class SequenceBackend:
                     frequency=physical.memory_frequency_hz,
                 )
                 channel.set_ends(self.nodes[endpoint], middle.name)
+                quantum_channels.append(channel)
+            self._edge_quantum_channels[edge] = tuple(quantum_channels)
 
         # Entanglement generation and swapping communicate over classical
         # channels.  Use physical propagation distance unless an explicit
@@ -187,11 +205,21 @@ class SequenceBackend:
             for target in routers:
                 if source is target:
                     continue
+                source_id = int(source.name)
+                target_id = int(target.name)
+                hops = self._hop_distances[source_id].get(target_id)
+                if hops is None:
+                    continue
+                delay = (
+                    physical.classical_delay_ps * hops
+                    if physical.classical_delay_ps > 0
+                    else 0
+                )
                 channel = ClassicalChannel(
                     f"cc-{source.name}-{target.name}",
                     self.timeline,
-                    physical.quantum_distance_m,
-                    physical.classical_delay_ps,
+                    physical.quantum_distance_m * hops,
+                    delay,
                 )
                 channel.set_ends(source, target.name)
 
@@ -211,6 +239,10 @@ class SequenceBackend:
         for router in self.nodes.values():
             for memory in router.components[router.memo_arr_name]:
                 self._memory_owner_by_name[memory.name] = router
+        self._edge_generation_probabilities = {
+            edge: self._effective_generation_probability(edge)
+            for edge in self._topology_edges
+        }
         self._sequence_ready = True
 
     def _new_id(self, prefix: str = "epr") -> str:
@@ -303,6 +335,20 @@ class SequenceBackend:
             and memory.fidelity > 0
         )
 
+    def _effective_generation_probability(self, edge: tuple[int, int]) -> float:
+        physical = self.spec.physical
+        transmission = math.prod(
+            max(0.0, 1.0 - channel.loss)
+            for channel in self._edge_quantum_channels[edge]
+        )
+        probability = (
+            physical.generation_probability
+            * transmission
+            * physical.detector_efficiency ** 2
+            * physical.bsm_success_probability
+        )
+        return min(max(float(probability), 0.0), 1.0)
+
     def _sync_pairs(self) -> None:
         """Mirror SeQUeNCe memory state into the routing index."""
         for pair_id, pair in list(self.pairs.items()):
@@ -312,20 +358,144 @@ class SequenceBackend:
             if not self._is_entangled(pair.right_memory, pair.left, pair.left_memory):
                 self.discard_pair(pair_id)
                 continue
-            pair.fidelity = min(pair.left_memory.fidelity, pair.right_memory.fidelity)
+            pair.left_memory.bds_decohere()
+            pair.right_memory.bds_decohere()
+            pair.fidelity = min(
+                pair.left_memory.get_bds_fidelity(),
+                pair.right_memory.get_bds_fidelity(),
+            )
 
     def synchronize(self) -> None:
         """Refresh the routing index after Timeline-driven physical events."""
         self._sync_pairs()
 
-    def discard_pair(self, pair_id: str) -> ResourcePair | None:
+    @staticmethod
+    def _resource_view(pair: ResourcePair) -> PhysicalResource:
+        return PhysicalResource(
+            pair_id=pair.pair_id,
+            left=pair.left,
+            right=pair.right,
+            fidelity=pair.fidelity,
+            born=pair.born,
+            owner_request=pair.owner_request,
+            reserved_by=pair.reserved_by,
+            lane=pair.lane,
+        )
+
+    def resources(self) -> tuple[PhysicalResource, ...]:
+        self._sync_pairs()
+        return tuple(
+            self._resource_view(pair)
+            for pair in sorted(self.pairs.values(), key=lambda item: item.pair_id)
+        )
+
+    def resource(self, pair_id: str) -> PhysicalResource | None:
+        self._sync_pairs()
+        pair = self.pairs.get(pair_id)
+        return None if pair is None else self._resource_view(pair)
+
+    def resource_ids(self) -> frozenset[str]:
+        self._sync_pairs()
+        return frozenset(self.pairs)
+
+    def resource_count(self) -> int:
+        self._sync_pairs()
+        return len(self.pairs)
+
+    def has_resource(self, pair_id: str) -> bool:
+        self._sync_pairs()
+        return pair_id in self.pairs
+
+    def edge_occupancy(self, u: int, v: int) -> int:
+        return self._edge_occupancy(u, v)
+
+    def assign_owner(self, pair_id: str, request_id: str) -> None:
+        pair = self.pairs[pair_id]
+        pair.owner_request = request_id
+        pair.reserved_by = None
+
+    def validate_claim_batch(self, claims: Iterable[ResourceClaim]) -> None:
+        self._sync_pairs()
+        claim_list = tuple(claims)
+        edge_claims: dict[tuple[int, int], int] = {}
+        node_claims: dict[int, int] = {}
+        for claim in claim_list:
+            if claim.endpoints not in self._topology_edges:
+                raise ValueError(
+                    f"claim references non-topology edge {claim.endpoints}"
+                )
+            edge_claims[claim.endpoints] = edge_claims.get(claim.endpoints, 0) + 1
+            for node in claim.endpoints:
+                node_claims[node] = node_claims.get(node, 0) + 1
+        for edge, count in edge_claims.items():
+            if self._edge_occupancy(*edge) + count > self.capabilities.memory_capacity:
+                raise ValueError(f"edge {edge} memory capacity exceeded")
+        capacity = self.capabilities.node_memory_capacity
+        if capacity is not None:
+            for node, count in node_claims.items():
+                if self.node_occupancy(node) + count > capacity:
+                    raise ValueError(f"node {node} memory capacity exceeded")
+
+    def can_allocate_claims(self, claims: Iterable[ResourceClaim]) -> bool:
+        try:
+            self.validate_claim_batch(claims)
+        except ValueError:
+            return False
+        return True
+
+    def estimate_route_throughput(
+        self,
+        route_nodes: tuple[int, ...],
+        width: int,
+    ) -> float:
+        edges = [
+            (min(u, v), max(u, v))
+            for u, v in zip(route_nodes, route_nodes[1:])
+        ]
+        if not edges:
+            return 0.0
+        expected_bottleneck = 0.0
+        for minimum in range(1, width + 1):
+            all_links_tail = 1.0
+            for edge in edges:
+                probability = self._edge_generation_probabilities.get(edge, 0.0)
+                tail = sum(
+                    math.comb(width, successes)
+                    * probability ** successes
+                    * (1.0 - probability) ** (width - successes)
+                    for successes in range(minimum, width + 1)
+                )
+                all_links_tail *= tail
+            expected_bottleneck += all_links_tail
+        swaps = max(len(route_nodes) - 2, 0)
+        return float(
+            expected_bottleneck
+            * self.spec.physical.swap_probability ** swaps
+        )
+
+    def estimate_swap_throughput(self, swap_counts: Iterable[int]) -> float:
+        probability = self.spec.physical.swap_probability
+        return float(sum(probability ** count for count in swap_counts))
+
+    def link_capacities(self) -> tuple[dict[str, object], ...]:
+        return tuple({
+            "left": min(u, v),
+            "right": max(u, v),
+            "max_width": self.capabilities.max_width,
+            "generation_probability": self._edge_generation_probabilities[
+                (min(u, v), max(u, v))
+            ],
+        } for u, v in self.spec.edges)
+
+    def discard_pair(self, pair_id: str) -> PhysicalResource | None:
         """Remove a pair and release both SeQUeNCe memories."""
         pair = self.pairs.pop(pair_id, None)
         if pair is None:
             return None
+        view = self._resource_view(pair)
         self._release_memory(pair.left_memory)
         self._release_memory(pair.right_memory)
-        return pair
+        return view
 
     def node_occupancy(self, node: int) -> int:
         self._sync_pairs()

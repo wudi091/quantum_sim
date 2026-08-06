@@ -1,17 +1,20 @@
-"""Sequential masked PPO wrapper around the common SeQUeNCe environment."""
+"""Sequential masked PPO wrapper around the common routing environment."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from dataclasses import replace
-from typing import Mapping
+from typing import Callable, Mapping
 
 import numpy as np
 
 from .env import SharedRoutingEnv
-from .planner_api import PlanDescriptor, PlanningSnapshot
+from .planner_api import PlanDescriptor, PlanningSnapshot, ResourceClaim
 from .reward import RewardConfig
-from .scenario import ScenarioConfig, make_episode
+from .scenario import ScenarioConfig
+
+
+CoreFactory = Callable[[ScenarioConfig, int, int], SharedRoutingEnv]
 
 
 @dataclass
@@ -30,8 +33,14 @@ class SequenceGymEnv:
     request_feature_dim = 11
     candidate_feature_dim = 20
 
-    def __init__(self, config: GymConfig | None = None):
+    def __init__(
+        self,
+        config: GymConfig | None = None,
+        *,
+        core_factory: CoreFactory,
+    ):
         self.config = config or GymConfig()
+        self._core_factory = core_factory
         self.stop_action = self.config.max_requests * self.config.max_candidates_per_request
         self.action_size = self.stop_action + 1
         self._next_seed = self.config.seed
@@ -54,16 +63,15 @@ class SequenceGymEnv:
         del options
         episode_seed = self._next_seed if seed is None else int(seed)
         self._next_seed = episode_seed + 1
-        self.core = SharedRoutingEnv(
-            make_episode(self.config.scenario, episode_seed),
-            candidate_count=self.config.max_candidates_per_request,
+        self.core = self._core_factory(
+            self.config.scenario,
+            episode_seed,
+            self.config.max_candidates_per_request,
         )
         self.selected: list[str] = []
         self.selected_requests: set[str] = set()
         self.selected_pairs: set[str] = set()
         self.selected_claims: set[tuple[tuple[int, int], int]] = set()
-        self.selected_node_claims: dict[int, int] = {}
-        self.selected_edge_claims: dict[tuple[int, int], int] = {}
         self.snapshot = self.core.snapshot()
         self.slots = self._slot_candidates(self.snapshot)
         return self.observe(), self._info(phase="reset")
@@ -113,26 +121,12 @@ class SequenceGymEnv:
                 continue
             if self._claims(plan) & self.selected_claims:
                 continue
-            node_capacity = self.core.spec.physical.node_memory_capacity
-            edge_counts: dict[tuple[int, int], int] = {}
-            node_counts: dict[int, int] = {}
-            for claim in plan.claims:
-                edge_counts[claim.endpoints] = edge_counts.get(claim.endpoints, 0) + 1
-                for node in claim.endpoints:
-                    node_counts[node] = node_counts.get(node, 0) + 1
-            if node_capacity is not None and any(
-                self.core.backend.node_occupancy(node)
-                + self.selected_node_claims.get(node, 0) + count > node_capacity
-                for node, count in node_counts.items()
-            ):
-                continue
-            if any(
-                sum(
-                    set(pair.endpoints) == set(edge)
-                    for pair in self.core.backend.pairs.values()
-                ) + self.selected_edge_claims.get(edge, 0) + count
-                > self.core.spec.physical.memory_capacity
-                for edge, count in edge_counts.items()
+            selected_claims = tuple(
+                ResourceClaim(edge[0], edge[1], lane)
+                for edge, lane in self.selected_claims
+            )
+            if not self.core.backend.can_allocate_claims(
+                (*selected_claims, *plan.claims)
             ):
                 continue
             mask[action] = True
@@ -155,12 +149,6 @@ class SequenceGymEnv:
             self.selected_requests.add(plan.request_id)
             self.selected_pairs.update(self._pairs(plan))
             self.selected_claims.update(self._claims(plan))
-            for claim in plan.claims:
-                self.selected_edge_claims[claim.endpoints] = (
-                    self.selected_edge_claims.get(claim.endpoints, 0) + 1
-                )
-                for node in claim.endpoints:
-                    self.selected_node_claims[node] = self.selected_node_claims.get(node, 0) + 1
             info = self._info(phase="select")
             info["duration"] = 0.0
             return self.observe(), 0.0, False, False, info
@@ -173,8 +161,6 @@ class SequenceGymEnv:
             self.selected_requests = set()
             self.selected_pairs = set()
             self.selected_claims = set()
-            self.selected_node_claims = {}
-            self.selected_edge_claims = {}
             self.snapshot = self.core.snapshot()
             self.slots = self._slot_candidates(self.snapshot)
             info = self._info(phase="allocate")
@@ -201,8 +187,6 @@ class SequenceGymEnv:
         self.selected_requests = set()
         self.selected_pairs = set()
         self.selected_claims = set()
-        self.selected_node_claims = {}
-        self.selected_edge_claims = {}
         if not (terminated or truncated):
             self.snapshot = self.core.snapshot()
             self.slots = self._slot_candidates(self.snapshot)
@@ -225,7 +209,7 @@ class SequenceGymEnv:
             self.core.time / max(self.core.spec.horizon, 1),
             active / max(len(self.core.requests), 1),
             metrics["completion_rate"], metrics["timeout_rate"],
-            len(self.core.backend.pairs) / max(len(self.core.spec.edges), 1),
+            self.core.backend.resource_count() / max(len(self.core.spec.edges), 1),
             len(self.snapshot.candidates) / max(self.stop_action, 1),
             metrics["generated_eprs"] / max(len(self.core.spec.edges), 1),
             metrics["swaps"] / max(self.config.max_hops, 1),
@@ -278,10 +262,10 @@ class SequenceGymEnv:
             candidate_features[action, 9] = plan.remaining_hops / max(self.config.max_hops, 1)
             candidate_features[action, 10:14] = (
                 float(plan.kind == "recovery"),
-                plan.width / max(self.core.spec.physical.max_width, 1),
+                plan.width / max(self.core.capabilities.max_width, 1),
                 min(plan.expected_throughput, 1.0),
                 plan.memory_cost / max(
-                    2 * self.config.max_hops * self.core.spec.physical.max_width, 1
+                    2 * self.config.max_hops * self.core.capabilities.max_width, 1
                 ),
             )
         return {

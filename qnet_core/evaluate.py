@@ -7,21 +7,18 @@ import json
 from pathlib import Path
 from time import perf_counter
 
-from .env import SharedRoutingEnv
 from .planners import (
-    GreedyPlanner,
-    OptimalPlanner,
     QCASTPlanner,
     QDDCAPlanner,
-    RandomPlanner,
 )
+from .runtime import make_sequence_env
 from .scenario import ScenarioConfig, make_episode
 from .spec import PhysicalConfig
 
 
 def run_planner(planner: object, scenario: ScenarioConfig, seed: int) -> dict[str, float]:
     spec = make_episode(scenario, seed)
-    env = SharedRoutingEnv(spec)
+    env = make_sequence_env(spec)
     planner.reset(seed)
     planning_seconds = 0.0
     planner_calls = 0
@@ -47,11 +44,8 @@ def compare(
     planner_names: tuple[str, ...] | None = None,
 ) -> dict[str, object]:
     available = {
-        "greedy": GreedyPlanner(),
-        "optimal": OptimalPlanner(),
         "qddca": QDDCAPlanner(),
         "qcast": QCASTPlanner(),
-        "random": RandomPlanner(0),
     }
     names = tuple(available) if planner_names is None else planner_names
     unknown = set(names) - set(available)
@@ -83,8 +77,8 @@ def main() -> None:
     parser.add_argument("--memory", type=int, default=2)
     parser.add_argument(
         "--planners", nargs="+",
-        choices=("greedy", "optimal", "qddca", "qcast", "random"),
-        default=("greedy", "optimal", "qddca", "qcast", "random"),
+        choices=("qddca", "qcast"),
+        default=("qddca", "qcast"),
     )
     parser.add_argument("--arrival-rate", type=float, default=1.0,
                         help="Mean Poisson request arrivals per physical step")
