@@ -5,12 +5,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Mapping, Sequence
 
-from .construction_api import ConstructionOperation, ConstructionSnapshot
+from .construction_api import (
+    ConstructionOperation,
+    ConstructionRepairChoice,
+    ConstructionSnapshot,
+    RepairKind,
+)
 from .construction_catalog import (
     RouteConstructionCandidate,
     candidates_by_request,
 )
 from .construction_gym import ConstructionBatchEnv
+from .construction_repair import rebase_route_repair_dag
 from .spec import EpisodeSpec
 
 
@@ -48,6 +54,7 @@ class JointConstructionBatchEnv:
         alpha: float = 1.0,
         beta: float = 1.0,
         chi: float = 1.0,
+        max_route_repairs: int = 1,
     ):
         self.spec = spec
         self._by_request = candidates_by_request(tuple(candidates))
@@ -57,10 +64,14 @@ class JointConstructionBatchEnv:
         self.alpha = float(alpha)
         self.beta = float(beta)
         self.chi = float(chi)
+        self.max_route_repairs = int(max_route_repairs)
+        if self.max_route_repairs < 0:
+            raise ValueError("max_route_repairs must be non-negative")
         self.phase = JointPhase.ADMISSION
         self._core: ConstructionBatchEnv | None = None
         self.selected: dict[str, RouteConstructionCandidate] = {}
         self._repairable: set[str] = set()
+        self._route_repair_counts: dict[str, int] = {}
         self._admission_order: tuple[str, ...] = tuple(
             sorted(request.id for request in spec.requests)
         )
@@ -245,6 +256,7 @@ class JointConstructionBatchEnv:
         self._core = None
         self.selected = {}
         self._repairable = set()
+        self._route_repair_counts = {}
         self._admission_index = 0
         self._admission_preview_usage = {}
         return JointStep(
@@ -437,14 +449,188 @@ class JointConstructionBatchEnv:
     def repairable_requests(self) -> tuple[str, ...]:
         return tuple(sorted(self._repairable))
 
+    def _retry_terminal_segment_ids(
+        self,
+        request_id: str,
+        operations: tuple[ConstructionOperation, ...],
+        snapshot: ConstructionSnapshot,
+    ) -> tuple[str, ...]:
+        terminals = list(self.core.terminal_segment_ids(request_id))
+        if not operations:
+            return tuple(terminals)
+        retry = operations[-1]
+        if retry.retry_root_id is None or retry.output_segment_id is None:
+            return tuple(terminals)
+        dead_ids = {
+            operation_id
+            for state in snapshot.dag_states
+            if state.request_id == request_id
+            for operation_id in state.dead
+        }
+        lineage = [
+            operation
+            for operation in snapshot.operations
+            if operation.op_id in dead_ids
+            and (
+                operation.op_id == retry.retry_root_id
+                or operation.retry_root_id == retry.retry_root_id
+            )
+            and operation.retry_attempt < retry.retry_attempt
+        ]
+        if not lineage:
+            return tuple(terminals)
+        previous = max(
+            lineage,
+            key=lambda operation: (operation.retry_attempt, operation.ordinal),
+        )
+        if previous.output_segment_id not in terminals:
+            return tuple(terminals)
+        terminals[terminals.index(previous.output_segment_id)] = retry.output_segment_id
+        return tuple(terminals)
+
+    def repair_choices(
+        self, request_id: str
+    ) -> tuple[ConstructionRepairChoice, ...]:
+        if self.phase != JointPhase.REPAIR:
+            raise RuntimeError("repair choices are only available in REPAIR phase")
+        if request_id not in self._repairable:
+            raise ValueError("request is not awaiting repair")
+        snapshot = self.core.executor.snapshot()
+        dag_state = next(
+            state for state in snapshot.dag_states
+            if state.request_id == request_id
+        )
+        next_version = dag_state.version + 1
+        choices: list[ConstructionRepairChoice] = []
+        for index, operations in enumerate(self.core.repair_options(request_id)):
+            choices.append(ConstructionRepairChoice(
+                choice_id=(
+                    f"{request_id}:repair:v{next_version}:retry:{index}:"
+                    f"{operations[-1].op_id}"
+                ),
+                request_id=request_id,
+                kind=RepairKind.RETRY,
+                operations=operations,
+                terminal_segment_ids=self._retry_terminal_segment_ids(
+                    request_id, operations, snapshot
+                ),
+            ))
+
+        if self._route_repair_counts.get(request_id, 0) < self.max_route_repairs:
+            existing_operation_ids = {
+                operation.op_id for operation in snapshot.operations
+            }
+            existing_output_ids = {
+                operation.output_segment_id
+                for operation in snapshot.operations
+                if operation.output_segment_id is not None
+            } | {segment.segment_id for segment in snapshot.segments}
+            ordinal_start = max(
+                (
+                    operation.ordinal
+                    for operation in snapshot.operations
+                    if operation.request_id == request_id
+                ),
+                default=-1,
+            ) + 1
+            selected = self.selected[request_id]
+            for candidate in self.legal_admission_candidates(request_id):
+                if candidate.candidate_id == selected.candidate_id:
+                    continue
+                prefix = (
+                    f"{request_id}:route-repair:v{next_version}:"
+                    f"{candidate.candidate_id}"
+                )
+                operations, terminal_ids = rebase_route_repair_dag(
+                    candidate.dag,
+                    candidate.all_terminal_segment_ids,
+                    next_version=next_version,
+                    ordinal_start=ordinal_start,
+                    option_prefix=prefix,
+                    existing_operation_ids=existing_operation_ids,
+                    existing_output_segment_ids=existing_output_ids,
+                    release_segment_ids=tuple(
+                        segment.segment_id
+                        for segment in snapshot.segments
+                        if segment.request_id == request_id
+                    ),
+                )
+                choices.append(ConstructionRepairChoice(
+                    choice_id=f"{prefix}:choice",
+                    request_id=request_id,
+                    kind=RepairKind.REROUTE,
+                    operations=operations,
+                    candidate_id=candidate.candidate_id,
+                    route_nodes=candidate.route_nodes,
+                    construction_kind=candidate.construction_kind,
+                    terminal_segment_ids=terminal_ids,
+                ))
+        return tuple(choices)
+
     def repair_options(
         self, request_id: str
     ) -> tuple[tuple[ConstructionOperation, ...], ...]:
+        """Backward-compatible operation-only view of structured choices."""
+
+        return tuple(choice.operations for choice in self.repair_choices(request_id))
+
+    def repair_choice(
+        self,
+        request_id: str,
+        value: ConstructionRepairChoice | str,
+    ) -> JointStep:
         if self.phase != JointPhase.REPAIR:
-            raise RuntimeError("repair options are only available in REPAIR phase")
+            raise RuntimeError("repair is only legal in REPAIR phase")
         if request_id not in self._repairable:
             raise ValueError("request is not awaiting repair")
-        return self.core.repair_options(request_id)
+        choices = self.repair_choices(request_id)
+        if isinstance(value, str):
+            matches = [choice for choice in choices if choice.choice_id == value]
+            if len(matches) != 1:
+                raise ValueError(f"unknown repair choice: {value}")
+            choice = matches[0]
+        else:
+            choice = value
+            if choice not in choices:
+                raise ValueError("repair choice is not currently legal")
+        core_step = self.core.repair(
+            request_id,
+            choice.operations,
+            terminal_segment_ids=(
+                choice.terminal_segment_ids or None
+            ),
+            supersede_uncommitted=(choice.kind == RepairKind.REROUTE),
+        )
+        if choice.kind == RepairKind.REROUTE:
+            candidate = next(
+                candidate
+                for candidate in self._by_request[request_id]
+                if candidate.candidate_id == choice.candidate_id
+            )
+            self.selected[request_id] = candidate
+            self.core.selected_candidates[request_id] = candidate
+            self._route_repair_counts[request_id] = (
+                self._route_repair_counts.get(request_id, 0) + 1
+            )
+        self._repairable.remove(request_id)
+        self.phase = (
+            JointPhase.REPAIR if self._repairable else JointPhase.EXECUTION
+        )
+        return JointStep(
+            self.phase,
+            core_step.observation,
+            core_step.ready_operations,
+            {},
+            core_step.reward,
+            False,
+            {
+                **core_step.info,
+                "repair_choice_id": choice.choice_id,
+                "repair_kind": choice.kind,
+                "repair_candidate_id": choice.candidate_id,
+                "repair_route_nodes": choice.route_nodes,
+            },
+        )
 
     def repair(
         self,
@@ -455,6 +641,9 @@ class JointConstructionBatchEnv:
             raise RuntimeError("repair is only legal in REPAIR phase")
         if request_id not in self._repairable:
             raise ValueError("request is not awaiting repair")
+        for choice in self.repair_choices(request_id):
+            if choice.operations == operations:
+                return self.repair_choice(request_id, choice)
         core_step = self.core.repair(request_id, operations)
         self._repairable.remove(request_id)
         self.phase = (

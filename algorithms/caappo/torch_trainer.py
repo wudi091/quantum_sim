@@ -264,17 +264,17 @@ class TorchCAAPPORolloutTrainer:
             if state.phase == JointPhase.REPAIR:
                 before = state
                 request_id = env.repairable_requests[0]
-                options = env.repair_options(request_id)
+                choices = env.repair_choices(request_id)
                 if state.observation is None:
                     raise RuntimeError("repair state lacks a construction observation")
                 repair = self.policy.sample_repair(
-                    state.observation, options, deterministic=deterministic
+                    state.observation, choices, deterministic=deterministic
                 ).sample
-                if repair.repair_action > 0 and options:
+                if repair.repair_action > 0 and choices:
                     option_index = repair.repair_action - 1
-                    if option_index >= len(options):
+                    if option_index >= len(choices):
                         raise RuntimeError("repair policy selected an invalid option")
-                    state = env.repair(request_id, options[option_index])
+                    state = env.repair_choice(request_id, choices[option_index])
                 else:
                     state = env.drop(request_id)
                 reward = self._shaped_reward(

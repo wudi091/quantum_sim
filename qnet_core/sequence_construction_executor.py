@@ -961,7 +961,13 @@ class SequenceConstructionExecutor:
             raise RuntimeError("event batch and physical backend time diverged")
         return batch
 
-    def repair(self, request_id: str, operations: tuple[ConstructionOperation, ...]) -> None:
+    def repair(
+        self,
+        request_id: str,
+        operations: tuple[ConstructionOperation, ...],
+        *,
+        supersede_uncommitted: bool = False,
+    ) -> None:
         self._refresh_global_registry()
         if request_id not in self.dags:
             raise KeyError(request_id)
@@ -971,6 +977,14 @@ class SequenceConstructionExecutor:
         ):
             raise RuntimeError("cannot repair a request with in-flight operations")
         dag = self.dags[request_id]
+        if supersede_uncommitted and dag.started:
+            raise RuntimeError("cannot reroute a request with started operations")
+        obsolete = tuple(
+            operation.op_id
+            for operation in dag.operations
+            if operation.op_id not in dag.completed
+            and operation.op_id not in dag.dead
+        ) if supersede_uncommitted else ()
         available = self._available_segment_ids()
         outputs = {
             operation.output_segment_id: operation
@@ -1025,6 +1039,8 @@ class SequenceConstructionExecutor:
                         f"repair input segment is not surviving or newly produced: {segment_id}"
                     )
         dag.repair(operations)
+        if obsolete:
+            dag.mark_obsolete(obsolete)
         self._operation_owners.update({operation.op_id: request_id for operation in operations})
 
     def repair_options(

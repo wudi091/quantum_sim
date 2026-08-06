@@ -192,6 +192,34 @@ class ConstructionContractTests(unittest.TestCase):
         self.assertEqual(dag.state(), before)
         self.assertEqual(tuple(operation.op_id for operation in dag.operations), ("base",))
 
+    def test_reroute_supersedes_only_uncommitted_old_operations(self):
+        failed = ConstructionOperation(
+            "failed", "r", OperationKind.RELEASE, ordinal=0
+        )
+        stale = ConstructionOperation(
+            "stale", "r", OperationKind.RELEASE, ordinal=1
+        )
+        dag = ConstructionDAG("r", (failed, stale))
+        executor = ConstructionDAGExecutor((dag,), {}, horizon_ps=10)
+        dag.mark_started("failed", set())
+        dag.mark_dead("failed")
+        replacement = ConstructionOperation(
+            "reroute", "r", OperationKind.RELEASE,
+            ordinal=2, dag_version=1,
+        )
+
+        executor.repair(
+            "r", (replacement,), supersede_uncommitted=True
+        )
+
+        self.assertIn("failed", dag.dead)
+        self.assertIn("stale", dag.dead)
+        self.assertNotIn("reroute", dag.dead)
+        self.assertEqual(
+            tuple(operation.op_id for operation in executor.ready_operations()),
+            ("reroute",),
+        )
+
     def test_censored_flow_time_matches_event_accounting(self):
         settlements = (
             RequestSettlement("success", 0, 3, True),

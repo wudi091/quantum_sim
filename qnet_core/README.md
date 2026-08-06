@@ -35,8 +35,8 @@ does not receive SeQUeNCe objects.
 - `construction_executor.py`: deterministic contract/reference executor;
 - `sequence_construction_executor.py`: event-driven SeQUeNCe construction
   adapter with physical timestamps and event feedback;
-- `construction_repair.py`: neutral bounded retry and failed-SWAP prefix
-  reconstruction candidates;
+- `construction_repair.py`: neutral bounded retry, failed-SWAP prefix
+  reconstruction, and catalogue-DAG rebasing for reroute choices;
 - `construction_catalog.py` / `construction_evaluate.py`: bounded joint
   `(path, construction)` catalogue and baseline evaluator;
 - `evaluate.py`: seeded Q-DDCA/Q-CAST comparison entry point.
@@ -106,6 +106,11 @@ for DAG and mask tests.
 `run_joint_plan_baseline()` is a fixed-plan SeQUeNCe evaluator with explicit
 arrival, deadline, expiration, failure, and horizon settlement boundaries. It
 does not perform repair; repair-aware training uses `JointConstructionBatchEnv`.
+The joint environment exposes structured `RETRY` and `REROUTE` choices in the
+REPAIR phase. A reroute is bounded by `max_route_repairs`, releases surviving
+segments through explicit operations, supersedes only the old uncommitted DAG
+suffix, and executes a freshly versioned catalogue candidate. DROP remains a
+request-level settlement action.
 
 `SharedRoutingEnv` accepts only `PlanningSpec` plus an injected
 `PhysicalBackend`. It never imports `SequenceBackend`, reads `PhysicalConfig`,

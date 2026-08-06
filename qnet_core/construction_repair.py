@@ -11,7 +11,7 @@ handled by the normal DROP path.
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Callable
+from typing import Callable, Iterable, Sequence
 
 from .construction_api import ConstructionDAG, ConstructionOperation, OperationKind
 
@@ -173,4 +173,130 @@ def generate_repair_options(
     return tuple(options)
 
 
-__all__ = ["generate_repair_options"]
+def rebase_route_repair_dag(
+    source_dag: ConstructionDAG,
+    terminal_segment_ids: Sequence[str],
+    *,
+    next_version: int,
+    ordinal_start: int,
+    option_prefix: str,
+    existing_operation_ids: Iterable[str] = (),
+    existing_output_segment_ids: Iterable[str] = (),
+    release_segment_ids: Sequence[str] = (),
+) -> tuple[tuple[ConstructionOperation, ...], tuple[str, ...]]:
+    """Clone a catalogue DAG as a fresh reroute suffix.
+
+    The source candidate is a template only.  Every operation and produced
+    segment receives a fresh ID, all dependencies are remapped, and retry
+    lineage is cleared so a reroute cannot silently reset the failed branch's
+    bounded retry counter.
+    """
+
+    if next_version < 1:
+        raise ValueError("route repair version must be positive")
+    if ordinal_start < 0:
+        raise ValueError("ordinal_start must be non-negative")
+    if not option_prefix:
+        raise ValueError("route repair option prefix must be non-empty")
+    terminals = tuple(terminal_segment_ids)
+    if not terminals or len(set(terminals)) != len(terminals):
+        raise ValueError("route repair terminals must be unique and non-empty")
+
+    source_operations = {operation.op_id: operation for operation in source_dag.operations}
+    produced_segments = {
+        operation.output_segment_id
+        for operation in source_operations.values()
+        if operation.output_segment_id is not None
+    }
+    if not set(terminals).issubset(produced_segments):
+        raise ValueError("route repair terminal is not produced by the source DAG")
+
+    ordered: list[ConstructionOperation] = []
+    emitted: set[str] = set()
+    pending = dict(source_operations)
+    while pending:
+        ready = sorted(
+            (
+                operation
+                for operation in pending.values()
+                if set(operation.predecessors).issubset(emitted)
+            ),
+            key=lambda operation: operation.canonical_key,
+        )
+        if not ready:
+            raise ValueError("route repair source DAG is not topologically orderable")
+        for operation in ready:
+            ordered.append(operation)
+            emitted.add(operation.op_id)
+            pending.pop(operation.op_id)
+
+    used_operation_ids = set(existing_operation_ids)
+    used_output_ids = set(existing_output_segment_ids)
+    release_ids: list[str] = []
+    release_operations: list[ConstructionOperation] = []
+    for index, segment_id in enumerate(tuple(dict.fromkeys(release_segment_ids))):
+        if not segment_id:
+            raise ValueError("route repair release segment ID must be non-empty")
+        operation_id = _fresh_id(
+            f"{option_prefix}:release:{index}:{segment_id}",
+            used_operation_ids,
+        )
+        release_ids.append(operation_id)
+        release_operations.append(ConstructionOperation(
+            op_id=operation_id,
+            request_id=source_dag.request_id,
+            kind=OperationKind.RELEASE,
+            input_segment_ids=(segment_id,),
+            duration_ps=1,
+            ordinal=ordinal_start + index,
+            dag_version=next_version,
+        ))
+    operation_id_map: dict[str, str] = {}
+    output_id_map: dict[str, str] = {}
+    for index, operation in enumerate(ordered):
+        operation_id_map[operation.op_id] = _fresh_id(
+            f"{option_prefix}:op:{index}:{operation.op_id}",
+            used_operation_ids,
+        )
+        if operation.output_segment_id is not None:
+            output_id_map[operation.output_segment_id] = _fresh_id(
+                f"{option_prefix}:segment:{index}:{operation.output_segment_id}",
+                used_output_ids,
+            )
+
+    rebased_candidate = tuple(
+        replace(
+            operation,
+            op_id=operation_id_map[operation.op_id],
+            predecessors=(
+                tuple(
+                    operation_id_map[predecessor]
+                    for predecessor in operation.predecessors
+                )
+                if operation.predecessors
+                else tuple(release_ids)
+            ),
+            input_segment_ids=tuple(
+                output_id_map.get(segment_id, segment_id)
+                for segment_id in operation.input_segment_ids
+            ),
+            output_segment_id=(
+                None
+                if operation.output_segment_id is None
+                else output_id_map[operation.output_segment_id]
+            ),
+            retry_limit=0,
+            retry_root_id=None,
+            retry_attempt=0,
+            ordinal=ordinal_start + len(release_operations) + index,
+            dag_version=next_version,
+        )
+        for index, operation in enumerate(ordered)
+    )
+    return (
+        tuple(release_operations) + rebased_candidate,
+        tuple(output_id_map[segment_id] for segment_id in terminals),
+    )
+
+
+__all__ = ["generate_repair_options", "rebase_route_repair_dag"]

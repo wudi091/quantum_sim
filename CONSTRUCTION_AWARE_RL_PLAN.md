@@ -26,7 +26,7 @@ action-rejection transition and is a future experiment, not a current result.
 - `qnet_core`、`algorithms`、`qcast_paper` 测试集均通过；
 - 未发现已撤销的 `AllocationRequest`、`AllocationResult` 或 `generate_allocation_batch` 残留引用。
 
-这些结果证明当前 construction-aware event foundation 可以运行，并且 SeQUeNCe 是唯一物理后端；多 demand-pair 交付、到达/deadline/expiration 的事件边界和基础 retry/drop repair head 已有可运行实现，但这仍不等价于生产级 PPO、完整 SWAP repair 或已完成论文实验。
+这些结果证明当前 construction-aware event foundation 可以运行，并且 SeQUeNCe 是唯一物理后端；多 demand-pair 交付、到达/deadline/expiration 的事件边界、同路径 retry 和 catalogue-bounded reroute repair 已有可运行实现，但这仍不等价于收敛的生产级 PPO、动态全路径 repair 或已完成论文实验。
 
 ## 2. Problem Anchor
 
@@ -59,7 +59,7 @@ Path-only routing 隐藏了 elementary EPR 生成批次、swap 依赖、swap 并
 |---|---|---|
 | Pairwise conflict cannot express finite capacity | Resource-demand vector, residual capacity, slot assignment and hyperedge semantics | Implemented for additive demands; physical scheduler remains conservative |
 | Markov state was underspecified | Full `ConstructionSnapshot`/`Z_k` sufficient-statistic contract | Implemented as a simulator-neutral reference snapshot |
-| Route/repair/STOP transition was open | Event-typed route action, immutable prefix, explicit release and progress rules | Implemented for fixed catalogue admission and explicit repair/drop |
+| Route/repair/STOP transition was open | Event-typed route action, immutable prefix, explicit release and progress rules | Implemented for fixed catalogue admission and structured retry/reroute/drop |
 | Flow-time and discount were mixed | Finite-horizon undiscounted theorem; discounted variant separated | Fixed |
 | DROP conflicted with completion latency | Failed requests use horizon-censored completion time and receive a lump remaining-horizon penalty at settlement | Fixed |
 | Horizon-active requests could miss `C_risk` | Force timeout settlement at `T_i=H` and include them in terminal `F_K` | Fixed |
@@ -134,7 +134,7 @@ Z_k=(X_k,Q_k,G_k^{front},M_k,B_k,t_k),
 
 - `ADMISSION`：按固定 canonical request order 自回归选择当前到达请求的 route skeleton，形成 route vector `p=(p_i)`；不开始物理 operation。
 - `EXECUTION`：route head 输出 `NOOP`，operation head 在已提交 route 和现有 logical segments 上选择 ready set。
-- `REPAIR`：只能保留已完成或已启动 operation 形成的不可撤销前缀；in-flight operation 在第一版不允许被策略取消，必须等待其 terminal event；失败分支被标记为 dead，释放的 pair/resource 经过 executor 反馈后才能重新使用；新 operation 只能以 surviving logical segments 为 predecessor。
+- `REPAIR`：只能保留已完成或已启动 operation 形成的不可撤销前缀；in-flight operation 在第一版不允许被策略取消，必须等待其 terminal event；失败分支被标记为 dead，释放的 pair/resource 经过 executor 反馈后才能重新使用。`RETRY` 重建缺失前缀，`REROUTE` 从固定 catalogue 选择替代 `(P,C)`，用显式 RELEASE 前缀释放旧 segment，废弃旧 DAG 的未提交后缀，并把替代计划重编号到单调递增的新 DAG version；动态 catalogue 外路径仍是后续 gate。
 - `TERMINAL`：不再采样 action。
 
 route skeleton 只限制候选路径空间。construction DAG 在 admission 后仍可扩展和修复，不被冻结为完整线性程序。每次新增 operation 只引用已存在的 segment，并以单调递增的 DAG version 写入，因此保持无环和路径一致性。`DROP` 是 request-level settlement，不结束整个 episode；只有所有请求 settled 或达到 `H` 才产生 episode-level `TERMINAL`。

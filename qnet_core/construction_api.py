@@ -19,6 +19,13 @@ class OperationKind:
     RELEASE = "RELEASE"
 
 
+class RepairKind:
+    """Stable repair action names visible to planners."""
+
+    RETRY = "RETRY"
+    REROUTE = "REROUTE"
+
+
 @dataclass(frozen=True)
 class ResourceDemand:
     """A canonical, additive resource-demand vector.
@@ -168,6 +175,52 @@ class ConstructionOperation:
 
 
 @dataclass(frozen=True)
+class ConstructionRepairChoice:
+    """One planner-visible repair branch.
+
+    DROP remains the implicit categorical action at index zero.  Every value
+    represented here appends a fresh operation suffix to the immutable DAG
+    prefix; a REROUTE choice also carries the replacement catalogue metadata
+    and terminal segment IDs required by request settlement.
+    """
+
+    choice_id: str
+    request_id: str
+    kind: str
+    operations: tuple[ConstructionOperation, ...]
+    candidate_id: str | None = None
+    route_nodes: tuple[int, ...] = ()
+    construction_kind: str = ""
+    terminal_segment_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.choice_id or not self.request_id:
+            raise ValueError("repair choice and request IDs must be non-empty")
+        if self.kind not in {RepairKind.RETRY, RepairKind.REROUTE}:
+            raise ValueError(f"unsupported repair kind: {self.kind}")
+        if not self.operations:
+            raise ValueError("repair choice requires at least one operation")
+        if any(operation.request_id != self.request_id for operation in self.operations):
+            raise ValueError("repair choice operations belong to another request")
+        if len({operation.op_id for operation in self.operations}) != len(self.operations):
+            raise ValueError("repair choice operation IDs must be unique")
+        if len(set(self.terminal_segment_ids)) != len(self.terminal_segment_ids):
+            raise ValueError("repair terminal segment IDs must be unique")
+        if self.kind == RepairKind.REROUTE:
+            if not self.candidate_id or len(self.route_nodes) < 2:
+                raise ValueError("reroute choice requires candidate and route metadata")
+            if not self.construction_kind or not self.terminal_segment_ids:
+                raise ValueError("reroute choice requires construction and terminal metadata")
+            produced = {
+                operation.output_segment_id
+                for operation in self.operations
+                if operation.output_segment_id is not None
+            }
+            if not set(self.terminal_segment_ids).issubset(produced):
+                raise ValueError("reroute terminal segments must be produced by the repair suffix")
+
+
+@dataclass(frozen=True)
 class DAGState:
     """Immutable execution view of one construction DAG."""
 
@@ -278,7 +331,13 @@ class ConstructionExecutor(Protocol):
         self, boundary_ps: int | None = None
     ) -> ExecutionEventBatch: ...
 
-    def repair(self, request_id: str, operations: tuple[ConstructionOperation, ...]) -> None: ...
+    def repair(
+        self,
+        request_id: str,
+        operations: tuple[ConstructionOperation, ...],
+        *,
+        supersede_uncommitted: bool = False,
+    ) -> None: ...
 
     def repair_options(
         self, request_id: str
@@ -411,6 +470,23 @@ class ConstructionDAG:
         self._check_live(op_id)
         self.dead.add(op_id)
         self.started.discard(op_id)
+
+    def mark_obsolete(self, operation_ids: Iterable[str]) -> None:
+        """Retire uncommitted operations after an atomic reroute.
+
+        Completed operations are the immutable prefix and started operations
+        are owned by the physical executor, so neither may be superseded.
+        """
+
+        targets = tuple(operation_ids)
+        unknown = [op_id for op_id in targets if op_id not in self._operations]
+        if unknown:
+            raise KeyError(f"unknown operation: {unknown[0]}")
+        if any(op_id in self.completed for op_id in targets):
+            raise ValueError("completed operation cannot be superseded")
+        if any(op_id in self.started for op_id in targets):
+            raise RuntimeError("started operation cannot be superseded")
+        self.dead.update(targets)
 
     def _check_live(self, op_id: str) -> None:
         if op_id not in self._operations:

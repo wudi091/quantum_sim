@@ -18,8 +18,10 @@ from torch.distributions import Bernoulli, Categorical
 
 from qnet_core.construction_api import (
     ConstructionOperation,
+    ConstructionRepairChoice,
     ConstructionSnapshot,
     OperationKind,
+    RepairKind,
 )
 from qnet_core.construction_catalog import RouteConstructionCandidate
 from qnet_core.construction_decoder import (
@@ -240,6 +242,7 @@ class TorchCAAPPOPolicy(nn.Module):
     """Trainable CAAPPO heads with exact environment-side action masking."""
 
     admission_context_dim = 8
+    repair_option_dim = 8
 
     def __init__(
         self,
@@ -281,7 +284,7 @@ class TorchCAAPPOPolicy(nn.Module):
             nn.Linear(64, 1),
         )
         self.repair_option_actor = nn.Sequential(
-            nn.Linear(self.state_dim + 3, 64),
+            nn.Linear(self.state_dim + self.repair_option_dim, 64),
             nn.Tanh(),
             nn.Linear(64, 1),
         )
@@ -567,12 +570,16 @@ class TorchCAAPPOPolicy(nn.Module):
     def sample_repair(
         self,
         snapshot: ConstructionSnapshot,
-        repair_options: Sequence[tuple[ConstructionOperation, ...]],
+        repair_options: Sequence[
+            ConstructionRepairChoice | tuple[ConstructionOperation, ...]
+        ],
         *,
         deterministic: bool = False,
     ) -> TorchRepairSample:
         operations = tuple(
-            operation for option in repair_options for operation in option
+            operation
+            for option in repair_options
+            for operation in self._repair_operations(option)
         )
         state_tensor = self._state_tensor(snapshot, operations)
         feature = state_tensor.detach().cpu().numpy()
@@ -619,13 +626,31 @@ class TorchCAAPPOPolicy(nn.Module):
         return TorchRepairSample(sample)
 
     def _repair_option_feature(
-        self, option: Sequence[ConstructionOperation]
+        self,
+        option: ConstructionRepairChoice | Sequence[ConstructionOperation],
     ) -> np.ndarray:
+        operations = self._repair_operations(option)
+        reroute = isinstance(option, ConstructionRepairChoice) and (
+            option.kind == RepairKind.REROUTE
+        )
         return np.asarray((
-            float(len(option)),
-            float(sum(operation.duration_ps for operation in option)) / 1_000_000.0,
-            float(min((operation.ordinal for operation in option), default=0)),
+            float(len(operations)),
+            float(sum(operation.duration_ps for operation in operations)) / 1_000_000.0,
+            float(min((operation.ordinal for operation in operations), default=0)),
+            float(sum(operation.kind == OperationKind.GEN for operation in operations)),
+            float(sum(operation.kind == OperationKind.SWAP for operation in operations)),
+            float(sum(operation.kind == OperationKind.RELEASE for operation in operations)),
+            float(reroute),
+            float(len(option.route_nodes) - 1 if reroute else 0),
         ), dtype=np.float32)
+
+    @staticmethod
+    def _repair_operations(
+        option: ConstructionRepairChoice | Sequence[ConstructionOperation],
+    ) -> tuple[ConstructionOperation, ...]:
+        if isinstance(option, ConstructionRepairChoice):
+            return option.operations
+        return tuple(option)
 
     def _repair_option_inputs(
         self,
@@ -634,8 +659,10 @@ class TorchCAAPPOPolicy(nn.Module):
     ) -> np.ndarray:
         state = np.asarray(feature, dtype=np.float32)
         options = np.asarray(option_features, dtype=np.float32)
-        if options.ndim != 2 or options.shape[1] != 3:
-            raise ValueError("repair option features must have shape (n, 3)")
+        if options.ndim != 2 or options.shape[1] != self.repair_option_dim:
+            raise ValueError(
+                f"repair option features must have shape (n, {self.repair_option_dim})"
+            )
         return np.concatenate((
             np.repeat(state[None, :], len(options), axis=0),
             options,
@@ -657,8 +684,10 @@ class TorchCAAPPOPolicy(nn.Module):
         option_features: Sequence[Sequence[float]],
     ) -> Tensor:
         options = self._tensor(option_features)
-        if options.ndim != 2 or options.shape[1] != 3:
-            raise ValueError("repair option features must have shape (n, 3)")
+        if options.ndim != 2 or options.shape[1] != self.repair_option_dim:
+            raise ValueError(
+                f"repair option features must have shape (n, {self.repair_option_dim})"
+            )
         return torch.cat((feature.reshape(1, -1).repeat(len(options), 1), options), dim=1)
 
     def evaluate_repair_log_probability(self, sample: PolicySample) -> Tensor:

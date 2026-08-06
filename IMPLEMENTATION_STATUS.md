@@ -44,9 +44,12 @@ Implemented and tested:
   later requests.
 - retry lineage and `retry_limit` are enforced by both executors. Failed SWAP
   branches can rebuild missing GEN/SWAP ancestors from the surviving prefix
-  before a bounded retry; the Torch repair head scores DROP and every generated
-  repair option categorically. Broader route-aware repair alternatives remain
-  a separate gate.
+  before a bounded retry. `ConstructionRepairChoice` now exposes structured
+  RETRY and catalogue-bounded REROUTE alternatives; reroute atomically keeps
+  the completed prefix, retires stale uncommitted operations, releases old
+  physical segments through explicit RELEASE operations, rebases the selected
+  candidate into a fresh DAG version, and replaces terminal segment IDs. The
+  Torch repair head scores DROP and every structured choice categorically.
 - the `no_capacity_context` ablation removes only the capacity feature from
   the policy observation. The hard capacity-feasibility mask remains enabled
   to keep every rollout physically valid; a mask-removal ablation requires an
@@ -76,7 +79,7 @@ initial segments for contract tests.
 
 Remaining paper-complete gates:
 
-- broader route-aware repair candidate families and a backend-level protocol
+- dynamic out-of-catalogue repair generation and a backend-level protocol
   arbiter before enabling mixed GEN/SWAP or concurrent SWAP execution;
 - converged training and scaling evidence; the trainable PyTorch graph encoder
   and bounded failed-SWAP prefix repair are runnable, but convergence is not

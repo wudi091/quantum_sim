@@ -14,7 +14,9 @@ from qnet_core.joint_construction_gym import JointPhase, JointStep
 from qnet_core.construction_api import (
     ConstructionDAG,
     ConstructionOperation,
+    ConstructionRepairChoice,
     OperationKind,
+    RepairKind,
     ResourceDemand,
 )
 from qnet_core.construction_catalog import build_route_construction_catalogue
@@ -173,6 +175,50 @@ class TorchCAAPPOTests(unittest.TestCase):
         self.assertAlmostEqual(
             sample.log_probability, float(evaluated.detach().item()), places=6
         )
+
+    def test_repair_head_receives_explicit_reroute_features(self):
+        operation = ConstructionOperation(
+            "r:route-repair:gen",
+            "r",
+            OperationKind.GEN,
+            output_segment_id="r:route-repair:segment",
+            output_endpoints=(0, 2),
+            ordinal=2,
+            dag_version=1,
+        )
+        executor = ConstructionDAGExecutor(
+            (ConstructionDAG("r", (
+                ConstructionOperation(
+                    "r:original",
+                    "r",
+                    OperationKind.GEN,
+                    output_segment_id="r:original:segment",
+                    output_endpoints=(0, 1),
+                ),
+            )),),
+            {},
+        )
+        choice = ConstructionRepairChoice(
+            "r:reroute-choice",
+            "r",
+            RepairKind.REROUTE,
+            (operation,),
+            candidate_id="r:path:1:left_deep",
+            route_nodes=(0, 2),
+            construction_kind="left_deep",
+            terminal_segment_ids=(operation.output_segment_id,),
+        )
+        policy = TorchCAAPPOPolicy(seed=34)
+        sample = policy.sample_repair(
+            executor.snapshot(), (choice,), deterministic=True
+        ).sample
+
+        self.assertEqual(
+            len(sample.repair_option_features[0]),
+            policy.repair_option_dim,
+        )
+        self.assertEqual(sample.repair_option_features[0][6], 1.0)
+        self.assertEqual(sample.repair_option_features[0][7], 1.0)
 
     def test_tiny_sequence_episode_updates_torch_policy(self):
         spec = EpisodeSpec(

@@ -434,6 +434,9 @@ class ConstructionBatchEnv:
         self,
         request_id: str,
         operations: tuple[ConstructionOperation, ...],
+        *,
+        terminal_segment_ids: tuple[str, ...] | None = None,
+        supersede_uncommitted: bool = False,
     ) -> ConstructionStep:
         if self._executor is None:
             raise RuntimeError("environment must be reset first")
@@ -441,7 +444,20 @@ class ConstructionBatchEnv:
             raise RuntimeError("repair requires auto_settle_failures=False")
         if request_id in self._settled:
             raise ValueError("request is already settled")
-        self.executor.repair(request_id, operations)
+        if terminal_segment_ids is not None:
+            if not terminal_segment_ids or len(set(terminal_segment_ids)) != len(
+                terminal_segment_ids
+            ):
+                raise ValueError(
+                    "replacement terminal segment IDs must be unique and non-empty"
+                )
+        self.executor.repair(
+            request_id,
+            operations,
+            supersede_uncommitted=supersede_uncommitted,
+        )
+        if terminal_segment_ids is not None:
+            self._terminal_segments[request_id] = tuple(terminal_segment_ids)
         return self._step_result(
             0.0,
             False,
@@ -450,9 +466,18 @@ class ConstructionBatchEnv:
                 "duration_ps": 0,
                 "request_id": request_id,
                 "repair_operation_ids": tuple(operation.op_id for operation in operations),
+                "terminal_segment_ids": self._terminal_segments[request_id],
+                "superseded_uncommitted": bool(supersede_uncommitted),
                 "settled_request_ids": tuple(sorted(self._settled)),
             },
         )
+
+    def terminal_segment_ids(self, request_id: str) -> tuple[str, ...]:
+        if self._executor is None:
+            raise RuntimeError("environment must be reset first")
+        if request_id not in self._terminal_segments:
+            raise KeyError(request_id)
+        return self._terminal_segments[request_id]
 
     def repair_options(
         self, request_id: str

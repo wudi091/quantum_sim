@@ -496,7 +496,13 @@ class ConstructionDAGExecutor:
             self._terminated = True
         return ExecutionEventBatch(self.physical_time_ps, events, duration, terminal=self._terminated and not self._heap)
 
-    def repair(self, request_id: str, operations: tuple[ConstructionOperation, ...]) -> None:
+    def repair(
+        self,
+        request_id: str,
+        operations: tuple[ConstructionOperation, ...],
+        *,
+        supersede_uncommitted: bool = False,
+    ) -> None:
         self._refresh_global_registry()
         if request_id not in self.dags:
             raise KeyError(request_id)
@@ -506,6 +512,14 @@ class ConstructionDAGExecutor:
         ):
             raise RuntimeError("cannot repair a request with in-flight operations")
         dag = self.dags[request_id]
+        if supersede_uncommitted and dag.started:
+            raise RuntimeError("cannot reroute a request with started operations")
+        obsolete = tuple(
+            operation.op_id
+            for operation in dag.operations
+            if operation.op_id not in dag.completed
+            and operation.op_id not in dag.dead
+        ) if supersede_uncommitted else ()
         new_ids = tuple(operation.op_id for operation in operations)
         if len(set(new_ids)) != len(new_ids):
             raise ValueError("repair operation IDs must be unique")
@@ -551,6 +565,8 @@ class ConstructionDAGExecutor:
                         f"repair input segment is not surviving or newly produced: {segment_id}"
                     )
         self.dags[request_id].repair(operations)
+        if obsolete:
+            self.dags[request_id].mark_obsolete(obsolete)
         self._operation_owners.update({operation.op_id: request_id for operation in operations})
 
     def repair_options(

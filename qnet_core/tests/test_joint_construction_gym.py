@@ -1,10 +1,12 @@
 import unittest
+from dataclasses import replace
 
 from algorithms.caappo import ShortestPathLeftDeepPolicy
 from qnet_core.construction_api import (
     ConstructionDAG,
     ConstructionOperation,
     OperationKind,
+    RepairKind,
     ResourceDemand,
 )
 from qnet_core.construction_catalog import RouteConstructionCandidate
@@ -166,12 +168,157 @@ class JointConstructionBatchEnvTests(unittest.TestCase):
         admitted = env.admit({"r0": catalogue[0]})
         failed = env.step(admitted.ready_operations)
         self.assertEqual(failed.phase, JointPhase.REPAIR)
+        choices = env.repair_choices("r0")
+        self.assertEqual(len(choices), 1)
+        self.assertEqual(choices[0].kind, RepairKind.RETRY)
+        self.assertNotEqual(
+            choices[0].terminal_segment_ids,
+            env.core.terminal_segment_ids("r0"),
+        )
         options = env.repair_options("r0")
         self.assertEqual(len(options), 1)
         repaired = env.repair("r0", options[0])
+        self.assertEqual(
+            env.core.terminal_segment_ids("r0"),
+            choices[0].terminal_segment_ids,
+        )
         failed_again = env.step(repaired.ready_operations)
         self.assertEqual(failed_again.phase, JointPhase.REPAIR)
         self.assertEqual(env.repair_options("r0"), ())
+
+    def test_failed_swap_can_reroute_to_alternative_catalogue_path(self):
+        spec = EpisodeSpec(
+            seed=5032,
+            nodes=(0, 1, 2, 3, 4),
+            edges=((0, 1), (1, 2), (2, 3), (3, 4), (0, 4)),
+            requests=(RequestSpec("r0", 0, 4, ttl=20),),
+            horizon=20,
+            physical=PhysicalConfig(
+                generation_probability=1.0,
+                swap_probability=0.0,
+                node_memory_capacity=4,
+                quantum_distance_m=1.0,
+            ),
+        )
+        catalogue = build_route_construction_catalogue(
+            spec.planning,
+            candidate_count=2,
+            construction_kinds=("balanced",),
+        )
+        original = next(
+            candidate for candidate in catalogue
+            if candidate.route_nodes == (0, 1, 2, 3, 4)
+        )
+        direct = next(
+            candidate for candidate in catalogue
+            if candidate.route_nodes == (0, 4)
+        )
+        env = JointConstructionBatchEnv(spec, catalogue)
+        env.reset()
+        admitted = env.admit({"r0": original})
+        generated = env.step(admitted.ready_operations)
+        failed = env.step(generated.ready_operations)
+
+        self.assertEqual(failed.phase, JointPhase.REPAIR)
+        failed_state = next(
+            state for state in failed.observation.dag_states
+            if state.request_id == "r0"
+        )
+        stale_old_ids = (
+            set(failed_state.operation_ids)
+            - set(failed_state.completed)
+            - set(failed_state.dead)
+        )
+        self.assertTrue(stale_old_ids)
+        choices = env.repair_choices("r0")
+        reroute = next(
+            choice for choice in choices
+            if choice.kind == RepairKind.REROUTE
+            and choice.candidate_id == direct.candidate_id
+        )
+        self.assertTrue(all(
+            operation.dag_version == 1 for operation in reroute.operations
+        ))
+        self.assertTrue(set(reroute.terminal_segment_ids).issubset({
+            operation.output_segment_id for operation in reroute.operations
+        }))
+        self.assertEqual(
+            sum(operation.kind == OperationKind.RELEASE for operation in reroute.operations),
+            2,
+        )
+
+        repaired = env.repair_choice("r0", reroute)
+        self.assertEqual(repaired.info["repair_kind"], RepairKind.REROUTE)
+        self.assertEqual(env.selected["r0"].candidate_id, direct.candidate_id)
+        repaired_state = next(
+            state for state in repaired.observation.dag_states
+            if state.request_id == "r0"
+        )
+        self.assertTrue(stale_old_ids.issubset(set(repaired_state.dead)))
+        self.assertTrue(all(
+            operation.kind == OperationKind.RELEASE
+            for operation in repaired.ready_operations
+        ))
+        released = env.step(repaired.ready_operations)
+        self.assertTrue(all(
+            operation.kind == OperationKind.GEN
+            for operation in released.ready_operations
+        ))
+        completed = env.step(released.ready_operations)
+        self.assertTrue(completed.terminated)
+        self.assertEqual(env.metrics()["completed_requests"], 1.0)
+        self.assertEqual(env.metrics()["risk_count"], 0.0)
+
+    def test_repeated_retry_advances_terminal_segment_lineage(self):
+        spec = EpisodeSpec(
+            seed=5033,
+            nodes=(0, 1),
+            edges=((0, 1),),
+            requests=(RequestSpec("r0", 0, 1, ttl=20),),
+            horizon=20,
+            physical=PhysicalConfig(
+                generation_probability=1.0,
+                detector_efficiency=0.0,
+                node_memory_capacity=1,
+                quantum_distance_m=1.0,
+            ),
+        )
+        base = build_route_construction_catalogue(
+            spec.planning,
+            candidate_count=1,
+            construction_kinds=("left_deep",),
+        )[0]
+        operation = replace(base.dag.operations[0], retry_limit=2)
+        candidate = replace(
+            base,
+            dag=ConstructionDAG("r0", (operation,)),
+            terminal_segment_id=operation.output_segment_id,
+            terminal_segment_ids=(operation.output_segment_id,),
+        )
+        env = JointConstructionBatchEnv(spec, (candidate,))
+        env.reset()
+        failed = env.step(env.admit({"r0": candidate}).ready_operations)
+
+        first = env.repair_choices("r0")[0]
+        failed_again = env.step(
+            env.repair_choice("r0", first).ready_operations
+        )
+        self.assertEqual(failed_again.phase, JointPhase.REPAIR)
+        second = env.repair_choices("r0")[0]
+        self.assertEqual(
+            env.core.terminal_segment_ids("r0"),
+            first.terminal_segment_ids,
+        )
+        self.assertNotEqual(
+            second.terminal_segment_ids,
+            first.terminal_segment_ids,
+        )
+
+        failed_third = env.step(
+            env.repair_choice("r0", second).ready_operations
+        )
+        self.assertEqual(failed_third.phase, JointPhase.REPAIR)
+        self.assertEqual(env.repair_choices("r0"), ())
 
     def test_failed_request_with_pending_operation_must_drain_before_drop(self):
         spec = EpisodeSpec(
