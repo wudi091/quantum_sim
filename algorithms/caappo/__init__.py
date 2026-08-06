@@ -15,6 +15,7 @@ from .oracle import (
 )
 from .torch_policy import (
     TorchCAAPPOPolicy,
+    TorchRelationAwareDAGEncoder,
     TorchOperationSample,
     TorchRepairSample,
     TorchRouteRecord,
@@ -41,6 +42,7 @@ __all__ = [
     "DeterministicOracleResult",
     "OracleLimitError",
     "TorchCAAPPOPolicy",
+    "TorchRelationAwareDAGEncoder",
     "TorchOperationSample",
     "TorchRepairSample",
     "TorchRouteRecord",

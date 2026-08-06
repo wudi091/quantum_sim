@@ -19,6 +19,7 @@ from torch.distributions import Bernoulli, Categorical
 from qnet_core.construction_api import (
     ConstructionOperation,
     ConstructionSnapshot,
+    OperationKind,
 )
 from qnet_core.construction_catalog import RouteConstructionCandidate
 from qnet_core.construction_decoder import (
@@ -30,7 +31,6 @@ from .policy import (
     CAAPPOPolicy,
     PolicyAction,
     PolicySample,
-    RelationAwareDAGEncoder,
 )
 
 
@@ -134,6 +134,108 @@ def compute_gae(
     return advantages, advantages + np.asarray(values, dtype=np.float64)
 
 
+class TorchRelationAwareDAGEncoder(nn.Module):
+    """Trainable one-layer message-passing encoder for construction DAGs."""
+
+    def __init__(self, hidden_dim: int = 32, seed: int = 0):
+        super().__init__()
+        if hidden_dim < 4:
+            raise ValueError("hidden_dim must be at least 4")
+        torch.manual_seed(int(seed))
+        self.hidden_dim = int(hidden_dim)
+        self.self_projection = nn.Linear(9, hidden_dim)
+        self.message_projection = nn.Linear(9, hidden_dim)
+
+    @staticmethod
+    def _operation_features(
+        snapshot: ConstructionSnapshot,
+        operations: Sequence[ConstructionOperation],
+        device: torch.device,
+    ) -> Tensor:
+        completed = {
+            operation_id
+            for state in snapshot.dag_states
+            for operation_id in state.completed
+        }
+        started = {
+            operation_id
+            for state in snapshot.dag_states
+            for operation_id in state.started
+        }
+        dead = {
+            operation_id
+            for state in snapshot.dag_states
+            for operation_id in state.dead
+        }
+        settled = set(snapshot.settled_request_ids)
+        values = []
+        active_operations = tuple(
+            operation
+            for operation in operations
+            if operation.request_id not in settled
+        )
+        for operation in active_operations:
+            values.append((
+                float(operation.kind == OperationKind.GEN),
+                float(operation.kind == OperationKind.SWAP),
+                float(operation.kind == OperationKind.RELEASE),
+                float(operation.op_id in completed),
+                float(operation.op_id in started),
+                float(operation.op_id in dead),
+                float(len(operation.predecessors)),
+                float(sum(amount for _, amount in operation.resource_demand.items())),
+                float(operation.duration_ps),
+            ))
+        if not values:
+            return torch.zeros((0, 9), dtype=torch.float32, device=device)
+        return torch.as_tensor(values, dtype=torch.float32, device=device)
+
+    def encode_tensor(
+        self,
+        snapshot: ConstructionSnapshot,
+        operations: Sequence[ConstructionOperation],
+    ) -> Tensor:
+        device = next(self.parameters()).device
+        source = snapshot.operations or tuple(operations)
+        source = tuple(
+            operation
+            for operation in source
+            if operation.request_id not in set(snapshot.settled_request_ids)
+        )
+        features = self._operation_features(snapshot, source, device)
+        if not len(source):
+            return torch.zeros(self.hidden_dim + 5, dtype=torch.float32, device=device)
+        index = {operation.op_id: position for position, operation in enumerate(source)}
+        message_rows = []
+        for operation in source:
+            predecessor_indices = [
+                index[pred] for pred in operation.predecessors if pred in index
+            ]
+            if predecessor_indices:
+                message_rows.append(features[predecessor_indices].mean(dim=0))
+            else:
+                message_rows.append(torch.zeros(9, dtype=torch.float32, device=device))
+        messages = torch.stack(message_rows, dim=0)
+        hidden = torch.tanh(
+            self.self_projection(features) + self.message_projection(messages)
+        )
+        global_features = torch.as_tensor((
+            snapshot.physical_time_ps / max(snapshot.horizon_ps, 1),
+            len(snapshot.segments),
+            len(snapshot.in_flight),
+            len(snapshot.pending_events),
+            sum(amount for _, amount in snapshot.reservations),
+        ), dtype=torch.float32, device=device)
+        return torch.cat((hidden.mean(dim=0), global_features))
+
+    def encode(
+        self,
+        snapshot: ConstructionSnapshot,
+        operations: Sequence[ConstructionOperation],
+    ) -> np.ndarray:
+        return self.encode_tensor(snapshot, operations).detach().cpu().numpy()
+
+
 class TorchCAAPPOPolicy(nn.Module):
     """Trainable CAAPPO heads with exact environment-side action masking."""
 
@@ -152,7 +254,7 @@ class TorchCAAPPOPolicy(nn.Module):
         if hidden_dim < 4:
             raise ValueError("hidden_dim must be at least 4")
         torch.manual_seed(int(seed))
-        self.encoder = RelationAwareDAGEncoder(hidden_dim, seed)
+        self.encoder = TorchRelationAwareDAGEncoder(hidden_dim, seed)
         self.hidden_dim = int(hidden_dim)
         self.state_dim = hidden_dim + 5
         self.route_dim = 5 + self.admission_context_dim
@@ -223,14 +325,37 @@ class TorchCAAPPOPolicy(nn.Module):
         snapshot: ConstructionSnapshot,
         operations: Sequence[ConstructionOperation],
     ) -> np.ndarray:
+        return self._state_tensor(snapshot, operations).detach().cpu().numpy()
+
+    def _state_tensor(
+        self,
+        snapshot: ConstructionSnapshot,
+        operations: Sequence[ConstructionOperation],
+    ) -> Tensor:
         if not self.use_dag_state:
             snapshot = replace(snapshot, operations=())
             operations = ()
-        feature = self.encoder.encode(snapshot, operations)
+        feature = self.encoder.encode_tensor(snapshot, operations)
         if not self.use_capacity_context:
-            feature = feature.copy()
+            feature = feature.clone()
             feature[-1] = 0.0
         return feature
+
+    def _state_tensor_for_sample(self, sample: PolicySample) -> Tensor:
+        if sample.state_snapshot is None:
+            return self._tensor(sample.feature)
+        operations = tuple(sample.state_operations)
+        return self._state_tensor(sample.state_snapshot, operations)
+
+    def value_for_sample(self, sample: PolicySample) -> float:
+        with torch.no_grad():
+            return float(self.value_tensor(self._state_tensor_for_sample(sample)).item())
+
+    def constraint_for_sample(self, sample: PolicySample) -> float:
+        with torch.no_grad():
+            return float(
+                self.constraint_tensor(self._state_tensor_for_sample(sample)).item()
+            )
 
     def value_tensor(self, feature: np.ndarray | Tensor) -> Tensor:
         values = feature if isinstance(feature, Tensor) else self._tensor(feature)
@@ -329,13 +454,18 @@ class TorchCAAPPOPolicy(nn.Module):
         deterministic: bool = False,
     ) -> TorchOperationSample:
         ordered = self._ordered_ready_operations(snapshot, candidates)
-        feature = self._state_feature(snapshot, ordered)
+        state_tensor = self._state_tensor(snapshot, ordered)
+        feature = state_tensor.detach().cpu().numpy()
         if not ordered and not stop_legal:
             raise ValueError("no ready operation and STOP is not legal")
-        operation_features = self._tensor(np.vstack([
-            np.concatenate((feature[: self.hidden_dim], (float(operation.ordinal),)))
-            for operation in ordered
-        ]) if ordered else np.zeros((0, self.operation_dim), dtype=np.float32))
+        operation_features = (
+            torch.stack([
+                torch.cat((state_tensor[: self.hidden_dim], self._tensor((float(operation.ordinal),))))
+                for operation in ordered
+            ])
+            if ordered
+            else torch.zeros((0, self.operation_dim), dtype=torch.float32, device=self.device)
+        )
         scores = self.operation_actor(operation_features).squeeze(-1)
         selected_indices: list[int] = []
         seed_legal = tuple(
@@ -403,20 +533,19 @@ class TorchCAAPPOPolicy(nn.Module):
             tuple(selected_indices),
             seed_legal,
             seed_index,
+            state_snapshot=snapshot,
+            state_operations=tuple(ordered),
         )
         return TorchOperationSample(sample)
 
     def evaluate_operation_log_probability(self, sample: PolicySample) -> Tensor:
-        feature = self._tensor(sample.feature)
+        feature = self._state_tensor_for_sample(sample)
         if not sample.ordered_operation_ids:
             return torch.zeros((), device=self.device)
-        operation_features = self._tensor(np.vstack([
-            np.concatenate((
-                sample.feature[: self.hidden_dim],
-                (float(ordinal),),
-            ))
+        operation_features = torch.stack([
+            torch.cat((feature[: self.hidden_dim], self._tensor((float(ordinal),))))
             for ordinal in sample.operation_ordinals
-        ]))
+        ])
         scores = self.operation_actor(operation_features).squeeze(-1)
         selected = set(sample.selected_indices)
         log_probability = torch.zeros((), device=self.device)
@@ -445,7 +574,8 @@ class TorchCAAPPOPolicy(nn.Module):
         operations = tuple(
             operation for option in repair_options for operation in option
         )
-        feature = self._state_feature(snapshot, operations)
+        state_tensor = self._state_tensor(snapshot, operations)
+        feature = state_tensor.detach().cpu().numpy()
         if not repair_options:
             return TorchRepairSample(PolicySample(
                 PolicyAction(None, (), True),
@@ -453,14 +583,16 @@ class TorchCAAPPOPolicy(nn.Module):
                 0.0,
                 feature,
                 repair_action=0,
+                state_snapshot=snapshot,
+                state_operations=operations,
             ))
         option_features = tuple(
             tuple(float(value) for value in self._repair_option_feature(option))
             for option in repair_options
         )
-        drop_logit = self.repair_actor(self._tensor(feature)).squeeze(-1)
+        drop_logit = self.repair_actor(state_tensor).squeeze(-1)
         retry_logits = self.repair_option_actor(
-            self._tensor(self._repair_option_inputs(feature, option_features))
+            self._repair_option_inputs_tensor(state_tensor, option_features)
         ).squeeze(-1)
         distribution = Categorical(logits=torch.cat((
             drop_logit.reshape(1), retry_logits,
@@ -481,6 +613,8 @@ class TorchCAAPPOPolicy(nn.Module):
             ),
             repair_action=action_index,
             repair_option_features=option_features,
+            state_snapshot=snapshot,
+            state_operations=operations,
         )
         return TorchRepairSample(sample)
 
@@ -510,13 +644,22 @@ class TorchCAAPPOPolicy(nn.Module):
     def _repair_distribution(self, sample: PolicySample) -> Categorical | None:
         if sample.repair_action < 0 or not sample.repair_option_features:
             return None
-        drop_logit = self.repair_actor(self._tensor(sample.feature)).squeeze(-1)
+        state_tensor = self._state_tensor_for_sample(sample)
+        drop_logit = self.repair_actor(state_tensor).squeeze(-1)
         retry_logits = self.repair_option_actor(
-            self._tensor(self._repair_option_inputs(
-                sample.feature, sample.repair_option_features
-            ))
+            self._repair_option_inputs_tensor(state_tensor, sample.repair_option_features)
         ).squeeze(-1)
         return Categorical(logits=torch.cat((drop_logit.reshape(1), retry_logits)))
+
+    def _repair_option_inputs_tensor(
+        self,
+        feature: Tensor,
+        option_features: Sequence[Sequence[float]],
+    ) -> Tensor:
+        options = self._tensor(option_features)
+        if options.ndim != 2 or options.shape[1] != 3:
+            raise ValueError("repair option features must have shape (n, 3)")
+        return torch.cat((feature.reshape(1, -1).repeat(len(options), 1), options), dim=1)
 
     def evaluate_repair_log_probability(self, sample: PolicySample) -> Tensor:
         if sample.repair_action < 0:
@@ -540,10 +683,11 @@ class TorchCAAPPOPolicy(nn.Module):
             )
         if not sample.ordered_operation_ids:
             return torch.zeros((), device=self.device)
-        operation_features = self._tensor(np.vstack([
-            np.concatenate((sample.feature[: self.hidden_dim], (float(ordinal),)))
+        state_tensor = self._state_tensor_for_sample(sample)
+        operation_features = torch.stack([
+            torch.cat((state_tensor[: self.hidden_dim], self._tensor((float(ordinal),))))
             for ordinal in sample.operation_ordinals
-        ]))
+        ])
         scores = self.operation_actor(operation_features).squeeze(-1)
         entropy = torch.zeros((), device=self.device)
         if sample.seed_index >= 0:
@@ -636,8 +780,12 @@ class TorchCAAPPOPolicy(nn.Module):
                     dtype=torch.float32,
                     device=self.device,
                 )
-                value_prediction = self.value_tensor(transition.sample.feature)
-                constraint_prediction = self.constraint_tensor(transition.sample.feature)
+                value_prediction = self.value_tensor(
+                    self._state_tensor_for_sample(transition.sample)
+                )
+                constraint_prediction = self.constraint_tensor(
+                    self._state_tensor_for_sample(transition.sample)
+                )
                 value_losses.append((value_prediction - value_target) ** 2)
                 constraint_losses.append((constraint_prediction - risk_target) ** 2)
                 entropies.append(self.evaluate_action_entropy(transition.sample))
@@ -714,6 +862,7 @@ class TorchCAAPPOPolicy(nn.Module):
 
 __all__ = [
     "TorchCAAPPOPolicy",
+    "TorchRelationAwareDAGEncoder",
     "TorchOperationSample",
     "TorchRepairSample",
     "TorchRouteRecord",

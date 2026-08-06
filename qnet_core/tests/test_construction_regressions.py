@@ -387,6 +387,68 @@ class ConstructionRegressionTests(unittest.TestCase):
         executor.advance_to_next_event()
         self.assertEqual(executor.repair_options("r"), ())
 
+    def test_sequence_failed_swap_rebuilds_consumed_prefix(self):
+        spec = EpisodeSpec(
+            seed=911,
+            nodes=(0, 1, 2),
+            edges=((0, 1), (1, 2)),
+            requests=(RequestSpec("r", 0, 2),),
+            horizon=20,
+            physical=PhysicalConfig(
+                generation_probability=1.0,
+                swap_probability=0.0,
+                detector_efficiency=1.0,
+                node_memory_capacity=2,
+                memory_capacity=1,
+                quantum_distance_m=1.0,
+            ),
+        )
+        candidate = build_route_construction_catalogue(
+            spec.planning,
+            candidate_count=1,
+            construction_kinds=("left_deep",),
+        )[0]
+        executor = make_sequence_construction_executor(spec, (candidate.dag,))
+        generations = executor.ready_operations()
+        self.assertEqual(len(generations), 2)
+        executor.launch(generations)
+        generation_batch = executor.advance_to_next_event()
+        self.assertTrue(all(event.success for event in generation_batch.events))
+
+        swap = executor.ready_operations()
+        self.assertEqual(len(swap), 1)
+        executor.launch(swap)
+        failed_batch = executor.advance_to_next_event()
+        self.assertEqual(len(failed_batch.events), 1)
+        self.assertFalse(failed_batch.events[0].success)
+        self.assertEqual(
+            set(failed_batch.events[0].consumed_segment_ids),
+            {operation.output_segment_id for operation in generations},
+        )
+
+        options = executor.repair_options("r")
+        self.assertEqual(len(options), 1)
+        repair = options[0]
+        self.assertEqual(
+            [operation.kind for operation in repair],
+            [OperationKind.GEN, OperationKind.GEN, OperationKind.SWAP],
+        )
+        rebuilt_ids = {
+            operation.output_segment_id
+            for operation in repair
+            if operation.kind == OperationKind.GEN
+        }
+        self.assertTrue(
+            set(repair[-1].input_segment_ids).issubset(rebuilt_ids)
+        )
+        executor.repair("r", repair)
+        executor.launch(executor.ready_operations())
+        retry_batch = executor.advance_to_next_event()
+        self.assertTrue(all(event.success for event in retry_batch.events))
+        retry_swap = executor.ready_operations()
+        self.assertEqual(len(retry_swap), 1)
+        self.assertEqual(retry_swap[0].kind, OperationKind.SWAP)
+
     def test_post_completion_capacity_is_checked_against_resident_holds(self):
         resident = ResourceDemand.from_mapping({
             "link:0-1": 1,

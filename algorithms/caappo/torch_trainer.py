@@ -332,11 +332,11 @@ class TorchCAAPPORolloutTrainer:
         discounted_return = 0.0
         if decisions:
             values = np.asarray([
-                self.policy.value(decision.sample.feature)
+                self.policy.value_for_sample(decision.sample)
                 for decision in decisions
             ], dtype=np.float64)
             risk_values = np.asarray([
-                self.policy.constraint_value(decision.sample.feature)
+                self.policy.constraint_for_sample(decision.sample)
                 for decision in decisions
             ], dtype=np.float64)
             next_values = np.concatenate((values[1:], np.zeros(1)))

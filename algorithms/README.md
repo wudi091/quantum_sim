@@ -35,8 +35,9 @@ CAAPPO consumes the newer `ConstructionSnapshot` contract. Its NumPy policy is
 a reference implementation for action semantics and reproducibility; it does
 not claim a converged RL result by itself. The PyTorch module trains actor /
 critic heads over the same masked actions and categorically scores DROP plus
-all generated retry options. Its fixed relation-aware featurizer and limited
-failed-SWAP repair candidate generator are explicit current limitations.
+all generated retry options. Its trainable relation-aware message-passing
+encoder and bounded failed-SWAP prefix repair are implemented; broader repair
+candidate families remain explicit current limitations.
 Physical execution remains in the SeQUeNCe-backed executor under `qnet_core`.
 
 Run a small construction-aware sanity experiment with:

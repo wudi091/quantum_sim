@@ -20,7 +20,7 @@ Implemented and tested:
   dual update.
 - PyTorch CAAPPO policy heads with masked route/operation/repair sampling,
   clipped PPO losses, event-duration GAE, constraint critic, and CMDP dual
-  updates; the current relation-aware DAG featurizer is fixed and the actor /
+  updates; the PyTorch relation-aware DAG message-passing encoder and actor /
   critic heads are trainable.
 - the potential-shaping term is the normalized remaining-DAG critical-path
   length and is zero on terminal states;
@@ -42,9 +42,11 @@ Implemented and tested:
   topological schedule that fits its own resource holds; admission preview
   usage is context only because execution resources can be time-shared by
   later requests.
-- retry lineage and `retry_limit` are enforced by both executors. The Torch
-  repair head scores DROP and every generated retry option categorically;
-  richer SWAP-prefix repair generation remains a separate gate.
+- retry lineage and `retry_limit` are enforced by both executors. Failed SWAP
+  branches can rebuild missing GEN/SWAP ancestors from the surviving prefix
+  before a bounded retry; the Torch repair head scores DROP and every generated
+  repair option categorically. Broader route-aware repair alternatives remain
+  a separate gate.
 - the `no_capacity_context` ablation removes only the capacity feature from
   the policy observation. The hard capacity-feasibility mask remains enabled
   to keep every rollout physically valid; a mask-removal ablation requires an
@@ -70,10 +72,10 @@ initial segments for contract tests.
 
 Remaining paper-complete gates:
 
-- richer repair generation for failed SWAP branches and an independently
-  audited physical scheduler for inter-epoch/mixed operation concurrency;
-- a trainable graph encoder and richer failed-SWAP repair candidate generation;
-  current PyTorch PPO heads are runnable, but convergence and scaling are not
+- broader route-aware repair candidate families and an independently audited
+  physical scheduler for inter-epoch/mixed operation concurrency;
+- converged training and scaling evidence; the trainable PyTorch graph encoder
+  and bounded failed-SWAP prefix repair are runnable, but convergence is not
   claimed;
 - broader stochastic multi-seed evidence and catalogue/oracle coverage for a
   paper submission. The bounded nominal oracle and seeded CI/ablation harness

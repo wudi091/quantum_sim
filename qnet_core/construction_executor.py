@@ -22,6 +22,7 @@ from .construction_api import (
     OperationKind,
     ResourceDemand,
 )
+from .construction_repair import generate_repair_options
 from .construction_decoder import CapacityFeasibilityOracle
 
 
@@ -558,47 +559,14 @@ class ConstructionDAGExecutor:
         if request_id not in self.dags:
             raise KeyError(request_id)
         dag = self.dags[request_id]
-        available = self._available_segments()
-        next_version = dag.version + 1
-        ordinal = max((operation.ordinal for operation in dag.operations), default=0) + 1
-        options: list[tuple[ConstructionOperation, ...]] = []
-        for dead in sorted(
-            (operation for operation in dag.operations if operation.op_id in dag.dead),
-            key=lambda operation: operation.canonical_key,
-        ):
-            next_attempt = dead.retry_attempt + 1
-            if next_attempt > dead.retry_limit:
-                continue
-            retry_root_id = dead.retry_root_id or dead.op_id
-            if any(
-                operation.retry_root_id == retry_root_id
-                and operation.retry_attempt == next_attempt
-                for operation in dag.operations
-            ):
-                continue
-            if not set(dead.input_segment_ids).issubset(available):
-                continue
-            retry = replace(
-                dead,
-                op_id=f"{retry_root_id}:retry:{next_attempt}",
-                output_segment_id=(
-                    None
-                    if dead.output_segment_id is None
-                    else f"{dead.output_segment_id}:retry:{next_attempt}"
-                ),
-                predecessors=tuple(
-                    predecessor
-                    for predecessor in dead.predecessors
-                    if predecessor in dag.completed
-                ),
-                ordinal=ordinal,
-                dag_version=next_version,
-                retry_root_id=retry_root_id,
-                retry_attempt=next_attempt,
-            )
-            ordinal += 1
-            options.append((retry,))
-        return tuple(options)
+        return generate_repair_options(
+            dag,
+            self._available_segments(),
+            next_version=dag.version + 1,
+            ordinal_start=max(
+                (operation.ordinal for operation in dag.operations), default=0
+            ) + 1,
+        )
 
     def release_segment(self, segment_id: str) -> LogicalSegment | None:
         segment = self.segments.get(segment_id)

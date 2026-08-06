@@ -43,6 +43,8 @@ class PolicySample:
     seed_index: int = -1
     repair_action: int = -1
     repair_option_features: tuple[tuple[float, ...], ...] = ()
+    state_snapshot: ConstructionSnapshot | None = None
+    state_operations: tuple[ConstructionOperation, ...] = ()
 
 
 @dataclass(frozen=True)

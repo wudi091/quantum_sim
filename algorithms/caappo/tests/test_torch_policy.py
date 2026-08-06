@@ -196,12 +196,16 @@ class TorchCAAPPOTests(unittest.TestCase):
             construction_kinds=("left_deep",),
         )
         policy = TorchCAAPPOPolicy(seed=37)
+        encoder_before = policy.encoder.self_projection.weight.detach().clone()
         result = TorchCAAPPORolloutTrainer(policy).run_episode(
             spec, catalogue, deterministic=False, update=True
         )
         self.assertEqual(result.metrics["completed_requests"], 1.0)
         self.assertIsNotNone(result.update_stats)
         self.assertTrue(math.isfinite(result.update_stats.policy_loss))
+        self.assertFalse(torch.equal(
+            encoder_before, policy.encoder.self_projection.weight.detach()
+        ))
 
 
 if __name__ == "__main__":

@@ -33,6 +33,8 @@ does not receive SeQUeNCe objects.
 - `construction_executor.py`: deterministic contract/reference executor;
 - `sequence_construction_executor.py`: event-driven SeQUeNCe construction
   adapter with physical timestamps and event feedback;
+- `construction_repair.py`: neutral bounded retry and failed-SWAP prefix
+  reconstruction candidates;
 - `construction_catalog.py` / `construction_evaluate.py`: bounded joint
   `(path, construction)` catalogue and baseline evaluator;
 - `evaluate.py`: seeded Q-DDCA/Q-CAST comparison entry point.
