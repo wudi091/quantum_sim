@@ -18,6 +18,14 @@ Implemented and tested:
 - NumPy reference CAAPPO route actor, masked operation actor, value/constraint
   critics, transition-level risk cost-to-go targets, and an episode-level risk
   dual update.
+- PyTorch CAAPPO policy heads with masked route/operation/repair sampling,
+  clipped PPO losses, event-duration GAE, constraint critic, and CMDP dual
+  updates; the current relation-aware DAG featurizer is fixed and the actor /
+  critic heads are trainable.
+- the potential-shaping term is the normalized remaining-DAG critical-path
+  length and is zero on terminal states;
+- Complete operation-universe snapshots keep dependency relations visible to
+  the planner without exposing SeQUeNCe objects.
 - canonical operation authenticity and global output-segment collision checks;
 - physical-versus-logical completion boundaries, pending fidelity refresh, and
   request-level pending/drop guards.
@@ -30,6 +38,17 @@ Implemented and tested:
   construction evaluator reports delivered pairs and supports demand_pairs>1.
 - request-level fidelity is enforced at the SeQUeNCe terminal delivery gate,
   again at neutral settlement, and cannot be weakened by a repair DAG.
+- candidate admission checks each selected DAG for at least one sequential
+  topological schedule that fits its own resource holds; admission preview
+  usage is context only because execution resources can be time-shared by
+  later requests.
+- retry lineage and `retry_limit` are enforced by both executors. The Torch
+  repair head scores DROP and every generated retry option categorically;
+  richer SWAP-prefix repair generation remains a separate gate.
+- the `no_capacity_context` ablation removes only the capacity feature from
+  the policy observation. The hard capacity-feasibility mask remains enabled
+  to keep every rollout physically valid; a mask-removal ablation requires an
+  explicit action-rejection transition and is not claimed as implemented.
 - the event boundary is the minimum of operation completion, SeQUeNCe memory
   expiration, request arrival, deadline, and horizon; expiration is stamped at
   its physical time and deadlines appear as neutral boundary events. Arrival
@@ -53,21 +72,25 @@ Remaining paper-complete gates:
 
 - richer repair generation for failed SWAP branches and an independently
   audited physical scheduler for inter-epoch/mixed operation concurrency;
-- a high-performance autodiff PPO implementation with GAE and a constraint
-  critic; the current trainer is a NumPy reference implementation;
-- deterministic small-instance oracle, multi-seed confidence intervals,
-  ablations, and the baseline experiment harness.
+- a trainable graph encoder and richer failed-SWAP repair candidate generation;
+  current PyTorch PPO heads are runnable, but convergence and scaling are not
+  claimed;
+- broader stochastic multi-seed evidence and catalogue/oracle coverage for a
+  paper submission. The bounded nominal oracle and seeded CI/ablation harness
+  are implemented for sanity and small-instance validation.
 
-This is a runnable construction-aware event foundation and a NumPy reference
-CAAPPO, not yet a complete CCFA paper system. The multi-pair evaluator,
-request-level fidelity gate, and event-boundary semantics are implemented;
-production-grade PPO, oracle-backed experiments, and statistically supported
+This is a runnable construction-aware event foundation with a SeQUeNCe-backed
+Torch CAAPPO head, not yet a complete CCFA paper system. The multi-pair
+evaluator, request-level fidelity gate, deadline/expiration settlement, bounded
+nominal oracle, and reproducible sanity harness are implemented; production-
+grade physical scheduling, converged training, and statistically supported
 paper claims remain outside the current claim.
 
 Current regression commands, using the Conda environment
 `D:\\software\\miniconda3\\envs\\qnet312` (Python 3.12.13, SeQUeNCe 1.0.0):
 
 ```text
+conda run -p D:\\software\\miniconda3\\envs\\qnet312 python -m pytest -q
 conda run -p D:\\software\\miniconda3\\envs\\qnet312 python -m unittest discover -s qnet_core/tests -q
 conda run -p D:\\software\\miniconda3\\envs\\qnet312 python -m unittest discover -s algorithms/caappo/tests -q
 conda run -p D:\\software\\miniconda3\\envs\\qnet312 python -m unittest discover -s algorithms/qddca/tests -q

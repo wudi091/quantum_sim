@@ -16,6 +16,7 @@ from qnet_core.construction_evaluate import run_joint_plan_baseline
 from qnet_core.construction_executor import ConstructionDAGExecutor
 from qnet_core.joint_construction_gym import JointConstructionBatchEnv, JointPhase
 from qnet_core.planning_spec import RequestSpec
+from qnet_core.runtime import make_sequence_construction_executor
 from qnet_core.spec import EpisodeSpec, PhysicalConfig
 
 
@@ -45,6 +46,7 @@ def _one_hop_generation(
         resource_demand=demand,
         output_resource_hold=hold,
         required_fidelity=required_fidelity,
+        retry_limit=1,
     )
 
 
@@ -163,6 +165,227 @@ class ConstructionRegressionTests(unittest.TestCase):
         result = run_joint_plan_baseline(spec, {"r": candidate})
         self.assertEqual(result.metrics["delivered_pairs"], 2.0)
         self.assertEqual(result.metrics["completed_requests"], 1.0)
+
+    def test_fixed_evaluator_settles_at_deadline_boundary(self):
+        spec = EpisodeSpec(
+            seed=905,
+            nodes=(0, 1),
+            edges=((0, 1),),
+            requests=(RequestSpec("r", 0, 1, ttl=1),),
+            horizon=5,
+            physical=PhysicalConfig(
+                generation_probability=1.0,
+                node_memory_capacity=1,
+                memory_capacity=1,
+                quantum_distance_m=1.0,
+            ),
+        )
+        operation = replace(
+            _one_hop_generation("r", "g", "s"), duration_ps=2_000_000
+        )
+        candidate = RouteConstructionCandidate(
+            "r:deadline-evaluator",
+            "r",
+            (0, 1),
+            "custom",
+            ConstructionDAG("r", (operation,)),
+            "s",
+        )
+        result = run_joint_plan_baseline(spec, {"r": candidate})
+        self.assertEqual(result.settlements[0].settlement_time, 1_000_000)
+        self.assertTrue(any(
+            event.event_kind == "deadline" and event.physical_time_ps == 1_000_000
+            for event in result.event_trace
+        ))
+
+    def test_fixed_evaluator_settles_on_memory_expiration(self):
+        spec = EpisodeSpec(
+            seed=906,
+            nodes=(0, 1, 2),
+            edges=((0, 1), (1, 2)),
+            requests=(RequestSpec("r", 0, 2),),
+            horizon=10,
+            physical=PhysicalConfig(
+                generation_probability=1.0,
+                memory_lifetime=1,
+                node_memory_capacity=4,
+                quantum_distance_m=1.0,
+            ),
+        )
+        generation = _one_hop_generation("r", "g", "s")
+        delay = ConstructionOperation(
+            "delay",
+            "r",
+            OperationKind.RELEASE,
+            predecessors=("g",),
+            duration_ps=2_000_000,
+        )
+        candidate = RouteConstructionCandidate(
+            "r:expiration-evaluator",
+            "r",
+            (0, 1, 2),
+            "custom",
+            ConstructionDAG("r", (generation, delay)),
+            "missing-terminal",
+        )
+        result = run_joint_plan_baseline(spec, {"r": candidate})
+        expiration = next(
+            event for event in result.event_trace
+            if event.failure_cause == "expiration"
+        )
+        self.assertEqual(
+            result.settlements[0].settlement_time, expiration.physical_time_ps
+        )
+
+    def test_fixed_evaluator_releases_late_output_after_deadline_settlement(self):
+        spec = EpisodeSpec(
+            seed=907,
+            nodes=(0, 1),
+            edges=((0, 1),),
+            requests=(
+                RequestSpec("r0", 0, 1, ttl=1),
+                RequestSpec("r1", 0, 1, arrival=3),
+            ),
+            horizon=6,
+            physical=PhysicalConfig(
+                generation_probability=1.0,
+                node_memory_capacity=1,
+                memory_capacity=1,
+                quantum_distance_m=1.0,
+            ),
+        )
+        late = RouteConstructionCandidate(
+            "r0:late",
+            "r0",
+            (0, 1),
+            "custom",
+            ConstructionDAG("r0", (
+                replace(_one_hop_generation("r0", "g0", "s0"), duration_ps=2_000_000),
+            )),
+            "s0",
+        )
+        next_request = RouteConstructionCandidate(
+            "r1:on-time",
+            "r1",
+            (0, 1),
+            "custom",
+            ConstructionDAG("r1", (_one_hop_generation("r1", "g1", "s1"),)),
+            "s1",
+        )
+        result = run_joint_plan_baseline(
+            spec, {"r0": late, "r1": next_request}
+        )
+        self.assertFalse(result.settlements[0].success)
+        self.assertTrue(result.settlements[1].success)
+
+    def test_fixed_evaluator_caps_future_deadline_at_horizon(self):
+        spec = EpisodeSpec(
+            seed=908,
+            nodes=(0, 1),
+            edges=((0, 1),),
+            requests=(RequestSpec("r", 0, 1, ttl=100),),
+            horizon=5,
+        )
+        candidate = RouteConstructionCandidate(
+            "r:empty",
+            "r",
+            (0, 1),
+            "custom",
+            ConstructionDAG("r", ()),
+            "missing-terminal",
+        )
+        result = run_joint_plan_baseline(spec, {"r": candidate})
+        self.assertFalse(result.settlements[0].success)
+        self.assertEqual(
+            result.settlements[0].settlement_time,
+            spec.horizon * spec.physical.slot_duration_ps,
+        )
+
+    def test_batch_env_caps_inflight_deadline_boundary_at_horizon(self):
+        spec = EpisodeSpec(
+            seed=909,
+            nodes=(0, 1),
+            edges=((0, 1),),
+            requests=(RequestSpec("r", 0, 1, ttl=100),),
+            horizon=5,
+            physical=PhysicalConfig(
+                generation_probability=1.0,
+                node_memory_capacity=1,
+                memory_capacity=1,
+                quantum_distance_m=1.0,
+            ),
+        )
+        operation = replace(
+            _one_hop_generation("r", "g", "s"), duration_ps=10_000_000
+        )
+        candidate = RouteConstructionCandidate(
+            "r:long",
+            "r",
+            (0, 1),
+            "custom",
+            ConstructionDAG("r", (operation,)),
+            "s",
+        )
+        env = JointConstructionBatchEnv(spec, (candidate,))
+        env.reset()
+        state = env.admit({"r": candidate})
+        state = env.step(state.ready_operations)
+        self.assertTrue(state.terminated)
+        self.assertEqual(env.metrics()["risk_count"], 1.0)
+
+    def test_retry_limit_bounds_repair_options(self):
+        operation = replace(
+            _one_hop_generation("r", "g", "s"),
+            retry_limit=1,
+            success_probability=0.0,
+        )
+        executor = ConstructionDAGExecutor(
+            (ConstructionDAG("r", (operation,)),),
+            {
+                "link:0-1": 1,
+                "genlane:0-1": 1,
+                "memory:0": 1,
+                "memory:1": 1,
+            },
+            seed=909,
+        )
+        executor.launch((operation,))
+        executor.advance_to_next_event()
+        options = executor.repair_options("r")
+        self.assertEqual(len(options), 1)
+        executor.repair("r", options[0])
+        retry = options[0][0]
+        executor.launch((retry,))
+        executor.advance_to_next_event()
+        self.assertEqual(executor.repair_options("r"), ())
+
+    def test_sequence_retry_limit_bounds_repair_options(self):
+        spec = EpisodeSpec(
+            seed=910,
+            nodes=(0, 1),
+            edges=((0, 1),),
+            requests=(RequestSpec("r", 0, 1),),
+            horizon=10,
+            physical=PhysicalConfig(
+                generation_probability=1.0,
+                detector_efficiency=0.0,
+                node_memory_capacity=1,
+                memory_capacity=1,
+                quantum_distance_m=1.0,
+            ),
+        )
+        operation = _one_hop_generation("r", "g", "s")
+        executor = make_sequence_construction_executor(
+            spec, (ConstructionDAG("r", (operation,)),)
+        )
+        executor.launch((operation,))
+        executor.advance_to_next_event()
+        options = executor.repair_options("r")
+        self.assertEqual(len(options), 1)
+        executor.repair("r", options[0])
+        executor.launch(options[0])
+        executor.advance_to_next_event()
+        self.assertEqual(executor.repair_options("r"), ())
 
     def test_post_completion_capacity_is_checked_against_resident_holds(self):
         resident = ResourceDemand.from_mapping({

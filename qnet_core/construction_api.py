@@ -106,6 +106,8 @@ class ConstructionOperation:
     success_probability: float = 1.0
     required_fidelity: float = 0.0
     retry_limit: int = 0
+    retry_root_id: str | None = None
+    retry_attempt: int = 0
     ordinal: int = 0
     dag_version: int = 0
 
@@ -128,8 +130,19 @@ class ConstructionOperation:
             raise ValueError("success_probability must be in [0, 1]")
         if not 0.0 <= self.required_fidelity <= 1.0:
             raise ValueError("required_fidelity must be in [0, 1]")
-        if self.retry_limit < 0 or self.ordinal < 0 or self.dag_version < 0:
-            raise ValueError("retry_limit, ordinal, and dag_version must be non-negative")
+        if (
+            self.retry_limit < 0
+            or self.retry_attempt < 0
+            or self.ordinal < 0
+            or self.dag_version < 0
+        ):
+            raise ValueError(
+                "retry_limit, retry_attempt, ordinal, and dag_version must be non-negative"
+            )
+        if self.retry_attempt > self.retry_limit:
+            raise ValueError("retry_attempt cannot exceed retry_limit")
+        if self.retry_attempt > 0 and not self.retry_root_id:
+            raise ValueError("retry operations must declare retry_root_id")
         if self.output_endpoints is not None:
             left, right = self.output_endpoints
             if left == right:
@@ -224,12 +237,14 @@ class ConstructionSnapshot:
     physical_time_ps: int
     horizon_ps: int
     dag_states: tuple[DAGState, ...] = ()
+    operations: tuple[ConstructionOperation, ...] = ()
     segments: tuple[LogicalSegment, ...] = ()
     reservations: tuple[tuple[str, int], ...] = ()
     in_flight: tuple[InFlightOperation, ...] = ()
     pending_events: tuple[tuple[str, int, str], ...] = ()
     arrivals: tuple[tuple[str, int], ...] = ()
     deadlines: tuple[tuple[str, int], ...] = ()
+    settled_request_ids: tuple[str, ...] = ()
     resource_capacities: tuple[tuple[str, int], ...] = ()
     backend_state: tuple[tuple[str, object], ...] = ()
 
@@ -238,6 +253,12 @@ class ConstructionSnapshot:
             raise ValueError("snapshot time must lie within the horizon")
         if tuple(sorted(self.dag_states, key=lambda state: state.request_id)) != self.dag_states:
             raise ValueError("dag_states must be request-id sorted")
+        if tuple(sorted(self.operations, key=lambda item: item.canonical_key)) != self.operations:
+            raise ValueError("operations must be canonical-key sorted")
+        if len({operation.op_id for operation in self.operations}) != len(self.operations):
+            raise ValueError("snapshot operations must have unique IDs")
+        if tuple(sorted(set(self.settled_request_ids))) != self.settled_request_ids:
+            raise ValueError("settled_request_ids must be unique and sorted")
         if tuple(sorted(self.segments, key=lambda segment: segment.segment_id)) != self.segments:
             raise ValueError("segments must be segment-id sorted")
         if tuple(sorted(self.in_flight, key=lambda item: item.operation_id)) != self.in_flight:

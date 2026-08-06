@@ -95,6 +95,84 @@ class JointConstructionBatchEnv:
                 footprint[resource] = max(footprint.get(resource, 0), amount)
         return footprint
 
+    @staticmethod
+    def _candidate_has_feasible_schedule(
+        candidate: RouteConstructionCandidate,
+        capacities: Mapping[str, int],
+    ) -> bool:
+        """Check whether one sequential topological execution fits capacity.
+
+        Admission does not reserve resources across requests, but each chosen
+        construction DAG must be intrinsically executable. This search tracks
+        resident output holds, transient launch demand, and input consumption;
+        it catches cases such as a two-hop path with only one memory at the
+        middle node without rejecting later time sharing between requests.
+        """
+
+        operations = tuple(candidate.dag.operations)
+        memo: set[tuple[frozenset[str], tuple[tuple[str, tuple[tuple[str, int], ...]], ...]]] = set()
+
+        def visit(
+            completed: frozenset[str],
+            live_holds: tuple[tuple[str, tuple[tuple[str, int], ...]], ...],
+        ) -> bool:
+            if len(completed) == len(operations):
+                return True
+            key = (completed, live_holds)
+            if key in memo:
+                return False
+            memo.add(key)
+            live = {segment_id: dict(entries) for segment_id, entries in live_holds}
+            usage: dict[str, int] = {}
+            for hold in live.values():
+                for resource, amount in hold.items():
+                    usage[resource] = usage.get(resource, 0) + amount
+            available = set(live)
+            ready = tuple(sorted(
+                (
+                    operation
+                    for operation in operations
+                    if operation.op_id not in completed
+                    and set(operation.predecessors).issubset(completed)
+                    and set(operation.input_segment_ids).issubset(available)
+                ),
+                key=lambda operation: operation.canonical_key,
+            ))
+            for operation in ready:
+                launch_usage = dict(usage)
+                for resource, amount in operation.resource_demand.items():
+                    launch_usage[resource] = launch_usage.get(resource, 0) + amount
+                if any(
+                    amount > capacities.get(resource, 0)
+                    for resource, amount in launch_usage.items()
+                ):
+                    continue
+                next_live = {segment_id: dict(values) for segment_id, values in live.items()}
+                for segment_id in operation.input_segment_ids:
+                    next_live.pop(segment_id, None)
+                if operation.output_segment_id is not None:
+                    next_live[operation.output_segment_id] = dict(
+                        operation.output_resource_hold.items()
+                    )
+                post_usage: dict[str, int] = {}
+                for hold in next_live.values():
+                    for resource, amount in hold.items():
+                        post_usage[resource] = post_usage.get(resource, 0) + amount
+                if any(
+                    amount > capacities.get(resource, 0)
+                    for resource, amount in post_usage.items()
+                ):
+                    continue
+                normalized = tuple(sorted(
+                    (segment_id, tuple(sorted(values.items())))
+                    for segment_id, values in next_live.items()
+                ))
+                if visit(completed | {operation.op_id}, normalized):
+                    return True
+            return False
+
+        return visit(frozenset(), ())
+
     def _admission_observation(self) -> dict[str, object]:
         next_request = (
             self._admission_order[self._admission_index]
@@ -135,10 +213,14 @@ class JointConstructionBatchEnv:
         legal = []
         for candidate in self._by_request[request_id]:
             footprint = self._candidate_footprint(candidate)
+            # Admission selects plans but does not reserve execution-time
+            # resources. Requests may reuse the same unit-capacity link after
+            # an earlier request settles, so cumulative preview usage is a
+            # policy context feature rather than a residual-capacity mask.
             if all(
                 amount <= capacities.get(resource, 0)
                 for resource, amount in footprint.items()
-            ):
+            ) and self._candidate_has_feasible_schedule(candidate, capacities):
                 legal.append(candidate)
         return tuple(legal)
 
@@ -151,6 +233,12 @@ class JointConstructionBatchEnv:
     @property
     def admission_candidates(self) -> Mapping[str, tuple[RouteConstructionCandidate, ...]]:
         return self._by_request
+
+    @property
+    def admission_capacities(self) -> Mapping[str, int]:
+        """Neutral resource capacities used by the admission mask."""
+
+        return self._admission_capacities()
 
     def reset(self) -> JointStep:
         self.phase = JointPhase.ADMISSION

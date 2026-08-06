@@ -32,6 +32,7 @@ def _generation_operation(
         }),
         output_resource_hold=held,
         required_fidelity=required_fidelity,
+        retry_limit=1,
         duration_ps=1,
         ordinal=index,
     )
@@ -98,6 +99,7 @@ def left_deep_path_dag(
                     if index == len(route_nodes) - 2
                     else 0.0
                 ),
+                retry_limit=1,
                 duration_ps=2,
                 ordinal=len(operations),
             ))
@@ -178,6 +180,7 @@ def balanced_path_dag(
                     if len(level) == 2 and index == 0
                     else 0.0
                 ),
+                retry_limit=1,
                 duration_ps=2,
                 ordinal=ordinal,
             ))

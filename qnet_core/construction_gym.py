@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Mapping, Sequence
 
 from .construction_api import ConstructionOperation, ConstructionSnapshot, ExecutionEvent
@@ -262,7 +262,11 @@ class ConstructionBatchEnv:
                 for deadline in (self._deadline_ps(request.id),)
                 if deadline is not None and deadline > previous
             ]
-            boundary_ps = min(future_boundaries) if future_boundaries else None
+            boundary_ps = (
+                min(self.horizon_ps, min(future_boundaries))
+                if future_boundaries
+                else None
+            )
             batch = self.executor.advance_to_next_event(boundary_ps=boundary_ps)
         else:
             future_arrivals = [
@@ -320,8 +324,12 @@ class ConstructionBatchEnv:
         return cost
 
     def _step_result(self, reward: float, terminated: bool, info: Mapping[str, object]) -> ConstructionStep:
-        return ConstructionStep(
+        observation = replace(
             self.executor.snapshot(),
+            settled_request_ids=tuple(sorted(self._settled)),
+        )
+        return ConstructionStep(
+            observation,
             self.ready_operations(),
             float(reward),
             bool(terminated),
@@ -442,6 +450,7 @@ class ConstructionBatchEnv:
                 "duration_ps": 0,
                 "request_id": request_id,
                 "repair_operation_ids": tuple(operation.op_id for operation in operations),
+                "settled_request_ids": tuple(sorted(self._settled)),
             },
         )
 
@@ -498,6 +507,7 @@ class ConstructionBatchEnv:
                 "duration_ps": 0,
                 "request_id": request_id,
                 "flow_failure_lump_ps": lump,
+                "settled_request_ids": tuple(sorted(self._settled)),
                 "risk_count": sum(
                     not value.success for value in self._settled.values()
                 ),
@@ -522,11 +532,30 @@ class ConstructionBatchEnv:
         delivered_pairs = sum(
             len(values) for values in self._delivered_terminal_segments.values()
         )
+        successful_latencies = [
+            settlement.settlement_time - settlement.arrival_time
+            for settlement in settlements
+            if settlement.success
+        ]
+        ordered_latencies = sorted(successful_latencies)
+        if ordered_latencies:
+            p95_index = min(
+                len(ordered_latencies) - 1,
+                max(0, int(round(0.95 * (len(ordered_latencies) - 1)))),
+            )
+            p95_latency = float(ordered_latencies[p95_index])
+        else:
+            p95_latency = 0.0
         return {
             "completed_requests": float(completed),
             "delivered_pairs": float(delivered_pairs),
             "completion_rate": completed / max(len(settlements), 1),
             "censored_flow_time_ps": float(flow),
+            "mean_censored_latency_ps": flow / max(len(settlements), 1),
+            "p95_completion_latency_ps": p95_latency,
             "risk_count": float(len(settlements) - completed),
             "event_count": float(len(self._event_log)),
+            "makespan_ps": float(
+                max((event.physical_time_ps for event in self._event_log), default=0)
+            ),
         }

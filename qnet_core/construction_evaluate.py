@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Mapping
 
+from .construction_api import ExecutionEvent
 from .construction_catalog import RouteConstructionCandidate
 from .construction_metrics import RequestSettlement, censored_flow_time
 from .runtime import make_sequence_construction_executor
@@ -36,6 +37,7 @@ def run_joint_plan_baseline(
     if missing:
         raise ValueError(f"missing selected construction plans: {missing}")
     candidates = tuple(selected[request.id] for request in spec.requests)
+    requests = {request.id: request for request in spec.requests}
     executor = make_sequence_construction_executor(
         spec,
         tuple(candidate.dag for candidate in candidates),
@@ -50,8 +52,80 @@ def run_joint_plan_baseline(
     event_trace: list[object] = []
 
     def arrival_ps(request_id: str) -> int:
-        request = next(item for item in spec.requests if item.id == request_id)
-        return request.arrival * spec.physical.slot_duration_ps
+        return requests[request_id].arrival * spec.physical.slot_duration_ps
+
+    def deadline_ps(request_id: str) -> int | None:
+        deadline = requests[request_id].deadline
+        return None if deadline is None else deadline * spec.physical.slot_duration_ps
+
+    def settle_failure(request_id: str, time_ps: int) -> None:
+        if request_id in settled:
+            return
+        deadline = deadline_ps(request_id)
+        settlement_time = time_ps if deadline is None else min(time_ps, deadline)
+        settled[request_id] = RequestSettlement(
+            request_id, arrival_ps(request_id), settlement_time, False
+        )
+        executor.release_request(request_id)
+
+    def append_due_deadlines(time_ps: int) -> None:
+        for request_id in sorted(requests):
+            if request_id in settled or deadline_ps(request_id) != time_ps:
+                continue
+            event = ExecutionEvent(
+                event_id=f"deadline-{request_id}-{time_ps}",
+                operation_id=f"{request_id}:deadline",
+                request_id=request_id,
+                attempt_id=f"{request_id}:deadline:{time_ps}",
+                event_kind="deadline",
+                physical_time_ps=time_ps,
+                success=False,
+                failure_cause="deadline",
+                in_flight_operation_ids=tuple(
+                    item.operation_id for item in executor.snapshot().in_flight
+                ),
+            )
+            event_trace.append(event)
+            settle_failure(request_id, time_ps)
+
+    def process_events(events) -> None:
+        for event in events:
+            if event.request_id in settled:
+                continue
+            request = requests[event.request_id]
+            terminal = event.output_segment_id in terminal_segments.get(
+                event.request_id, frozenset()
+            )
+            if not event.success:
+                settle_failure(event.request_id, event.physical_time_ps)
+                continue
+            if not terminal:
+                continue
+            if (
+                event.output_fidelity is None
+                or float(event.output_fidelity) + 1e-12 < request.required_fidelity
+            ):
+                settle_failure(event.request_id, event.physical_time_ps)
+                continue
+            deadline = deadline_ps(event.request_id)
+            if deadline is not None and event.physical_time_ps > deadline:
+                settle_failure(event.request_id, event.physical_time_ps)
+                continue
+            delivered_segments[event.request_id].add(event.output_segment_id)
+            if len(delivered_segments[event.request_id]) >= request.demand_pairs:
+                settled[event.request_id] = RequestSettlement(
+                    event.request_id,
+                    arrival_ps(event.request_id),
+                    event.physical_time_ps,
+                    True,
+                )
+                executor.release_request(event.request_id)
+        # A request can settle while one of its operations is still in
+        # flight.  release_request() cannot remove the eventual output until
+        # that physical event completes, so repeat the release after every
+        # event batch to prevent late outputs from retaining capacity.
+        for request_id in settled:
+            executor.release_request(request_id)
 
     def pack_ready(operations):
         snapshot = executor.snapshot()
@@ -98,41 +172,36 @@ def run_joint_plan_baseline(
                 # horizon-censored settlement rather than retrying silently.
                 break
         if executor.has_in_flight:
-            batch = executor.advance_to_next_event()
+            future_deadlines = [
+                deadline_ps(request_id)
+                for request_id in requests
+                if request_id not in settled
+                and deadline_ps(request_id) is not None
+                and deadline_ps(request_id) > now
+            ]
+            boundary = min((horizon_ps, *future_deadlines))
+            batch = executor.advance_to_next_event(boundary_ps=boundary)
             event_trace.extend(batch.events)
-            for event in batch.events:
-                request = next(
-                    item for item in spec.requests if item.id == event.request_id
-                )
-                if (
-                    event.success
-                    and event.output_segment_id in terminal_segments.get(
-                        event.request_id, frozenset()
-                    )
-                    and event.output_fidelity is not None
-                    and float(event.output_fidelity) + 1e-12
-                    >= request.required_fidelity
-                    and (
-                        request.deadline is None
-                        or event.physical_time_ps
-                        <= request.deadline * spec.physical.slot_duration_ps
-                    )
-                ):
-                    delivered_segments[event.request_id].add(event.output_segment_id)
-                    if len(delivered_segments[event.request_id]) >= request.demand_pairs:
-                        settled[event.request_id] = RequestSettlement(
-                            event.request_id,
-                            arrival_ps(event.request_id),
-                            event.physical_time_ps,
-                            True,
-                        )
-                        executor.release_request(event.request_id)
+            process_events(batch.events)
+            append_due_deadlines(executor.physical_time_ps)
             continue
-        future_arrivals = [arrival_ps(request.id) for request in spec.requests
-                           if request.id not in settled and arrival_ps(request.id) > now]
-        if future_arrivals:
-            target = min(future_arrivals)
-            executor.wait_until(target)
+        future_boundaries = [
+            arrival_ps(request_id)
+            for request_id in requests
+            if request_id not in settled and arrival_ps(request_id) > now
+        ] + [
+            deadline_ps(request_id)
+            for request_id in requests
+            if request_id not in settled
+            and deadline_ps(request_id) is not None
+            and deadline_ps(request_id) > now
+        ]
+        if future_boundaries:
+            target = min(horizon_ps, *future_boundaries)
+            batch = executor.wait_until(target)
+            event_trace.extend(batch.events)
+            process_events(batch.events)
+            append_due_deadlines(executor.physical_time_ps)
             continue
         break
 
@@ -160,5 +229,6 @@ def run_joint_plan_baseline(
         "p95_completion_latency_ps": _percentile(successful_latencies, 95.0),
         "risk_count": float(len(settlements) - completed),
         "makespan_ps": float(max((event.physical_time_ps for event in event_trace), default=0)),
+        "event_count": float(len(event_trace)),
     }
     return ConstructionEvaluation(metrics, settlements, tuple(event_trace))

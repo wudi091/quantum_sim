@@ -87,10 +87,17 @@ result = run_joint_plan_baseline(spec, selection)
 `SequenceConstructionExecutor.snapshot()` is read-only. Generation and swap
 protocols are started through the executor, SeQUeNCe is advanced to the next
 physical event, and outcomes are returned as neutral `ExecutionEvent` values.
+The snapshot also carries the complete current operation universe, so a
+planner-side dependency encoder can see completed, ready, and blocked DAG
+relations without receiving simulator objects.
 The adapter currently advertises conservative swap concurrency because the
 SeQUeNCe router protocol state is not yet scheduled by a shared BSM arbiter;
 the deterministic executor remains the concurrency oracle for DAG and mask
 tests.
+
+`run_joint_plan_baseline()` is a fixed-plan SeQUeNCe evaluator with explicit
+arrival, deadline, expiration, failure, and horizon settlement boundaries. It
+does not perform repair; repair-aware training uses `JointConstructionBatchEnv`.
 
 `SharedRoutingEnv` accepts only `PlanningSpec` plus an injected
 `PhysicalBackend`. It never imports `SequenceBackend`, reads `PhysicalConfig`,

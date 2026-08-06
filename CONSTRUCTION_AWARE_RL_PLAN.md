@@ -1,5 +1,10 @@
 # Construction-Aware RL for Batch Quantum Entanglement Routing
 
+Implementation note: the current `no_capacity_context` ablation removes the
+capacity feature from the policy observation while retaining the hard
+capacity-feasibility mask. Removing the mask itself requires an explicit
+action-rejection transition and is a future experiment, not a current result.
+
 本文档记录经过多轮自审查后的研究与实现方案。它是方法规划文档，不是已经完成的实验结果，也不代表已经完成最新文献查新。
 
 ## 1. 审查结论
@@ -11,7 +16,7 @@
 3. 每次固定选择完整 `(P, C)` 会削弱随机失败后的在线重规划。构造计划必须是可扩展、可修复的部分 DAG。
 4. 当前 `PlanDescriptor` 和 `commit` 仍表达原子 multi-hop 计划，不能证明不同构造计划产生不同物理时间轨迹，必须先引入事件驱动 construction executor。
 
-修订后的方案保留一个主贡献。当前仓库已经实现 neutral DTO、事件驱动 executor、SeQUeNCe 物理适配器和 NumPy reference CAAPPO；仍未完成的部分继续作为 paper-complete gates，不把 reference 实现写成完整 CCFA 系统：
+修订后的方案保留一个主贡献。当前仓库已经实现 neutral DTO、事件驱动 executor、SeQUeNCe 物理适配器、NumPy reference CAAPPO、可运行的 PyTorch policy heads、bounded nominal oracle 和 seeded sanity harness；仍未完成的部分继续作为 paper-complete gates，不把当前实现写成完整 CCFA 系统：
 
 > 将批量量子纠缠路由建模为 construction-aware、事件驱动、受约束的 SMDP，并把动作定义为 construction DAG precedence frontier 与资源可行 concurrent-set family 的交集。
 
@@ -456,10 +461,10 @@ SeQUeNCe 负责全部 physical effects。executor 只把中立 operation 转成 
 
 ### Experiment C: Mechanism ablation
 
-在同一个 event-driven executor、route catalogue、seed protocol 和 action budget 下，分别去掉 DAG state、capacity-aware ready-set mask、flow-time reward、dual constraint 和 potential shaping，测 throughput、latency、constraint violation、mask rejection 和 sample efficiency。event-driven 与 atomic-slot 的比较单独作为环境语义对照，不与其他 ablation 混合解释。
+在同一个 event-driven executor、route catalogue、seed protocol 和 action budget 下，分别去掉 DAG state、capacity context features、flow-time reward、dual constraint 和 potential shaping，测 throughput、latency、constraint violation、mask rejection 和 sample efficiency。capacity-safety ready-set mask remains mandatory in every policy variant; `no_capacity_context` removes only the learned capacity context features, so it is not a no-mask experiment. event-driven 与 atomic-slot 的比较单独作为环境语义对照，不与其他 ablation 混合解释。
 
 oracle 只用于小规模 deterministic nominal instances；随机 SeQUeNCe 结果不能被表述为 exact optimum。
-所有实验都记录 event trace、p95、peak memory、fidelity violation、expiration、mask rejection、executor rejection 和 stochastic physical failure。独立 seed 评测是主要结果；operation/attempt 派生的 common-random-number stream 只作为 paired variance-reduction 分析，并明确标注其策略间耦合。
+所有实验都记录 event trace、p95、peak memory、fidelity violation、expiration、mask rejection、executor rejection 和 stochastic physical failure。独立 evaluation seed 是主要统计单位；同一 evaluation seed 上的 training replicas 先求平均，再计算 CI。operation/attempt 派生的 common-random-number stream 只作为 paired variance-reduction 分析，并明确标注其策略间耦合。
 
 ## 9. 审稿风险与必须补齐的证据
 
@@ -478,4 +483,4 @@ oracle 只用于小规模 deterministic nominal instances；随机 SeQUeNCe 结�
 2. 在固定候选 operation universe 和容量模型下的 resource-feasible ready-set 表示及其相对 soundness/completeness 证明；
 3. 在 SeQUeNCe 真实物理执行下，对 throughput、flow-time 和 fidelity constraints 的联合验证。
 
-只有在第 7 节的 remaining implementation gates 全部通过、完成最新查新、并用强组合调度 baselines 与小规模 oracle 证明增益后，才可以把它作为 CCFA 投稿候选。当前实现已经跨过 event-DAG/物理后端的基础 gate，但仍不能把“NumPy reference CAAPPO + 固定候选 catalogue”表述为完整 CCFA 方案。
+只有在第 7 节的 remaining implementation gates 全部通过、完成最新查新、并用强组合调度 baselines 与小规模 oracle 证明增益后，才可以把它作为 CCFA 投稿候选。当前实现已经跨过 event-DAG/物理后端的基础 gate，并有 Torch heads、有限 retry lineage、bounded oracle 与 sanity harness，但仍不能把它表述为收敛的完整 CCFA 方案。

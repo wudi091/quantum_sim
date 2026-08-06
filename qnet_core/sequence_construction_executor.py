@@ -650,6 +650,14 @@ class SequenceConstructionExecutor:
             physical_time_ps=self.physical_time_ps,
             horizon_ps=self.horizon_ps,
             dag_states=tuple(dag.state() for dag in sorted(self.dags.values(), key=lambda dag: dag.request_id)),
+            operations=tuple(sorted(
+                (
+                    operation
+                    for dag in self.dags.values()
+                    for operation in dag.operations
+                ),
+                key=lambda operation: operation.canonical_key,
+            )),
             segments=tuple(sorted(self._segments.values(), key=lambda segment: segment.segment_id)),
             reservations=reservations,
             in_flight=in_flight,
@@ -965,15 +973,25 @@ class SequenceConstructionExecutor:
             (operation for operation in dag.operations if operation.op_id in dag.dead),
             key=lambda operation: operation.canonical_key,
         ):
+            next_attempt = dead.retry_attempt + 1
+            if next_attempt > dead.retry_limit:
+                continue
+            retry_root_id = dead.retry_root_id or dead.op_id
+            if any(
+                operation.retry_root_id == retry_root_id
+                and operation.retry_attempt == next_attempt
+                for operation in dag.operations
+            ):
+                continue
             if not set(dead.input_segment_ids).issubset(available):
                 continue
             retry = replace(
                 dead,
-                op_id=f"{dead.op_id}:repair:{next_version}",
+                op_id=f"{retry_root_id}:retry:{next_attempt}",
                 output_segment_id=(
                     None
                     if dead.output_segment_id is None
-                    else f"{dead.output_segment_id}:repair:{next_version}"
+                    else f"{dead.output_segment_id}:retry:{next_attempt}"
                 ),
                 predecessors=tuple(
                     predecessor
@@ -983,6 +1001,8 @@ class SequenceConstructionExecutor:
                 ordinal=ordinal,
                 dag_version=next_version,
                 required_fidelity=self._effective_required_fidelity(dead),
+                retry_root_id=retry_root_id,
+                retry_attempt=next_attempt,
             )
             ordinal += 1
             options.append((retry,))

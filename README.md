@@ -42,6 +42,8 @@ python -m qnet_core.sequence_smoke
 Run the shared-environment test suite:
 
 ```bash
+python -m pytest -q
+# or only the core tests:
 python -m unittest discover -v qnet_core/tests
 ```
 

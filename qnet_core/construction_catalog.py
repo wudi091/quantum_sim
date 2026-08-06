@@ -139,12 +139,17 @@ def _dag_for_kind(
 
 def build_route_construction_catalogue(
     spec: PlanningSpec,
-    candidate_count: int = 3,
+    candidate_count: int | None = 3,
     construction_kinds: tuple[str, ...] = ("left_deep", "balanced"),
 ) -> tuple[RouteConstructionCandidate, ...]:
-    """Enumerate a bounded joint ``(path, construction)`` action space."""
+    """Enumerate a joint ``(path, construction)`` action space.
 
-    if candidate_count < 1:
+    ``candidate_count`` bounds the shortest-path catalogue.  Passing ``None``
+    enumerates all simple paths and is reserved for small-instance coverage
+    and nominal-oracle checks.
+    """
+
+    if candidate_count is not None and candidate_count < 1:
         raise ValueError("candidate_count must be positive")
     if not construction_kinds:
         raise ValueError("at least one construction kind is required")
@@ -154,10 +159,17 @@ def build_route_construction_catalogue(
     candidates: list[RouteConstructionCandidate] = []
     for request in sorted(spec.requests, key=lambda item: item.id):
         try:
-            paths = itertools.islice(
-                nx.shortest_simple_paths(graph, request.source, request.destination),
-                candidate_count,
-            )
+            if candidate_count is None:
+                paths = nx.all_simple_paths(
+                    graph, request.source, request.destination
+                )
+            else:
+                paths = itertools.islice(
+                    nx.shortest_simple_paths(
+                        graph, request.source, request.destination
+                    ),
+                    candidate_count,
+                )
             routes = [tuple(int(node) for node in path) for path in paths]
         except (nx.NetworkXNoPath, nx.NodeNotFound):
             routes = []

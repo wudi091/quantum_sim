@@ -58,15 +58,13 @@ class CAAPPORolloutTrainer:
                 raise ValueError(f"no legal admission candidate for request {request_id}")
             admission = state.info.get("admission_observation", {})
             preview_usage = dict(admission.get("preview_usage", ()))
-            scale = max(
-                1.0,
-                float(sum(dict(env._admission_capacities()).values())),
-            )
+            capacities = dict(env.admission_capacities)
+            scale = max(1.0, float(sum(capacities.values())))
             context = (
                 float(request_index) / max(len(request_order), 1),
                 float(len(selected)) / max(len(request_order), 1),
                 float(sum(preview_usage.values())) / scale,
-                float(len(preview_usage)) / max(len(env._admission_capacities()), 1),
+                float(len(preview_usage)) / max(len(capacities), 1),
                 float(sum(candidate.hop_count for candidate in selected.values())),
                 float(sum(len(candidate.dag.operations) for candidate in selected.values())),
                 float(len(values)) / max(len(env.admission_candidates[request_id]), 1),

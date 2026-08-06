@@ -42,6 +42,7 @@ class PolicySample:
     seed_legal_indices: tuple[int, ...] = ()
     seed_index: int = -1
     repair_action: int = -1
+    repair_option_features: tuple[tuple[float, ...], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -108,6 +109,13 @@ class RelationAwareDAGEncoder:
         snapshot: ConstructionSnapshot,
         operations: Sequence[ConstructionOperation],
     ) -> np.ndarray:
+        operations = snapshot.operations or tuple(operations)
+        settled = set(snapshot.settled_request_ids)
+        if settled:
+            operations = tuple(
+                operation for operation in operations
+                if operation.request_id not in settled
+            )
         if not operations:
             return np.zeros(self.hidden_dim + 5, dtype=np.float64)
         features = np.vstack([

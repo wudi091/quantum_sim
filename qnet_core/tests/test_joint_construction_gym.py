@@ -90,6 +90,29 @@ class JointConstructionBatchEnvTests(unittest.TestCase):
         self.assertTrue(second.terminated)
         self.assertEqual(env.metrics()["completed_requests"], 2.0)
 
+    def test_admission_rejects_intrinsically_memory_infeasible_dag(self):
+        spec = EpisodeSpec(
+            seed=5021,
+            nodes=(0, 1, 2),
+            edges=((0, 1), (1, 2)),
+            requests=(RequestSpec("r0", 0, 2),),
+            horizon=20,
+            physical=PhysicalConfig(
+                generation_probability=1.0,
+                memory_capacity=1,
+                node_memory_capacity=1,
+                quantum_distance_m=1.0,
+            ),
+        )
+        catalogue = build_route_construction_catalogue(
+            spec.planning,
+            candidate_count=1,
+            construction_kinds=("left_deep",),
+        )
+        env = JointConstructionBatchEnv(spec, catalogue)
+        env.reset()
+        self.assertEqual(env.legal_admission_candidates("r0"), ())
+
     def test_physical_failure_enters_repair_then_drop(self):
         spec = EpisodeSpec(
             seed=503,
@@ -120,6 +143,35 @@ class JointConstructionBatchEnvTests(unittest.TestCase):
             env.metrics()["censored_flow_time_ps"],
             spec.horizon * spec.physical.slot_duration_ps,
         )
+
+    def test_repair_options_enforce_retry_limit_and_lineage(self):
+        spec = EpisodeSpec(
+            seed=5031,
+            nodes=(0, 1),
+            edges=((0, 1),),
+            requests=(RequestSpec("r0", 0, 1, ttl=20),),
+            horizon=20,
+            physical=PhysicalConfig(
+                generation_probability=1.0,
+                detector_efficiency=0.0,
+                node_memory_capacity=1,
+                quantum_distance_m=1.0,
+            ),
+        )
+        catalogue = build_route_construction_catalogue(
+            spec.planning, candidate_count=1, construction_kinds=("left_deep",)
+        )
+        env = JointConstructionBatchEnv(spec, catalogue)
+        env.reset()
+        admitted = env.admit({"r0": catalogue[0]})
+        failed = env.step(admitted.ready_operations)
+        self.assertEqual(failed.phase, JointPhase.REPAIR)
+        options = env.repair_options("r0")
+        self.assertEqual(len(options), 1)
+        repaired = env.repair("r0", options[0])
+        failed_again = env.step(repaired.ready_operations)
+        self.assertEqual(failed_again.phase, JointPhase.REPAIR)
+        self.assertEqual(env.repair_options("r0"), ())
 
     def test_failed_request_with_pending_operation_must_drain_before_drop(self):
         spec = EpisodeSpec(
