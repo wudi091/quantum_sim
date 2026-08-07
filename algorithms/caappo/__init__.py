@@ -25,6 +25,16 @@ from .torch_policy import (
     compute_gae,
 )
 from .torch_trainer import TorchCAAPPORolloutTrainer, TorchEpisodeTrainingResult
+from .checkpoint import (
+    CHECKPOINT_FORMAT,
+    CHECKPOINT_SCHEMA_VERSION,
+    CheckpointCompatibilityError,
+    LoadedCAAPPOCheckpoint,
+    checkpoint_sha256,
+    load_caappo_checkpoint,
+    runtime_manifest,
+    save_caappo_checkpoint,
+)
 
 __all__ = [
     "BalancedConstructionPolicy",
@@ -52,4 +62,12 @@ __all__ = [
     "compute_gae",
     "TorchCAAPPORolloutTrainer",
     "TorchEpisodeTrainingResult",
+    "CHECKPOINT_FORMAT",
+    "CHECKPOINT_SCHEMA_VERSION",
+    "CheckpointCompatibilityError",
+    "LoadedCAAPPOCheckpoint",
+    "checkpoint_sha256",
+    "load_caappo_checkpoint",
+    "runtime_manifest",
+    "save_caappo_checkpoint",
 ]

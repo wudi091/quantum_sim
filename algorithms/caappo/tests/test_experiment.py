@@ -4,6 +4,8 @@ from algorithms.caappo.experiment import (
     CAAPPOVariant,
     ConstructionExperimentConfig,
     _aggregate,
+    _best_validation,
+    _training_episode_seed,
     run_experiment,
 )
 from qnet_core.scenario import ScenarioConfig
@@ -11,6 +13,44 @@ from qnet_core.spec import PhysicalConfig
 
 
 class ConstructionExperimentTests(unittest.TestCase):
+    def test_training_episode_seed_protocol_is_injective_and_held_out(self):
+        config = ConstructionExperimentConfig(
+            scenario=ScenarioConfig(),
+            evaluation_seeds=(101,),
+            training_seeds=(1, 2),
+            validation_seeds=(51,),
+            training_episodes=2,
+        )
+        derived = {
+            _training_episode_seed(config, training_seed, episode_index)
+            for training_seed in config.training_seeds
+            for episode_index in range(config.training_episodes)
+        }
+        self.assertEqual(len(derived), 4)
+        self.assertFalse(derived.intersection({1, 2, 51, 101}))
+
+    def test_validation_selection_respects_risk_limit(self):
+        current = {
+            "mean_objective": 0.50,
+            "mean_risk_count": 0.0,
+            "selection_eligible": True,
+        }
+        infeasible = {
+            "mean_objective": 0.90,
+            "mean_risk_count": 1.0,
+            "selection_eligible": True,
+        }
+        self.assertFalse(_best_validation(current, infeasible, 0.0))
+
+    def test_duplicate_seed_groups_are_rejected(self):
+        with self.assertRaises(ValueError):
+            ConstructionExperimentConfig(
+                scenario=ScenarioConfig(),
+                evaluation_seeds=(41, 41),
+                training_seeds=(1,),
+                validation_seeds=(31,),
+            )
+
     def test_aggregate_averages_training_replicas_before_ci(self):
         rows = [
             {

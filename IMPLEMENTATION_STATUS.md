@@ -62,6 +62,26 @@ Implemented and tested:
 - admission is autoregressive in canonical request order with a preview state
   and legal candidate mask; the reference CAAPPO also has a retry/drop repair
   head whose retry options are generated from the surviving DAG prefix.
+- reproducible CAAPPO training checkpoints now persist the policy and optimizer
+  state, CMDP dual variable, completed episode count, PyTorch RNG state,
+  experiment/variant contract, exact runtime package manifest, training
+  history, and held-out validation-best policy. Writes are atomic and loads
+  reject incompatible schemas, runtimes, scenarios, variants, or seed
+  protocols unless runtime compatibility is explicitly relaxed.
+- the experiment CLI now has independent `train`, `evaluate`, and `run`
+  workflows. Training replicas derive distinct episode streams from their own
+  seeds; validation and evaluation seeds are disjoint; resume continues the
+  final optimizer state exactly; frozen evaluation defaults to the best
+  validation state and verifies that no model or CMDP dual state is mutated.
+- JSON/CSV results contain checkpoint SHA-256 hashes and a machine-readable run
+  manifest. Each checkpoint also has a JSON history sidecar, and a prior
+  result's `manifest.config` can be passed back through `--config`.
+- checkpoint validation rejects duplicate seed lists, locks every seed list
+  used by future episode derivation during resume, preserves caller RNG during
+  read-only loads, records validation eligibility at non-interval stopping
+  points, and selects risk-feasible validation checkpoints when possible. The
+  primary evaluation-seed CI estimand and separate training-replica dispersion
+  are both reported explicitly.
 
 The current SeQUeNCe capability declaration is intentionally conservative:
 inter-epoch launch is enabled for protocol-compatible operations, while

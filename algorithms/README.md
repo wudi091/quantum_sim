@@ -43,8 +43,49 @@ Physical execution remains in the SeQUeNCe-backed executor under `qnet_core`.
 Run a small construction-aware sanity experiment with:
 
 ```bash
-python -m algorithms.caappo.experiment --quick
+python -m algorithms.caappo.experiment run --quick
 ```
+
+The experiment CLI separates training from frozen evaluation. Training writes
+an atomic, versioned checkpoint containing the policy, optimizer, CMDP dual,
+completed episode counter, CPU/CUDA PyTorch RNG state, training history,
+held-out validation record, and a matched best policy/optimizer/dual snapshot.
+Resume always continues from the final training state; evaluation uses the
+best validation state by default and never updates the policy. Strict loading
+also checks the checkpoint hash, schema, runtime, and complete seed protocol.
+
+```bash
+# Train one replica.
+python -m algorithms.caappo.experiment train \
+  --quick --episodes 2 --training-seed 1 \
+  --checkpoint results/checkpoints/caappo.seed-1.pt
+
+# Continue the same replica to a larger total episode count.
+python -m algorithms.caappo.experiment train \
+  --quick --episodes 4 --training-seed 1 --resume \
+  --checkpoint results/checkpoints/caappo.seed-1.pt
+
+# Evaluate a frozen checkpoint on held-out seeds.
+python -m algorithms.caappo.experiment evaluate \
+  --checkpoint results/checkpoints/caappo.seed-1.pt \
+  --evaluation-seeds 101 102 \
+  --output results/caappo-evaluation.json
+```
+
+Training, validation, and evaluation seeds are disjoint. Each training replica
+derives its own episode stream from its replica seed, validation seeds select
+the checkpoint without touching the evaluation split, and confidence
+intervals use evaluation seeds as the independent statistical units. A full
+run writes persistent checkpoint hashes and run metadata into the result
+manifest. All experiment parameters can also be supplied as JSON through
+`--config`; the `manifest.config` object in a previous run result is accepted
+directly for reproduction.
+
+The primary CI is explicitly the expected performance over training randomness
+on held-out evaluation seeds (replicas are averaged within each evaluation
+seed). A separate `training_replica_aggregate` reports dispersion across
+independently trained replicas, so these uncertainty questions are not
+conflated.
 
 The harness keeps QDDCA and QCAST reproductions separate because their legacy
 action spaces are not the construction-SMDP action space used by this table.

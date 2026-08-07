@@ -39,6 +39,18 @@ Run the physical three-node smoke test:
 python -m qnet_core.sequence_smoke
 ```
 
+Run the construction-aware train/checkpoint/evaluate sanity workflow:
+
+```bash
+python -m algorithms.caappo.experiment run --quick
+```
+
+For interrupted runs, use the separate `train --resume` and `evaluate`
+commands documented in `algorithms/README.md`. Evaluation loads a frozen
+checkpoint and remains separate from the SeQUeNCe physical backend: the policy
+only issues neutral construction actions, while SeQUeNCe still owns physical
+generation, swapping, memories, fidelity, decoherence, and time.
+
 Run the shared-environment test suite:
 
 ```bash
