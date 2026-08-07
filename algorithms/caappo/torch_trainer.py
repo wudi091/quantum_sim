@@ -57,11 +57,19 @@ class TorchCAAPPORolloutTrainer:
         chi: float = 1.0,
         potential_shaping: bool = True,
         shaping_coef: float = 0.1,
+        dynamic_repair_paths: int = 0,
+        dynamic_repair_construction_kinds: tuple[str, ...] = (
+            "left_deep", "balanced"
+        ),
     ):
         if not 0.0 < gamma_per_slot <= 1.0:
             raise ValueError("gamma_per_slot must lie in (0, 1]")
         if not 0.0 <= gae_lambda <= 1.0:
             raise ValueError("gae_lambda must lie in [0, 1]")
+        if dynamic_repair_paths < 0:
+            raise ValueError("dynamic_repair_paths must be non-negative")
+        if not dynamic_repair_construction_kinds:
+            raise ValueError("dynamic repair needs construction kinds")
         self.policy = policy or TorchCAAPPOPolicy()
         self.risk_limit = float(risk_limit)
         self.gamma_per_slot = float(gamma_per_slot)
@@ -71,6 +79,10 @@ class TorchCAAPPORolloutTrainer:
         self.chi = float(chi)
         self.potential_shaping = bool(potential_shaping)
         self.shaping_coef = float(shaping_coef)
+        self.dynamic_repair_paths = int(dynamic_repair_paths)
+        self.dynamic_repair_construction_kinds = tuple(
+            dynamic_repair_construction_kinds
+        )
 
     @staticmethod
     def _potential(state: JointStep) -> float:
@@ -253,6 +265,10 @@ class TorchCAAPPORolloutTrainer:
             alpha=self.alpha,
             beta=self.beta,
             chi=self.chi,
+            dynamic_repair_paths=self.dynamic_repair_paths,
+            dynamic_repair_construction_kinds=(
+                self.dynamic_repair_construction_kinds
+            ),
         )
         state, route_records = self._select_routes(
             env, deterministic=deterministic

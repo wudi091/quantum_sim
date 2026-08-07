@@ -134,7 +134,7 @@ Z_k=(X_k,Q_k,G_k^{front},M_k,B_k,t_k),
 
 - `ADMISSION`：按固定 canonical request order 自回归选择当前到达请求的 route skeleton，形成 route vector `p=(p_i)`；不开始物理 operation。
 - `EXECUTION`：route head 输出 `NOOP`，operation head 在已提交 route 和现有 logical segments 上选择 ready set。
-- `REPAIR`：只能保留已完成或已启动 operation 形成的不可撤销前缀；in-flight operation 在第一版不允许被策略取消，必须等待其 terminal event；失败分支被标记为 dead，释放的 pair/resource 经过 executor 反馈后才能重新使用。`RETRY` 重建缺失前缀，`REROUTE` 从固定 catalogue 选择替代 `(P,C)`，用显式 RELEASE 前缀释放旧 segment，废弃旧 DAG 的未提交后缀，并把替代计划重编号到单调递增的新 DAG version；动态 catalogue 外路径仍是后续 gate。
+- `REPAIR`：只能保留已完成或已启动 operation 形成的不可撤销前缀；in-flight operation 在第一版不允许被策略取消，必须等待其 terminal event；失败分支被标记为 dead，释放的 pair/resource 经过 executor 反馈后才能重新使用。`RETRY` 重建缺失前缀，`REROUTE` 从固定 catalogue 或 bounded topology-generated repair catalogue 选择替代 `(P,C)`，用显式 RELEASE 前缀释放旧 segment，废弃旧 DAG 的未提交后缀，并把替代计划重编号到单调递增的新 DAG version。每个 request 维护已尝试的 `(route, construction)` lineage，后续 reroute 不重复尝试同一计划，但允许同一路径的另一构造计划；任意无界路径合成仍是后续 gate。
 - `TERMINAL`：不再采样 action。
 
 route skeleton 只限制候选路径空间。construction DAG 在 admission 后仍可扩展和修复，不被冻结为完整线性程序。每次新增 operation 只引用已存在的 segment，并以单调递增的 DAG version 写入，因此保持无环和路径一致性。`DROP` 是 request-level settlement，不结束整个 episode；只有所有请求 settled 或达到 `H` 才产生 episode-level `TERMINAL`。
@@ -470,7 +470,7 @@ oracle 只用于小规模 deterministic nominal instances；随机 SeQUeNCe 结�
 
 - 必须查新：construction-aware entanglement routing、swap scheduling、memory-aware quantum routing、quantum network RL。
 - 必须继续扩大证据，证明 executor 在更广泛的独立 operation、arrival、expiration 和 repair 组合下仍能返回真实事件时间；当前回归已覆盖固定候选下的并发 launch 与时间一致性。
-- 必须报告 K-shortest route catalogue 的可达总数、覆盖率和小规模全路径 oracle gap。
+- 必须报告 K-shortest route catalogue 的可达总数、bounded repair route 的覆盖率和小规模全路径 oracle gap。
 - 必须区分 mask rejection、executor rejection 和 stochastic physical failure；mask soundness 不等于物理成功率为零。
 - 必须固定 primary metric、`alpha/beta/chi` 的归一化和 seed/置信区间协议，不能用“throughput 或 latency 有改善”选择性报告。
 - 不能使用“first”“optimal”“solves”这类超出证据的表述，除非完成检索或小规模最优性验证。

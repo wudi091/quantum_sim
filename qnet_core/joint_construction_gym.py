@@ -13,6 +13,7 @@ from .construction_api import (
 )
 from .construction_catalog import (
     RouteConstructionCandidate,
+    build_dynamic_repair_catalogue,
     candidates_by_request,
 )
 from .construction_gym import ConstructionBatchEnv
@@ -55,6 +56,10 @@ class JointConstructionBatchEnv:
         beta: float = 1.0,
         chi: float = 1.0,
         max_route_repairs: int = 1,
+        dynamic_repair_paths: int = 0,
+        dynamic_repair_construction_kinds: tuple[str, ...] = (
+            "left_deep", "balanced"
+        ),
     ):
         self.spec = spec
         self._by_request = candidates_by_request(tuple(candidates))
@@ -67,11 +72,23 @@ class JointConstructionBatchEnv:
         self.max_route_repairs = int(max_route_repairs)
         if self.max_route_repairs < 0:
             raise ValueError("max_route_repairs must be non-negative")
+        self.dynamic_repair_paths = int(dynamic_repair_paths)
+        if self.dynamic_repair_paths < 0:
+            raise ValueError("dynamic_repair_paths must be non-negative")
+        if not dynamic_repair_construction_kinds:
+            raise ValueError("dynamic repair needs at least one construction kind")
+        self.dynamic_repair_construction_kinds = tuple(
+            dynamic_repair_construction_kinds
+        )
         self.phase = JointPhase.ADMISSION
         self._core: ConstructionBatchEnv | None = None
         self.selected: dict[str, RouteConstructionCandidate] = {}
         self._repairable: set[str] = set()
         self._route_repair_counts: dict[str, int] = {}
+        self._route_repair_plans: dict[
+            str, set[tuple[tuple[int, ...], str]]
+        ] = {}
+        self._dynamic_candidates: dict[str, dict[str, RouteConstructionCandidate]] = {}
         self._admission_order: tuple[str, ...] = tuple(
             sorted(request.id for request in spec.requests)
         )
@@ -257,6 +274,8 @@ class JointConstructionBatchEnv:
         self.selected = {}
         self._repairable = set()
         self._route_repair_counts = {}
+        self._route_repair_plans = {}
+        self._dynamic_candidates = {}
         self._admission_index = 0
         self._admission_preview_usage = {}
         return JointStep(
@@ -304,6 +323,9 @@ class JointConstructionBatchEnv:
                 f"candidate is infeasible under current admission preview: {candidate.candidate_id}"
             )
         self.selected[request_id] = candidate
+        self._route_repair_plans.setdefault(request_id, set()).add(
+            (candidate.route_nodes, candidate.construction_kind)
+        )
         for resource, amount in self._candidate_footprint(candidate).items():
             self._admission_preview_usage[resource] = (
                 self._admission_preview_usage.get(resource, 0) + amount
@@ -449,6 +471,60 @@ class JointConstructionBatchEnv:
     def repairable_requests(self) -> tuple[str, ...]:
         return tuple(sorted(self._repairable))
 
+    def _repair_route_candidates(
+        self,
+        request_id: str,
+    ) -> tuple[RouteConstructionCandidate, ...]:
+        """Return fixed alternatives plus newly generated repair candidates."""
+        attempted_plans = self._route_repair_plans.setdefault(request_id, set())
+        candidates = [
+            candidate
+            for candidate in self.legal_admission_candidates(request_id)
+            if (candidate.route_nodes, candidate.construction_kind)
+            not in attempted_plans
+        ]
+        existing_dynamic = tuple(
+            candidate
+            for candidate in self._dynamic_candidates.get(request_id, {}).values()
+            if (candidate.route_nodes, candidate.construction_kind)
+            not in attempted_plans
+        )
+        candidates.extend(existing_dynamic)
+        if self.dynamic_repair_paths <= 0:
+            return tuple(candidates)
+        known = tuple(self._by_request[request_id]) + tuple(
+            self._dynamic_candidates.get(request_id, {}).values()
+        )
+        known_routes = {candidate.route_nodes for candidate in known}
+        generated = build_dynamic_repair_catalogue(
+            self.spec.planning,
+            request_id,
+            excluded_routes=known_routes,
+            max_paths=self.dynamic_repair_paths,
+            construction_kinds=self.dynamic_repair_construction_kinds,
+        )
+        capacities = self._admission_capacities()
+        dynamic_for_request = self._dynamic_candidates.setdefault(request_id, {})
+        for candidate in generated:
+            if not self._candidate_has_feasible_schedule(candidate, capacities):
+                continue
+            dynamic_for_request[candidate.candidate_id] = candidate
+            candidates.append(candidate)
+        return tuple(candidates)
+
+    def _candidate_for_repair(
+        self,
+        request_id: str,
+        candidate_id: str,
+    ) -> RouteConstructionCandidate:
+        for candidate in (
+            tuple(self._by_request[request_id])
+            + tuple(self._dynamic_candidates.get(request_id, {}).values())
+        ):
+            if candidate.candidate_id == candidate_id:
+                return candidate
+        raise ValueError(f"unknown repair candidate: {candidate_id}")
+
     def _retry_terminal_segment_ids(
         self,
         request_id: str,
@@ -534,7 +610,7 @@ class JointConstructionBatchEnv:
                 default=-1,
             ) + 1
             selected = self.selected[request_id]
-            for candidate in self.legal_admission_candidates(request_id):
+            for candidate in self._repair_route_candidates(request_id):
                 if candidate.candidate_id == selected.candidate_id:
                     continue
                 prefix = (
@@ -593,6 +669,13 @@ class JointConstructionBatchEnv:
             choice = value
             if choice not in choices:
                 raise ValueError("repair choice is not currently legal")
+        candidate: RouteConstructionCandidate | None = None
+        if choice.kind == RepairKind.REROUTE:
+            if choice.candidate_id is None:
+                raise ValueError("REROUTE choice must identify a candidate")
+            candidate = self._candidate_for_repair(
+                request_id, choice.candidate_id
+            )
         core_step = self.core.repair(
             request_id,
             choice.operations,
@@ -602,13 +685,12 @@ class JointConstructionBatchEnv:
             supersede_uncommitted=(choice.kind == RepairKind.REROUTE),
         )
         if choice.kind == RepairKind.REROUTE:
-            candidate = next(
-                candidate
-                for candidate in self._by_request[request_id]
-                if candidate.candidate_id == choice.candidate_id
-            )
+            assert candidate is not None
             self.selected[request_id] = candidate
             self.core.selected_candidates[request_id] = candidate
+            self._route_repair_plans.setdefault(request_id, set()).add(
+                (candidate.route_nodes, candidate.construction_kind)
+            )
             self._route_repair_counts[request_id] = (
                 self._route_repair_counts.get(request_id, 0) + 1
             )

@@ -1,7 +1,10 @@
 import unittest
 
 from algorithms.caappo import BalancedConstructionPolicy, ShortestPathLeftDeepPolicy
-from qnet_core.construction_catalog import build_route_construction_catalogue
+from qnet_core.construction_catalog import (
+    build_dynamic_repair_catalogue,
+    build_route_construction_catalogue,
+)
 from qnet_core.construction_evaluate import run_joint_plan_baseline
 from qnet_core.spec import EpisodeSpec, PhysicalConfig
 from qnet_core.planning_spec import RequestSpec
@@ -34,6 +37,40 @@ class ConstructionCatalogueTests(unittest.TestCase):
         self.assertEqual(balanced.hop_count, 2)
         self.assertEqual(left.construction_kind, "left_deep")
         self.assertEqual(balanced.construction_kind, "balanced")
+
+    def test_dynamic_repair_catalogue_excludes_seen_routes(self):
+        spec = EpisodeSpec(
+            seed=212,
+            nodes=(0, 1, 2, 3),
+            edges=((0, 1), (1, 3), (0, 2), (2, 3), (0, 3)),
+            requests=(RequestSpec("r0", 0, 3, ttl=100),),
+            horizon=100,
+            physical=PhysicalConfig(
+                generation_probability=1.0,
+                swap_probability=1.0,
+                node_memory_capacity=5,
+                quantum_distance_m=1.0,
+            ),
+        )
+        initial = build_route_construction_catalogue(
+            spec.planning, candidate_count=1, construction_kinds=("balanced",)
+        )
+        dynamic = build_dynamic_repair_catalogue(
+            spec.planning,
+            "r0",
+            excluded_routes=(initial[0].route_nodes,),
+            max_paths=2,
+            construction_kinds=("balanced",),
+        )
+        self.assertTrue(dynamic)
+        self.assertTrue(all(
+            candidate.route_nodes != initial[0].route_nodes
+            for candidate in dynamic
+        ))
+        self.assertTrue(all(
+            candidate.candidate_id.startswith("r0:dynamic:path:")
+            for candidate in dynamic
+        ))
 
     def test_fixed_joint_plan_runs_through_sequence_and_reports_risk(self):
         spec = self._spec()

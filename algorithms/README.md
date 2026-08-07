@@ -37,7 +37,12 @@ not claim a converged RL result by itself. The PyTorch module trains actor /
 critic heads over the same masked actions and categorically scores DROP plus
 all generated retry options. Its trainable relation-aware message-passing
 encoder and bounded failed-SWAP prefix repair are implemented; broader repair
-candidate families remain explicit current limitations.
+candidate families remain explicit current limitations. The default experiment
+variant enables a bounded topology-generated repair catalogue
+(`dynamic_repair_paths=4`) after admission; repair routes are neutral DTOs and
+are still executed only by the SeQUeNCe-backed environment. This does not claim
+arbitrary route synthesis or support for GEN/SWAP overlap and concurrent SWAP
+protocols.
 Physical execution remains in the SeQUeNCe-backed executor under `qnet_core`.
 
 Run a small construction-aware sanity experiment with:

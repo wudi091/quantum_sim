@@ -85,6 +85,10 @@ def _trainer_config(trainer: TorchCAAPPORolloutTrainer) -> dict[str, object]:
         "chi": trainer.chi,
         "potential_shaping": trainer.potential_shaping,
         "shaping_coef": trainer.shaping_coef,
+        "dynamic_repair_paths": trainer.dynamic_repair_paths,
+        "dynamic_repair_construction_kinds": (
+            trainer.dynamic_repair_construction_kinds
+        ),
     }
 
 

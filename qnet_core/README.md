@@ -112,6 +112,18 @@ segments through explicit operations, supersedes only the old uncommitted DAG
 suffix, and executes a freshly versioned catalogue candidate. DROP remains a
 request-level settlement action.
 
+When `dynamic_repair_paths > 0`, admission still uses a fixed catalogue, but
+the `REPAIR` phase may enumerate up to that many previously unseen shortest
+simple routes from the neutral topology DTO. Each route is compiled into the
+same `(path, construction)` candidate format and passes the same intrinsic
+capacity/schedule check before exposure to the policy. Per-request route-plan
+lineage prevents a later reroute from returning to an already attempted
+`(route, construction)` pair while still allowing another construction plan on
+the same route.
+This is bounded topology-generated repair; arbitrary unbounded route synthesis
+and a backend protocol arbiter for unsupported SeQUeNCe overlap remain future
+work.
+
 `SharedRoutingEnv` accepts only `PlanningSpec` plus an injected
 `PhysicalBackend`. It never imports `SequenceBackend`, reads `PhysicalConfig`,
 touches SeQUeNCe entities, or mutates the backend's pair inventory. Capacity

@@ -48,12 +48,21 @@ class CAAPPOVariant:
     name: str
     candidate_count: int = 3
     construction_kinds: tuple[str, ...] = ("left_deep", "balanced")
+    dynamic_repair_paths: int = 4
     gamma_per_slot: float = 1.0
     risk_limit: float = 0.0
     beta: float = 1.0
     use_dag_state: bool = True
     use_capacity_context: bool = True
     potential_shaping: bool = True
+
+    def __post_init__(self) -> None:
+        if self.candidate_count < 1:
+            raise ValueError("variant candidate_count must be positive")
+        if self.dynamic_repair_paths < 0:
+            raise ValueError("variant dynamic_repair_paths must be non-negative")
+        if not self.construction_kinds:
+            raise ValueError("variant needs at least one construction kind")
 
 
 @dataclass(frozen=True)
@@ -74,7 +83,11 @@ class ConstructionExperimentConfig:
         CAAPPOVariant(
             "no_construction_choice", construction_kinds=("left_deep",)
         ),
-        CAAPPOVariant("no_route_choice", candidate_count=1),
+        CAAPPOVariant(
+            "no_route_choice",
+            candidate_count=1,
+            dynamic_repair_paths=0,
+        ),
         CAAPPOVariant("no_flow_reward", beta=0.0),
         CAAPPOVariant("no_dag_state", use_dag_state=False),
         CAAPPOVariant("no_potential_shaping", potential_shaping=False),
@@ -516,6 +529,8 @@ def train_variant_checkpoint(
             gamma_per_slot=variant.gamma_per_slot,
             beta=variant.beta,
             potential_shaping=variant.potential_shaping,
+            dynamic_repair_paths=variant.dynamic_repair_paths,
+            dynamic_repair_construction_kinds=variant.construction_kinds,
         )
         completed = 0
         history: list[dict[str, object]] = []

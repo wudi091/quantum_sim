@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import itertools
 from dataclasses import replace
+from typing import Sequence
 
 import networkx as nx
 
@@ -192,6 +193,73 @@ def build_route_construction_catalogue(
                     terminal_segment_id=terminal_ids[-1],
                     terminal_segment_ids=terminal_ids,
                 ))
+    return tuple(candidates)
+
+
+def build_dynamic_repair_catalogue(
+    spec: PlanningSpec,
+    request_id: str,
+    *,
+    excluded_routes: Sequence[tuple[int, ...]] = (),
+    max_paths: int = 4,
+    construction_kinds: tuple[str, ...] = ("left_deep", "balanced"),
+) -> tuple[RouteConstructionCandidate, ...]:
+    """Generate previously unseen route/construction candidates at repair time.
+
+    Admission remains bounded by its fixed catalogue.  This repair-only gate
+    enumerates at most ``max_paths`` shortest simple paths absent from the
+    supplied route set and compiles each into the requested construction DAGs.
+    The result consists solely of neutral DTOs and is validated by the same
+    environment-side scheduler as an admitted candidate.
+    """
+    if max_paths < 1:
+        raise ValueError("max_paths must be positive")
+    if not construction_kinds:
+        raise ValueError("at least one construction kind is required")
+    requests = {request.id: request for request in spec.requests}
+    if request_id not in requests:
+        raise KeyError(request_id)
+    request = requests[request_id]
+    excluded = {tuple(route) for route in excluded_routes}
+    graph = nx.Graph()
+    graph.add_nodes_from(spec.nodes)
+    graph.add_edges_from(spec.edges)
+    candidates: list[RouteConstructionCandidate] = []
+    new_route_count = 0
+    try:
+        paths = nx.shortest_simple_paths(
+            graph, request.source, request.destination
+        )
+        for raw_path in paths:
+            route = tuple(int(node) for node in raw_path)
+            if route in excluded:
+                continue
+            route_token = "-".join(str(node) for node in route)
+            for kind in construction_kinds:
+                base_dag = _dag_for_kind(request, route, kind)
+                dag, terminal_ids = _repeat_demand_dag(
+                    base_dag,
+                    request.id,
+                    request.demand_pairs,
+                    request.source,
+                    request.destination,
+                )
+                candidates.append(RouteConstructionCandidate(
+                    candidate_id=(
+                        f"{request.id}:dynamic:path:{route_token}:{kind}"
+                    ),
+                    request_id=request.id,
+                    route_nodes=route,
+                    construction_kind=kind,
+                    dag=dag,
+                    terminal_segment_id=terminal_ids[-1],
+                    terminal_segment_ids=terminal_ids,
+                ))
+            new_route_count += 1
+            if new_route_count >= max_paths:
+                break
+    except (nx.NetworkXNoPath, nx.NodeNotFound):
+        return ()
     return tuple(candidates)
 
 
