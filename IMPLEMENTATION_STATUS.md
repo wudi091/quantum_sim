@@ -80,6 +80,13 @@ Implemented and tested:
 - JSON/CSV results contain checkpoint SHA-256 hashes and a machine-readable run
   manifest. Each checkpoint also has a JSON history sidecar, and a prior
   result's `manifest.config` can be passed back through `--config`.
+- frozen evaluation rows record the actual route nodes and construction kind
+  selected for every request; paired confidence intervals are reported against
+  every fixed baseline, not only shortest-left-deep.
+- SeQUeNCe's process-global protocol RNG is reset for every physical episode
+  using a stable SHA-256 mapping from the 64-bit episode seed to the 32-bit
+  timeline seed. Policy and baseline outcomes are therefore independent of
+  method execution order.
 - checkpoint validation rejects duplicate seed lists, locks every seed list
   used by future episode derivation during resume, preserves caller RNG during
   read-only loads, records validation eligibility at non-interval stopping
@@ -92,9 +99,23 @@ inter-epoch launch is enabled for protocol-compatible operations, while
 same-epoch GEN/SWAP mixing, GEN/SWAP overlap across epochs, and concurrent
 SWAPs are rejected because SeQUeNCe 1.0.0 shares Bell-diagonal protocol state
 across those transitions. `SequenceConcurrencyScheduler` validates resource
-capacity, input-segment exclusivity, post-completion holds, and physical-node
-conflicts before the adapter starts a protocol. Multiple operations that pass
+capacity and logical holds, and the backend-owned `SequenceProtocolArbiter`
+validates protocol-family coexistence, input-pair leases, and physical-node
+scope before the adapter starts a protocol. Multiple operations that pass
 those checks are packed deterministically into one launch epoch.
+
+The SeQUeNCe executor now waits for SWAP protocol completion rather than
+treating every SWAP as physically complete when a shorter logical boundary
+event fires. This prevents delayed SWAP messages from accessing Bell states
+after a request release has already freed the underlying memories.
+
+An initial corrected-RNG CAAPPO run trained three independent replicas for 300
+episodes each. On 30 frozen evaluation seeds, replica-averaged completion rate
+was 0.8296 versus 0.6444 for shortest-left-deep and 0.6556 for balanced. The
+paired completion-rate improvements have 95% CIs [0.0775, 0.2929] and [0.0662,
+0.2819], respectively. See `RL_EXPERIMENT_STATUS.md`. This is positive initial
+RL evidence, but only 3 of 270 admissions used a non-shortest path, so the
+joint path-selection claim remains unproven on the current workload.
 
 The SeQUeNCe executor also rejects logical-only `initial_segments`; importing
 an existing physical state requires a future explicit logical-to-physical pair
@@ -103,8 +124,9 @@ initial segments for contract tests.
 
 Remaining paper-complete gates:
 
-- a backend-level protocol arbiter before enabling mixed GEN/SWAP or
-  concurrent SWAP execution; bounded topology-generated out-of-catalogue
+- physical validation before enabling mixed GEN/SWAP or concurrent SWAP
+  execution; the backend-level arbiter is implemented and conservatively keeps
+  those capabilities disabled. Bounded topology-generated out-of-catalogue
   repair is implemented, while arbitrary unbounded repair synthesis remains a
   future extension;
 - converged training and scaling evidence; the trainable PyTorch graph encoder

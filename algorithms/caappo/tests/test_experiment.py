@@ -114,6 +114,10 @@ class ConstructionExperimentTests(unittest.TestCase):
         self.assertEqual(len(result["rows"]), 5)
         self.assertTrue(result["aggregate"])
         self.assertIn("paired_differences", result)
+        self.assertEqual(
+            {row["reference"] for row in result["paired_differences"]},
+            {"balanced", "memory_aware", "shortest_left_deep"},
+        )
         self.assertIn("catalogue_coverage", result)
         self.assertTrue(all(
             "ci95_low" in row and "ci95_high" in row

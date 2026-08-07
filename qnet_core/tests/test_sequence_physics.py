@@ -88,6 +88,35 @@ class SequencePhysicsTests(unittest.TestCase):
         current = backend.resource(pair_id).fidelity
         self.assertLess(current, initial)
 
+    def test_seeded_physics_isolated_from_other_backend_construction(self):
+        spec = EpisodeSpec(
+            seed=(1 << 63) + 173,
+            nodes=tuple(range(9)),
+            edges=tuple((node, node + 1) for node in range(8)),
+            requests=(),
+            horizon=2,
+            physical=PhysicalConfig(
+                generation_probability=0.5,
+                memory_capacity=2,
+                node_memory_capacity=4,
+                quantum_distance_m=1.0,
+            ),
+        )
+        first = SequenceBackend(spec)
+        # Constructing a second physical world must not perturb the first
+        # world's seeded protocol outcomes.
+        SequenceBackend(EpisodeSpec(
+            seed=(1 << 63) + 174,
+            nodes=(0, 1),
+            edges=((0, 1),),
+            requests=(),
+            horizon=2,
+            physical=PhysicalConfig(generation_probability=0.5),
+        ))
+        first_generated = first.generate_elementary_pairs()
+        second_generated = SequenceBackend(spec).generate_elementary_pairs()
+        self.assertEqual(first_generated, second_generated)
+
 
 if __name__ == "__main__":
     unittest.main()

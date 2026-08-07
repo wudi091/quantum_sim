@@ -139,6 +139,16 @@ class CAAPPOCheckpointTests(unittest.TestCase):
             self.assertEqual(len(rows), 1)
             self.assertEqual(run["selected_state"], "best")
             self.assertEqual(run["evaluation_seeds"], (41,))
+            self.assertTrue(rows[0]["selected_candidates"])
+            self.assertEqual(
+                {
+                    "request_id",
+                    "candidate_id",
+                    "route_nodes",
+                    "construction_kind",
+                },
+                set(rows[0]["selected_candidates"][0]),
+            )
             for name, expected in before.policy.state_dict().items():
                 self.assertTrue(torch.equal(
                     expected,

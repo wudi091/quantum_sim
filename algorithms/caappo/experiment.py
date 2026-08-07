@@ -152,6 +152,22 @@ def _numeric_metrics(values: dict[str, float]) -> dict[str, float]:
     }
 
 
+def _selected_candidate_records(
+    selected_candidates: tuple[tuple[str, str], ...],
+    candidates: tuple[RouteConstructionCandidate, ...],
+) -> list[dict[str, object]]:
+    lookup = {candidate.candidate_id: candidate for candidate in candidates}
+    return [
+        {
+            "request_id": request_id,
+            "candidate_id": candidate_id,
+            "route_nodes": list(lookup[candidate_id].route_nodes),
+            "construction_kind": lookup[candidate_id].construction_kind,
+        }
+        for request_id, candidate_id in selected_candidates
+    ]
+
+
 def _collapse_training_replicas(
     rows: Iterable[dict[str, object]],
 ) -> list[dict[str, object]]:
@@ -695,6 +711,9 @@ def evaluate_checkpoint(
             **_numeric_metrics(outcome.metrics),
             "episode_reward": outcome.reward,
             "discounted_return": outcome.discounted_return,
+            "selected_candidates": _selected_candidate_records(
+                outcome.selected_candidates, candidates
+            ),
             "checkpoint_sha256": checkpoint_sha256(checkpoint),
             "checkpoint_state": "best" if use_best and loaded.best_policy_state_dict else "final",
             "wall_seconds": perf_counter() - started,
@@ -859,11 +878,10 @@ def _run_nominal_oracle(
 
 def _paired_differences(rows: Iterable[dict[str, object]]) -> list[dict[str, object]]:
     rows = list(rows)
-    baseline = {
-        (int(row["seed"]), metric): float(row[metric])
+    baselines = {
+        (str(row["variant"]), int(row["seed"]), metric): float(row[metric])
         for row in rows
         if row.get("method") == "fixed_baseline"
-        and row.get("variant") == "shortest_left_deep"
         for metric in (
             "completed_requests",
             "completion_rate",
@@ -879,42 +897,58 @@ def _paired_differences(rows: Iterable[dict[str, object]]) -> list[dict[str, obj
         for row in rows
         if row.get("method") == "torch_caappo"
     })
+    references = sorted({
+        str(row["variant"])
+        for row in rows
+        if row.get("method") == "fixed_baseline"
+    })
     for variant in variants:
-        for metric in (
-            "completed_requests",
-            "completion_rate",
-            "censored_flow_time_ps",
-            "mean_censored_latency_ps",
-            "risk_count",
-        ):
-            by_seed: dict[int, list[float]] = {}
-            for row in rows:
-                if row.get("method") != "torch_caappo" or row.get("variant") != variant:
+        for reference in references:
+            for metric in (
+                "completed_requests",
+                "completion_rate",
+                "censored_flow_time_ps",
+                "mean_censored_latency_ps",
+                "risk_count",
+            ):
+                by_seed: dict[int, list[float]] = {}
+                for row in rows:
+                    if (
+                        row.get("method") != "torch_caappo"
+                        or row.get("variant") != variant
+                    ):
+                        continue
+                    if metric in row:
+                        by_seed.setdefault(int(row["seed"]), []).append(
+                            float(row[metric])
+                        )
+                deltas = [
+                    float(np.mean(values))
+                    - baselines[(reference, seed, metric)]
+                    for seed, values in by_seed.items()
+                    if (reference, seed, metric) in baselines
+                ]
+                if not deltas:
                     continue
-                if metric in row:
-                    by_seed.setdefault(int(row["seed"]), []).append(float(row[metric]))
-            deltas = [
-                float(np.mean(values)) - baseline[(seed, metric)]
-                for seed, values in by_seed.items()
-                if (seed, metric) in baseline
-            ]
-            if not deltas:
-                continue
-            samples = np.asarray(deltas, dtype=np.float64)
-            mean = float(samples.mean())
-            std = float(samples.std(ddof=1)) if len(samples) > 1 else 0.0
-            half_width = 1.96 * std / math.sqrt(len(samples)) if len(samples) > 1 else 0.0
-            result.append({
-                "variant": variant,
-                "reference": "shortest_left_deep",
-                "metric": metric,
-                "n": len(samples),
-                "mean_delta": mean,
-                "std_delta": std,
-                "ci95_low": mean - half_width,
-                "ci95_high": mean + half_width,
-                "ci_supported": len(samples) >= 2,
-            })
+                samples = np.asarray(deltas, dtype=np.float64)
+                mean = float(samples.mean())
+                std = float(samples.std(ddof=1)) if len(samples) > 1 else 0.0
+                half_width = (
+                    1.96 * std / math.sqrt(len(samples))
+                    if len(samples) > 1
+                    else 0.0
+                )
+                result.append({
+                    "variant": variant,
+                    "reference": reference,
+                    "metric": metric,
+                    "n": len(samples),
+                    "mean_delta": mean,
+                    "std_delta": std,
+                    "ci95_low": mean - half_width,
+                    "ci95_high": mean + half_width,
+                    "ci_supported": len(samples) >= 2,
+                })
     return result
 
 

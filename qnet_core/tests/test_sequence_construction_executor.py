@@ -84,6 +84,45 @@ class SequenceConstructionExecutorTests(unittest.TestCase):
         )
         self.assertEqual(executor.backend.resources()[0].born, batch.physical_time_ps)
 
+    def test_short_logical_event_does_not_complete_swap_before_messages_arrive(self):
+        swap_dag = left_deep_path_dag("r0", (0, 1, 2))
+        release = ConstructionOperation(
+            "r1:release", "r1", OperationKind.RELEASE, duration_ps=1
+        )
+        executor = SequenceConstructionExecutor(
+            (swap_dag, ConstructionDAG("r1", (release,))),
+            self._backend(),
+            self._capacities(),
+            horizon_ps=200_000,
+        )
+        generations = tuple(
+            operation for operation in executor.ready_operations()
+            if operation.request_id == "r0"
+        )
+        executor.launch(generations)
+        executor.advance_to_next_event()
+        swap = next(
+            operation for operation in executor.ready_operations()
+            if operation.kind == OperationKind.SWAP
+        )
+        executor.launch((swap, release))
+
+        first = executor.advance_to_next_event()
+        self.assertEqual(
+            [(event.operation_id, event.success) for event in first.events],
+            [(release.op_id, True)],
+        )
+        self.assertTrue(executor.has_in_flight)
+        self.assertIn(swap.op_id, {
+            item.operation_id for item in executor.snapshot().in_flight
+        })
+
+        second = executor.advance_to_next_event()
+        self.assertEqual(len(second.events), 1)
+        self.assertEqual(second.events[0].operation_id, swap.op_id)
+        self.assertTrue(second.events[0].success)
+        self.assertFalse(executor.has_in_flight)
+
     def test_same_path_constructions_have_different_sequence_completion_times(self):
         route = (0, 1, 2, 3, 4)
 
@@ -270,6 +309,7 @@ class SequenceConstructionExecutorTests(unittest.TestCase):
         backend_state = dict(generated.backend_state)
         self.assertIn("node_memory", backend_state)
         self.assertIn("pair_reservations", backend_state)
+        self.assertIn("protocol_arbiter", backend_state)
         self.assertIn("timeline_pending_event_count", backend_state)
 
         executor.launch(executor.ready_operations())
@@ -325,7 +365,10 @@ class SequenceConstructionExecutorTests(unittest.TestCase):
             operation for operation in executor.dags["r1"].operations
             if operation.kind == "GEN"
         )
-        with self.assertRaisesRegex(ValueError, "operations are in flight"):
+        with self.assertRaisesRegex(
+            ValueError,
+            "protocol arbiter rejected launch: operations are in flight",
+        ):
             executor.launch((second_generation,))
         executor.advance_to_next_event()
         self.assertFalse(executor.has_in_flight)

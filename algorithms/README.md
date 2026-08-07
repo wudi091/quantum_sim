@@ -100,6 +100,11 @@ The `no_capacity_context` ablation removes only the observation feature; the
 hard capacity mask stays enabled, while true mask-removal is a future
 action-rejection experiment.
 
+The first three-replica medium training configuration is versioned at
+`caappo/configs/medium_train3.json`. Current frozen results and their claim
+boundary are recorded in `../RL_EXPERIMENT_STATUS.md`; the result files and
+checkpoints remain under the ignored `results/` directory.
+
 Run a quick parameter sweep with:
 
 ```bash

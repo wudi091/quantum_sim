@@ -25,6 +25,7 @@ from .construction_api import (
 from .construction_decoder import CapacityFeasibilityOracle
 from .construction_repair import generate_repair_options
 from .sequence_backend import PreparedGeneration, PreparedSwap, SequenceBackend
+from .sequence_protocol_arbiter import ProtocolRequest
 from .sequence_scheduler import SequenceConcurrencyScheduler
 
 
@@ -361,6 +362,19 @@ class SequenceConstructionExecutor:
                 usage[resource] = usage.get(resource, 0) + amount
         return usage
 
+    def _protocol_requests(
+        self, operations: Iterable[ConstructionOperation]
+    ) -> tuple[ProtocolRequest, ...]:
+        segments = {
+            segment.segment_id: segment for segment in self._segments.values()
+        }
+        requests = []
+        for operation in operations:
+            request = ProtocolRequest.from_operation(operation, segments)
+            if request is not None:
+                requests.append(request)
+        return tuple(requests)
+
     def _validate_launch(self, operations: tuple[ConstructionOperation, ...]) -> None:
         self._refresh_global_registry()
         if self._terminated:
@@ -430,6 +444,18 @@ class SequenceConstructionExecutor:
                     raise ValueError(
                         f"GEN resource demand is incomplete for edge {edge}"
                     )
+        arbiter = getattr(self.backend, "protocol_arbiter", None)
+        if arbiter is not None:
+            arbiter_result = arbiter.validate(
+                self._protocol_requests(operations),
+                active=self._protocol_requests(
+                    pending.operation for pending in self._pending.values()
+                ),
+            )
+            if not arbiter_result.feasible:
+                raise ValueError(
+                    f"protocol arbiter rejected launch: {arbiter_result.reason}"
+                )
         scheduler_result = self.scheduler.validate(
             operations,
             pending_operations=tuple(
@@ -882,14 +908,16 @@ class SequenceConstructionExecutor:
             or (pending.generation is not None and pending.generation.context is not None)
         )
         def physical_complete(pending: _Pending) -> bool:
-            return (
-                pending.generation is None
-                or pending.generation.context is None
-                or self.backend.prepared_complete(
-                    (pending.generation,) if pending.generation is not None else (),
-                    (pending.swap,) if pending.swap is not None else (),
+            if pending.generation is not None:
+                return (
+                    pending.generation.context is None
+                    or self.backend.prepared_complete(
+                        generations=(pending.generation,)
+                    )
                 )
-            )
+            if pending.swap is not None:
+                return self.backend.prepared_complete(swaps=(pending.swap,))
+            return True
 
         all_physical_complete = all(
             physical_complete(pending)

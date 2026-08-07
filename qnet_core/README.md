@@ -27,6 +27,8 @@ does not receive SeQUeNCe objects.
   entities and protocols;
 - `sequence_scheduler.py`: conservative resource, segment, and physical-node
   launch validation for the SeQUeNCe adapter;
+- `sequence_protocol_arbiter.py`: backend-owned protocol-family, input-pair,
+  and physical-node coexistence policy;
 - `runtime.py`: the only module that wires `SharedRoutingEnv` to
   `SequenceBackend`;
 - `gym_env.py`: masked fixed-size observation/action wrapper;
@@ -97,11 +99,12 @@ relations without receiving simulator objects.
 The adapter currently advertises conservative protocol concurrency. SeQUeNCe
 1.0.0 can safely overlap independent GEN operations across epochs, but a
 GEN/SWAP overlap or concurrent SWAP protocols can race in the shared
-Bell-diagonal state manager. `SequenceConcurrencyScheduler` therefore checks
-resource capacity, input-segment exclusivity, post-completion holds, and
-physical-node conflicts, and rejects those unsupported combinations before
-starting a protocol. The deterministic executor remains the contract oracle
-for DAG and mask tests.
+Bell-diagonal state manager. `SequenceConcurrencyScheduler` checks resource
+capacity and logical holds, while `SequenceProtocolArbiter` separately checks
+protocol families, in-flight input pairs, and physical-node scope before a
+protocol starts. The arbiter is implemented but intentionally keeps mixed
+GEN/SWAP and concurrent SWAP capabilities disabled for SeQUeNCe 1.0.0. The
+deterministic executor remains the contract oracle for DAG and mask tests.
 
 `run_joint_plan_baseline()` is a fixed-plan SeQUeNCe evaluator with explicit
 arrival, deadline, expiration, failure, and horizon settlement boundaries. It
@@ -121,8 +124,7 @@ lineage prevents a later reroute from returning to an already attempted
 `(route, construction)` pair while still allowing another construction plan on
 the same route.
 This is bounded topology-generated repair; arbitrary unbounded route synthesis
-and a backend protocol arbiter for unsupported SeQUeNCe overlap remain future
-work.
+and safely enabling currently unsupported SeQUeNCe overlap remain future work.
 
 `SharedRoutingEnv` accepts only `PlanningSpec` plus an injected
 `PhysicalBackend`. It never imports `SequenceBackend`, reads `PhysicalConfig`,

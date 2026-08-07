@@ -17,6 +17,7 @@ from typing import Iterable
 from .physical_api import LaneExecutionResult, PhysicalCapabilities, PhysicalResource
 from .command_api import ResourceClaim, SwapAction, SwapLane
 from .spec import EpisodeSpec
+from .sequence_protocol_arbiter import SequenceProtocolArbiter
 
 
 @dataclass
@@ -88,6 +89,13 @@ class SequenceBackend:
             memory_capacity=spec.physical.memory_capacity,
             node_memory_capacity=spec.physical.node_memory_capacity,
         )
+        self.protocol_arbiter = SequenceProtocolArbiter(
+            supports_inter_epoch_launch=self.supports_inter_epoch_launch,
+            supports_mixed_operation_concurrency=(
+                self.supports_mixed_operation_concurrency
+            ),
+            supports_concurrent_swaps=self.supports_concurrent_swaps,
+        )
         self.time = 0  # logical routing slots; SeQUeNCe uses ps internally
         self._counter = 0
         self.pairs: dict[str, ResourcePair] = {}
@@ -153,6 +161,12 @@ class SequenceBackend:
         self._EntanglementGenerationA = EntanglementGenerationA
         self._EntanglementSwappingA = EntanglementSwappingA
         self._EntanglementSwappingB = EntanglementSwappingB
+        # SeQUeNCe 1.0.0 still draws protocol outcomes from Python's
+        # process-global RNG.  Reset it before constructing the world so a
+        # physical episode is reproducible and independent of the execution
+        # order of other policy evaluations.
+        self._timeline_seed = self._event_seed("timeline") % (1 << 32)
+        Timeline.seed(self._timeline_seed)
         self.timeline = Timeline(stop_time=10 ** 23, formalism="bell_diagonal")
 
         physical = self.spec.physical
@@ -614,6 +628,7 @@ class SequenceBackend:
         ))
         return (
             ("episode_seed", int(self.spec.seed)),
+            ("physical_rng_seed", int(self._timeline_seed)),
             ("expiration_events", tuple(expirations)),
             ("link_occupancy", tuple(
                 (u, v, amount)
@@ -628,6 +643,7 @@ class SequenceBackend:
                 "supports_mixed_operation_concurrency",
                 bool(self.supports_mixed_operation_concurrency),
             ),
+            ("protocol_arbiter", self.protocol_arbiter.state()),
             ("timeline_next_event_ps", event_times[0] if event_times else -1),
             ("timeline_pending_event_count", len(event_times)),
         )
