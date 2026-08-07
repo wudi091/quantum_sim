@@ -629,3 +629,8 @@ class ConstructionDAGExecutor:
         if target_time_ps >= self.horizon_ps:
             self._terminated = True
         return ExecutionEventBatch(target_time_ps, (), duration, terminal=self._terminated)
+
+    def next_expiration_time_ps(self) -> int | None:
+        """Reference executor has no physical memory-expiration process."""
+
+        return None

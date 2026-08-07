@@ -29,6 +29,8 @@ from qnet_core.spec import PhysicalConfig
 from .baselines import (
     BalancedConstructionPolicy,
     MemoryAwareConstructionPolicy,
+    SplitPathBalancedPolicy,
+    SplitPathLeftDeepPolicy,
     ShortestPathLeftDeepPolicy,
 )
 from .torch_policy import TorchCAAPPOPolicy
@@ -132,6 +134,16 @@ BASELINES = {
     "balanced": BalancedConstructionPolicy,
     "memory_aware": MemoryAwareConstructionPolicy,
 }
+
+
+def _baseline_policy_types(config: ConstructionExperimentConfig):
+    policies = dict(BASELINES)
+    if config.scenario.topology_mode == "parallel_corridors":
+        policies.update({
+            "split_left_deep": SplitPathLeftDeepPolicy,
+            "split_balanced": SplitPathBalancedPolicy,
+        })
+    return policies
 
 
 @dataclass(frozen=True)
@@ -336,7 +348,7 @@ def _run_baselines(config: ConstructionExperimentConfig) -> list[dict[str, objec
         candidates = _catalogue(
             spec, config.candidate_count, ("left_deep", "balanced")
         )
-        for name, policy_type in BASELINES.items():
+        for name, policy_type in _baseline_policy_types(config).items():
             started = perf_counter()
             selected = policy_type().select(candidates)
             outcome = run_joint_plan_baseline(spec, selected)
@@ -1260,10 +1272,23 @@ def main(argv: list[str] | None = None) -> int:
     evaluate_parser.add_argument("--expected-sha256")
     evaluate_parser.add_argument("--allow-runtime-mismatch", action="store_true")
 
+    baselines_parser = subparsers.add_parser(
+        "baselines", help="evaluate fixed joint route/construction baselines"
+    )
+    _add_config_arguments(baselines_parser)
+    baselines_parser.add_argument("--evaluation-seeds", type=int, nargs="+")
+    baselines_parser.add_argument(
+        "--output",
+        type=Path,
+        default=Path("results/construction_aware_baselines.json"),
+    )
+
     raw_args = list(argv) if argv is not None else list(sys.argv[1:])
     if not raw_args:
         raw_args.insert(0, "run")
-    elif raw_args[0] not in {"run", "train", "evaluate", "-h", "--help"}:
+    elif raw_args[0] not in {
+        "run", "train", "evaluate", "baselines", "-h", "--help"
+    }:
         raw_args.insert(0, "run")
     args = parser.parse_args(raw_args)
 
@@ -1302,6 +1327,33 @@ def main(argv: list[str] | None = None) -> int:
             "completed_episodes": run.completed_episodes,
             "best_validation": run.best_validation,
         }, indent=2, default=str))
+        return 0
+
+    if args.command == "baselines":
+        config = _config_from_args(args)
+        if args.evaluation_seeds is not None:
+            config = replace(
+                config,
+                evaluation_seeds=tuple(int(seed) for seed in args.evaluation_seeds),
+            )
+        rows = _run_baselines(config)
+        result = {
+            "manifest": {
+                **_manifest(config),
+                "mode": "fixed_baseline_evaluation",
+            },
+            "catalogue_coverage": _catalogue_coverage(config),
+            "rows": rows,
+            "aggregate": _aggregate(rows),
+            "training_replica_aggregate": [],
+            "paired_differences": [],
+        }
+        json_path, csv_path = write_results(result, args.output)
+        print(json.dumps({
+            "json": str(json_path),
+            "csv": str(csv_path),
+            "rows": len(rows),
+        }, indent=2))
         return 0
 
     if args.command == "evaluate":

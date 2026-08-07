@@ -4,6 +4,8 @@ from .baselines import (
     BalancedConstructionPolicy,
     JointPlanPolicy,
     MemoryAwareConstructionPolicy,
+    SplitPathBalancedPolicy,
+    SplitPathLeftDeepPolicy,
     ShortestPathLeftDeepPolicy,
 )
 from .policy import CAAPPOPolicy, PolicyAction, PolicySample, PPOTransition, RelationAwareDAGEncoder
@@ -40,6 +42,8 @@ __all__ = [
     "BalancedConstructionPolicy",
     "JointPlanPolicy",
     "MemoryAwareConstructionPolicy",
+    "SplitPathBalancedPolicy",
+    "SplitPathLeftDeepPolicy",
     "ShortestPathLeftDeepPolicy",
     "CAAPPOPolicy",
     "PolicyAction",

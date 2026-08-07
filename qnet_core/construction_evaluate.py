@@ -196,6 +196,9 @@ def run_joint_plan_baseline(
             and deadline_ps(request_id) is not None
             and deadline_ps(request_id) > now
         ]
+        expiration_time = executor.next_expiration_time_ps()
+        if expiration_time is not None and expiration_time > now:
+            future_boundaries.append(expiration_time)
         if future_boundaries:
             target = min(horizon_ps, *future_boundaries)
             batch = executor.wait_until(target)

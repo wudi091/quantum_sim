@@ -76,3 +76,55 @@ class MemoryAwareConstructionPolicy:
                 ),
             )
         return result
+
+
+class _RoundRobinPathPolicy:
+    """Assign requests to distinct catalogue routes in canonical order.
+
+    This is a deliberately narrow contention baseline for scenarios where
+    multiple equal-length corridors are present.  It keeps construction
+    choice fixed and distributes requests across the route catalogue; it is
+    not a topology-wide optimizer.
+    """
+
+    construction_kind: str
+
+    def select(self, candidates):
+        grouped = candidates_by_request(candidates)
+        result = {}
+        for request_index, request_id in enumerate(sorted(grouped)):
+            values = grouped[request_id]
+            routes = sorted({candidate.route_nodes for candidate in values})
+            if not routes:
+                raise ValueError(f"request {request_id} has no route candidates")
+            route = routes[request_index % len(routes)]
+            matching = [
+                candidate
+                for candidate in values
+                if (
+                    candidate.route_nodes == route
+                    and candidate.construction_kind == self.construction_kind
+                )
+            ]
+            if not matching:
+                raise ValueError(
+                    f"route {route} has no {self.construction_kind} candidate "
+                    f"for request {request_id}"
+                )
+            result[request_id] = min(
+                matching,
+                key=lambda candidate: candidate.candidate_id,
+            )
+        return result
+
+
+class SplitPathLeftDeepPolicy(_RoundRobinPathPolicy):
+    """Round-robin route assignment with left-deep construction."""
+
+    construction_kind = "left_deep"
+
+
+class SplitPathBalancedPolicy(_RoundRobinPathPolicy):
+    """Round-robin route assignment with balanced construction."""
+
+    construction_kind = "balanced"

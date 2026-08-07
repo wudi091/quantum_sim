@@ -1,10 +1,12 @@
 import unittest
+from collections import Counter
 
 from algorithms.caappo.experiment import (
     CAAPPOVariant,
     ConstructionExperimentConfig,
     _aggregate,
     _best_validation,
+    _run_baselines,
     _training_episode_seed,
     run_experiment,
 )
@@ -146,6 +148,47 @@ class ConstructionExperimentTests(unittest.TestCase):
         )
         self.assertIn("full_path_oracle_gap", exact_oracle)
         self.assertGreaterEqual(exact_oracle["full_path_oracle_gap"], 0.0)
+
+    def test_parallel_corridor_baseline_harness_includes_split_policies(self):
+        config = ConstructionExperimentConfig(
+            scenario=ScenarioConfig(
+                request_count=2,
+                min_hops=3,
+                max_hops=3,
+                ttl=8,
+                horizon=8,
+                topology_mode="parallel_corridors",
+                parallel_corridors=2,
+                batch_mode=True,
+                physical=PhysicalConfig(
+                    generation_probability=1.0,
+                    swap_probability=1.0,
+                    memory_capacity=1,
+                    node_memory_capacity=8,
+                    quantum_distance_m=1.0,
+                ),
+            ),
+            evaluation_seeds=(41, 42),
+            training_seeds=(1,),
+            validation_seeds=(31,),
+            training_episodes=0,
+            candidate_count=2,
+        )
+
+        rows = _run_baselines(config)
+
+        variants = Counter(str(row["variant"]) for row in rows)
+        self.assertEqual(
+            variants,
+            Counter({
+                "shortest_left_deep": 2,
+                "balanced": 2,
+                "memory_aware": 2,
+                "split_left_deep": 2,
+                "split_balanced": 2,
+            }),
+        )
+        self.assertTrue(all(row["method"] == "fixed_baseline" for row in rows))
 
 
 if __name__ == "__main__":

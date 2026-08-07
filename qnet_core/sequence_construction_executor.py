@@ -271,6 +271,11 @@ class SequenceConstructionExecutor:
                 times.append(timestamp)
         return min(times) if times else None
 
+    def next_expiration_time_ps(self) -> int | None:
+        """Expose the next physical expiration as a neutral event boundary."""
+
+        return self._next_expiration_time_ps()
+
     def available_segments(self) -> tuple[LogicalSegment, ...]:
         return tuple(
             sorted((self._segments[segment_id] for segment_id in self._available_segment_ids()),

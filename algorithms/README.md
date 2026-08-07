@@ -19,7 +19,8 @@ Current implementations:
 - `caappo/oracle.py` and `caappo/experiment.py`: bounded nominal oracle plus
   seeded baseline/CI/ablation harness for small-instance validation;
 - `caappo/baselines.py`: shortest-path/left-deep, balanced, and memory-aware
-  joint route/construction baselines.
+  joint route/construction baselines, plus split-path contention baselines for
+  parallel-corridor workloads.
 
 Both planners receive an immutable `PlanningSnapshot` and return plan IDs.
 They do not create requests, mutate EPR resources, advance time, reject
@@ -75,6 +76,12 @@ python -m algorithms.caappo.experiment evaluate \
   --checkpoint results/checkpoints/caappo.seed-1.pt \
   --evaluation-seeds 101 102 \
   --output results/caappo-evaluation.json
+
+# Evaluate fixed baselines without retraining an RL policy.
+python -m algorithms.caappo.experiment baselines \
+  --config algorithms/caappo/configs/parallel_corridor_batch.json \
+  --evaluation-seeds 1201 1202 1203 \
+  --output results/parallel-corridor-baselines.json
 ```
 
 Training, validation, and evaluation seeds are disjoint. Each training replica

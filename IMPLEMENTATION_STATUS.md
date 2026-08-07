@@ -98,6 +98,10 @@ Implemented and tested:
   construction run, so fixed-plan evaluation and `ConstructionBatchEnv.reset()`
   are idempotent even when the same catalogue objects are reused. Regression
   tests cover repeated evaluator runs and reset restoration.
+- Fixed-plan evaluation exposes the next physical memory-expiration boundary
+  through the neutral executor contract and waits for it even when no
+  operation is in flight. This keeps expiration events, settlement timestamps,
+  and makespan consistent with the SeQUeNCe backend.
 
 The current SeQUeNCe capability declaration is intentionally conservative:
 inter-epoch launch is enabled for protocol-compatible operations, while

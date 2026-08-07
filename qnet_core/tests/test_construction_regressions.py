@@ -267,6 +267,43 @@ class ConstructionRegressionTests(unittest.TestCase):
             result.settlements[0].settlement_time, expiration.physical_time_ps
         )
 
+    def test_fixed_evaluator_waits_for_expiration_without_inflight_work(self):
+        spec = EpisodeSpec(
+            seed=9061,
+            nodes=(0, 1),
+            edges=((0, 1),),
+            requests=(RequestSpec("r", 0, 1),),
+            horizon=10,
+            physical=PhysicalConfig(
+                generation_probability=1.0,
+                memory_lifetime=1,
+                node_memory_capacity=2,
+                memory_capacity=1,
+                quantum_distance_m=1.0,
+            ),
+        )
+        generation = _one_hop_generation("r", "g", "s")
+        candidate = RouteConstructionCandidate(
+            "r:resident-expiration",
+            "r",
+            (0, 1),
+            "custom",
+            ConstructionDAG("r", (generation,)),
+            "missing-terminal",
+        )
+
+        result = run_joint_plan_baseline(spec, {"r": candidate})
+
+        expiration = next(
+            event for event in result.event_trace
+            if event.event_kind == "expiration"
+        )
+        self.assertFalse(result.settlements[0].success)
+        self.assertEqual(
+            result.settlements[0].settlement_time,
+            expiration.physical_time_ps,
+        )
+
     def test_fixed_evaluator_releases_late_output_after_deadline_settlement(self):
         spec = EpisodeSpec(
             seed=907,

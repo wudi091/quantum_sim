@@ -357,6 +357,8 @@ class ConstructionExecutor(Protocol):
 
     def wait_until(self, target_time_ps: int) -> ExecutionEventBatch: ...
 
+    def next_expiration_time_ps(self) -> int | None: ...
+
 
 class ConstructionDAG:
     """Mutable execution state for a single request's construction DAG."""
