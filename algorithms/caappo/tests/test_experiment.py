@@ -1,11 +1,13 @@
 import unittest
 from collections import Counter
+from pathlib import Path
 
 from algorithms.caappo.experiment import (
     CAAPPOVariant,
     ConstructionExperimentConfig,
     _aggregate,
     _best_validation,
+    _parse_checkpoint_specs,
     _run_baselines,
     _training_episode_seed,
     run_experiment,
@@ -15,6 +17,19 @@ from qnet_core.spec import PhysicalConfig
 
 
 class ConstructionExperimentTests(unittest.TestCase):
+    def test_checkpoint_specs_reject_exact_duplicates(self):
+        self.assertEqual(
+            _parse_checkpoint_specs(["main=results/main.pt"]),
+            (("main", Path("results/main.pt")),),
+        )
+        self.assertEqual(
+            _parse_checkpoint_specs(["main=a.pt", "main=b.pt"]),
+            (("main", Path("a.pt")), ("main", Path("b.pt"))),
+        )
+        with self.assertRaises(ValueError):
+            _parse_checkpoint_specs(["main=a.pt", "main=a.pt"])
+        with self.assertRaises(ValueError):
+            _parse_checkpoint_specs(["malformed"])
     def test_training_episode_seed_protocol_is_injective_and_held_out(self):
         config = ConstructionExperimentConfig(
             scenario=ScenarioConfig(),

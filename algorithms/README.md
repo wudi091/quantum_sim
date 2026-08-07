@@ -82,6 +82,16 @@ python -m algorithms.caappo.experiment baselines \
   --config algorithms/caappo/configs/parallel_corridor_batch.json \
   --evaluation-seeds 1201 1202 1203 \
   --output results/parallel-corridor-baselines.json
+
+# Compare multiple frozen RL variants with the same baselines and seeds.
+python -m algorithms.caappo.experiment compare \
+  --config algorithms/caappo/configs/parallel_corridor_batch.json \
+  --checkpoint caappo=results/checkpoints/parallel-corridor.seed-11.pt \
+  --checkpoint caappo=results/checkpoints/parallel-corridor.seed-12.pt \
+  --checkpoint no_route_overlap=results/checkpoints/parallel-corridor-no-route-overlap.seed-11.pt \
+  --checkpoint no_route_overlap=results/checkpoints/parallel-corridor-no-route-overlap.seed-12.pt \
+  --evaluation-seeds 1201 1202 1203 \
+  --output results/parallel-corridor-comparison.json
 ```
 
 Training, validation, and evaluation seeds are disjoint. Each training replica

@@ -76,6 +76,10 @@ relative to split-balanced (95% CI `[-0.5088, -0.2468]`).
 
 Results are stored in `results/parallel-corridor-comparison30.json` and its
 CSV companion. The twelve frozen checkpoint evaluations are stored beside it.
+The trained-variant and fixed-baseline rows are independently reproducible via
+the formal `compare` CLI output
+`results/parallel-corridor-comparison30-formal.json`; the canonical table also
+includes the separately generated untrained control rows.
 
 ## Claim boundary
 

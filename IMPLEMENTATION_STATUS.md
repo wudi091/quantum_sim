@@ -77,6 +77,10 @@ Implemented and tested:
   seeds; validation and evaluation seeds are disjoint; resume continues the
   final optimizer state exactly; frozen evaluation defaults to the best
   validation state and verifies that no model or CMDP dual state is mutated.
+- the experiment CLI also has a `baselines` mode for fixed-plan evaluation and
+  a `compare` mode that evaluates multiple frozen checkpoint variants on the
+  same held-out seeds, merges them with the fixed baselines, and reports the
+  same aggregate and paired confidence intervals in JSON/CSV.
 - JSON/CSV results contain checkpoint SHA-256 hashes and a machine-readable run
   manifest. Each checkpoint also has a JSON history sidecar, and a prior
   result's `manifest.config` can be passed back through `--config`.

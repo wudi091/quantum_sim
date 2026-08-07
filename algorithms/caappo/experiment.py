@@ -1228,6 +1228,35 @@ def _add_config_arguments(parser: argparse.ArgumentParser) -> None:
     profile.add_argument("--config", type=Path)
 
 
+def _parse_checkpoint_specs(values: list[str]) -> tuple[tuple[str, Path], ...]:
+    """Parse repeated ``LABEL=CHECKPOINT`` comparison arguments.
+
+    Labels may repeat so independently trained replicas of one variant can be
+    pooled by the normal evaluation-seed aggregation contract. Exact duplicate
+    pairs are rejected to prevent accidental double counting.
+    """
+
+    parsed: list[tuple[str, Path]] = []
+    pairs: set[tuple[str, Path]] = set()
+    for value in values:
+        label, separator, raw_path = value.partition("=")
+        label = label.strip()
+        raw_path = raw_path.strip()
+        if not separator or not label or not raw_path:
+            raise ValueError(
+                "checkpoint specs must use LABEL=CHECKPOINT syntax"
+            )
+        path = Path(raw_path)
+        pair = (label, path)
+        if pair in pairs:
+            raise ValueError(f"duplicate comparison checkpoint: {value}")
+        pairs.add(pair)
+        parsed.append(pair)
+    if not parsed:
+        raise ValueError("at least one comparison checkpoint is required")
+    return tuple(parsed)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1283,11 +1312,31 @@ def main(argv: list[str] | None = None) -> int:
         default=Path("results/construction_aware_baselines.json"),
     )
 
+    compare_parser = subparsers.add_parser(
+        "compare",
+        help="compare frozen RL checkpoints against fixed baselines",
+    )
+    compare_parser.add_argument("--config", type=Path, required=True)
+    compare_parser.add_argument(
+        "--checkpoint",
+        action="append",
+        required=True,
+        metavar="LABEL=CHECKPOINT",
+    )
+    compare_parser.add_argument("--evaluation-seeds", type=int, nargs="+")
+    compare_parser.add_argument(
+        "--output",
+        type=Path,
+        default=Path("results/construction_aware_comparison.json"),
+    )
+    compare_parser.add_argument("--final-state", action="store_true")
+    compare_parser.add_argument("--allow-runtime-mismatch", action="store_true")
+
     raw_args = list(argv) if argv is not None else list(sys.argv[1:])
     if not raw_args:
         raw_args.insert(0, "run")
     elif raw_args[0] not in {
-        "run", "train", "evaluate", "baselines", "-h", "--help"
+        "run", "train", "evaluate", "baselines", "compare", "-h", "--help"
     }:
         raw_args.insert(0, "run")
     args = parser.parse_args(raw_args)
@@ -1347,6 +1396,51 @@ def main(argv: list[str] | None = None) -> int:
             "aggregate": _aggregate(rows),
             "training_replica_aggregate": [],
             "paired_differences": [],
+        }
+        json_path, csv_path = write_results(result, args.output)
+        print(json.dumps({
+            "json": str(json_path),
+            "csv": str(csv_path),
+            "rows": len(rows),
+        }, indent=2))
+        return 0
+
+    if args.command == "compare":
+        config = load_experiment_config(args.config)
+        if args.evaluation_seeds is not None:
+            config = replace(
+                config,
+                evaluation_seeds=tuple(int(seed) for seed in args.evaluation_seeds),
+            )
+        seeds = tuple(config.evaluation_seeds)
+        rows = _run_baselines(config)
+        checkpoint_runs: list[dict[str, object]] = []
+        for label, checkpoint in _parse_checkpoint_specs(args.checkpoint):
+            evaluation_rows, checkpoint_run = evaluate_checkpoint(
+                checkpoint,
+                seeds,
+                strict_runtime=not args.allow_runtime_mismatch,
+                use_best=not args.final_state,
+            )
+            for row in evaluation_rows:
+                row["checkpoint_variant"] = row["variant"]
+                row["variant"] = label
+            checkpoint_run = dict(checkpoint_run)
+            checkpoint_run["checkpoint_variant"] = checkpoint_run["variant"]
+            checkpoint_run["variant"] = label
+            checkpoint_runs.append(checkpoint_run)
+            rows.extend(evaluation_rows)
+        result = {
+            "manifest": {
+                **_manifest(config, checkpoint_runs),
+                "mode": "frozen_multi_checkpoint_comparison",
+                "physical_backend": "SeQUeNCe",
+            },
+            "catalogue_coverage": _catalogue_coverage(config),
+            "rows": rows,
+            "aggregate": _aggregate(rows),
+            "training_replica_aggregate": _aggregate_training_replicas(rows),
+            "paired_differences": _paired_differences(rows),
         }
         json_path, csv_path = write_results(result, args.output)
         print(json.dumps({
