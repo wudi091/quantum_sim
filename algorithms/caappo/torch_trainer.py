@@ -56,6 +56,7 @@ class TorchCAAPPORolloutTrainer:
         beta: float = 1.0,
         chi: float = 1.0,
         potential_shaping: bool = True,
+        use_route_overlap_context: bool = True,
         shaping_coef: float = 0.1,
         dynamic_repair_paths: int = 0,
         dynamic_repair_construction_kinds: tuple[str, ...] = (
@@ -78,6 +79,7 @@ class TorchCAAPPORolloutTrainer:
         self.beta = float(beta)
         self.chi = float(chi)
         self.potential_shaping = bool(potential_shaping)
+        self.use_route_overlap_context = bool(use_route_overlap_context)
         self.shaping_coef = float(shaping_coef)
         self.dynamic_repair_paths = int(dynamic_repair_paths)
         self.dynamic_repair_construction_kinds = tuple(
@@ -173,30 +175,87 @@ class TorchCAAPPORolloutTrainer:
         )
 
     @staticmethod
-    def _admission_context(
+    def _admission_contexts(
         env: JointConstructionBatchEnv,
         state: JointStep,
         selected: dict[str, RouteConstructionCandidate],
         legal_candidates: tuple[RouteConstructionCandidate, ...],
         request_index: int,
         request_count: int,
-    ) -> tuple[float, ...]:
+        *,
+        include_overlap: bool = True,
+    ) -> tuple[tuple[float, ...], ...]:
+        """Build candidate-specific route context for joint admission.
+
+        The physical backend is not exposed here.  Overlap is computed only
+        from neutral route node/link DTOs, so the actor can learn batch-level
+        contention without coupling planning to SeQUeNCe objects.
+        """
         observation = state.info.get("admission_observation", {})
         preview_usage = dict(observation.get("preview_usage", ()))
         capacities = dict(env.admission_capacities)
         scale = max(1.0, float(sum(capacities.values())))
         request_id = tuple(sorted(env.admission_candidates))[request_index]
-        return (
+        all_candidates = tuple(
+            candidate
+            for values in env.admission_candidates.values()
+            for candidate in values
+        )
+        max_hops = max(
+            (candidate.hop_count for candidate in all_candidates),
+            default=1,
+        )
+        max_operations = max(
+            (len(candidate.dag.operations) for candidate in all_candidates),
+            default=1,
+        )
+        selected_links = {
+            tuple(sorted((left, right)))
+            for candidate in selected.values()
+            for left, right in zip(candidate.route_nodes, candidate.route_nodes[1:])
+        }
+        selected_nodes = {
+            node
+            for candidate in selected.values()
+            for node in candidate.route_nodes[1:-1]
+        }
+        base = (
             float(request_index) / max(request_count, 1),
             float(len(selected)) / max(request_count, 1),
             float(sum(preview_usage.values())) / scale,
             float(len(preview_usage)) / max(len(capacities), 1),
-            float(sum(candidate.hop_count for candidate in selected.values())),
-            float(sum(len(candidate.dag.operations) for candidate in selected.values())),
-            float(len(legal_candidates))
-            / max(len(env.admission_candidates[request_id]), 1),
-            float(request_index == request_count - 1),
         )
+        contexts = []
+        for candidate in legal_candidates:
+            candidate_links = {
+                tuple(sorted((left, right)))
+                for left, right in zip(
+                    candidate.route_nodes, candidate.route_nodes[1:]
+                )
+            }
+            candidate_internal_nodes = set(candidate.route_nodes[1:-1])
+            overlap_links = (
+                len(candidate_links.intersection(selected_links))
+                if include_overlap else 0
+            )
+            overlap_nodes = (
+                len(candidate_internal_nodes.intersection(selected_nodes))
+                if include_overlap else 0
+            )
+            link_ratio = overlap_links / max(len(candidate_links), 1)
+            node_ratio = overlap_nodes / max(len(candidate_internal_nodes), 1)
+            detour_ratio = candidate.hop_count / max(
+                min(item.hop_count for item in legal_candidates), 1
+            )
+            contexts.append(base + (
+                float(sum(candidate.hop_count for candidate in selected.values()))
+                / max(request_count * max_hops, 1),
+                float(sum(len(candidate.dag.operations) for candidate in selected.values()))
+                / max(request_count * max_operations, 1),
+                float(link_ratio),
+                float(1.0 - max(link_ratio, node_ratio)),
+            ))
+        return tuple(contexts)
 
     def _select_routes(
         self,
@@ -214,16 +273,17 @@ class TorchCAAPPORolloutTrainer:
                 raise ValueError(
                     f"no legal admission candidate for request {request_id}"
                 )
-            context = self._admission_context(
+            candidate_contexts = self._admission_contexts(
                 env,
                 state,
                 selected,
                 legal,
                 request_index,
                 len(request_order),
+                include_overlap=self.use_route_overlap_context,
             )
             sample = self.policy.sample_route(
-                legal, context, deterministic=deterministic
+                legal, candidate_contexts, deterministic=deterministic
             )
             selected[request_id] = sample.candidate
             samples.append((sample, tuple(legal)))
@@ -235,6 +295,7 @@ class TorchCAAPPORolloutTrainer:
                 sample.context,
                 sample.log_probability,
                 0.0,
+                sample.candidate_contexts,
             )
             for sample, legal in samples
         )
@@ -406,6 +467,7 @@ class TorchCAAPPORolloutTrainer:
                 record.context,
                 record.old_log_probability,
                 discounted_return,
+                record.candidate_contexts,
             )
             for record in route_records
         )

@@ -84,6 +84,7 @@ def _trainer_config(trainer: TorchCAAPPORolloutTrainer) -> dict[str, object]:
         "beta": trainer.beta,
         "chi": trainer.chi,
         "potential_shaping": trainer.potential_shaping,
+        "use_route_overlap_context": trainer.use_route_overlap_context,
         "shaping_coef": trainer.shaping_coef,
         "dynamic_repair_paths": trainer.dynamic_repair_paths,
         "dynamic_repair_construction_kinds": (

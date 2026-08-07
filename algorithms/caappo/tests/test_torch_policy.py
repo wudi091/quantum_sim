@@ -10,7 +10,11 @@ from algorithms.caappo import (
     TorchCAAPPORolloutTrainer,
     compute_gae,
 )
-from qnet_core.joint_construction_gym import JointPhase, JointStep
+from qnet_core.joint_construction_gym import (
+    JointConstructionBatchEnv,
+    JointPhase,
+    JointStep,
+)
 from qnet_core.construction_api import (
     ConstructionDAG,
     ConstructionOperation,
@@ -27,6 +31,70 @@ from qnet_core.spec import EpisodeSpec, PhysicalConfig
 
 
 class TorchCAAPPOTests(unittest.TestCase):
+    def test_route_context_exposes_batch_path_overlap(self):
+        spec = EpisodeSpec(
+            seed=734,
+            nodes=(0, 1, 2, 3),
+            edges=((0, 1), (1, 2), (0, 3), (3, 2)),
+            requests=(
+                RequestSpec("r0", 0, 2, ttl=20),
+                RequestSpec("r1", 0, 2, ttl=20),
+            ),
+            horizon=20,
+            physical=PhysicalConfig(
+                generation_probability=1.0,
+                swap_probability=1.0,
+                node_memory_capacity=4,
+                memory_capacity=2,
+                quantum_distance_m=1.0,
+            ),
+        )
+        catalogue = build_route_construction_catalogue(
+            spec.planning,
+            candidate_count=2,
+            construction_kinds=("left_deep",),
+        )
+        env = JointConstructionBatchEnv(spec, catalogue)
+        state = env.reset()
+        first = next(
+            candidate for candidate in catalogue
+            if candidate.request_id == "r0"
+        )
+        state = env.select_admission("r0", first)
+        legal = env.legal_admission_candidates("r1")
+        contexts = TorchCAAPPORolloutTrainer._admission_contexts(
+            env, state, {"r0": first}, legal, 1, 2
+        )
+        by_route = {
+            candidate.route_nodes: context
+            for candidate, context in zip(legal, contexts)
+        }
+        self.assertEqual(set(by_route), {(0, 1, 2), (0, 3, 2)})
+        self.assertGreater(by_route[first.route_nodes][6], 0.0)
+        alternate = next(route for route in by_route if route != first.route_nodes)
+        self.assertEqual(by_route[alternate][6], 0.0)
+        self.assertGreater(
+            by_route[alternate][7], by_route[first.route_nodes][7]
+        )
+        no_overlap = TorchCAAPPORolloutTrainer._admission_contexts(
+            env,
+            state,
+            {"r0": first},
+            legal,
+            1,
+            2,
+            include_overlap=False,
+        )
+        self.assertEqual(no_overlap[0][6:], no_overlap[1][6:])
+        policy = TorchCAAPPOPolicy(seed=735)
+        sample = policy.sample_route(legal, contexts, deterministic=False)
+        evaluated = policy.evaluate_route_log_probability(
+            legal, sample.index, sample.candidate_contexts
+        )
+        self.assertAlmostEqual(
+            sample.log_probability, float(evaluated.detach().item()), places=6
+        )
+
     def test_gae_accepts_event_duration_discounts(self):
         advantages, targets = compute_gae(
             (1.0, 2.0),

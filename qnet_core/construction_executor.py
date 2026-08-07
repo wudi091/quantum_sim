@@ -47,6 +47,9 @@ class ConstructionDAGExecutor:
         seed: int = 0,
         horizon_ps: int = 10**18,
     ):
+        # This reference executor intentionally exposes its DAG state to the
+        # low-level contract tests and repair oracle.  The SeQUeNCe adapter
+        # applies the catalogue-isolation boundary used by experiments.
         dag_list = tuple(dags)
         self.dags = {dag.request_id: dag for dag in dag_list}
         if len(self.dags) != len(dag_list) or len(self.dags) == 0:

@@ -8,6 +8,31 @@ from qnet_core.spec import EpisodeSpec, PhysicalConfig, RequestSpec
 
 
 class SharedContractTests(unittest.TestCase):
+    def test_parallel_corridor_batch_is_seeded_and_has_equal_routes(self):
+        config = ScenarioConfig(
+            request_count=4,
+            min_hops=3,
+            max_hops=3,
+            topology_mode="parallel_corridors",
+            parallel_corridors=2,
+            batch_mode=True,
+            ttl=8,
+            horizon=8,
+        )
+        first = make_episode(config, 123)
+        second = make_episode(config, 123)
+        self.assertEqual(first, second)
+        self.assertEqual(
+            {(request.source, request.destination, request.arrival)
+             for request in first.requests},
+            {(0, 1, 0)},
+        )
+        graph = nx.Graph(first.edges)
+        self.assertEqual(
+            list(nx.all_simple_paths(graph, 0, 1)),
+            [[0, 2, 3, 1], [0, 4, 5, 1]],
+        )
+
     def test_poisson_arrivals_are_seeded_and_horizon_covers_deadlines(self):
         config = ScenarioConfig(request_count=20, ttl=7, horizon=7, arrival_rate=0.5)
         first = make_episode(config, 123)

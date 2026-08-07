@@ -24,6 +24,9 @@ class ScenarioConfig:
     waxman_beta: float = 0.02
     topology_attempts: int = 128
     demand_pairs: int = 1
+    topology_mode: str = "waxman"
+    parallel_corridors: int = 2
+    batch_mode: bool = False
 
 
 def _add_euclidean_mst(graph: nx.Graph) -> None:
@@ -83,6 +86,36 @@ def _make_waxman_graph(config: ScenarioConfig, seed: int) -> tuple[nx.Graph, dic
     )
 
 
+def _make_parallel_corridor_graph(
+    config: ScenarioConfig,
+) -> tuple[nx.Graph, dict[int, dict[int, int]]]:
+    """Build equal-length disjoint corridors between source 0 and sink 1."""
+
+    if config.min_hops != config.max_hops or config.max_hops < 2:
+        raise ValueError(
+            "parallel_corridors requires min_hops == max_hops >= 2"
+        )
+    if config.parallel_corridors < 2:
+        raise ValueError("parallel_corridors must be at least 2")
+    graph = nx.Graph()
+    graph.add_nodes_from((0, 1))
+    next_node = 2
+    for _ in range(config.parallel_corridors):
+        route = [0]
+        route.extend(range(next_node, next_node + config.max_hops - 1))
+        next_node += config.max_hops - 1
+        route.append(1)
+        graph.add_edges_from(zip(route, route[1:]))
+    distances = {
+        int(source): {
+            int(target): int(distance)
+            for target, distance in targets.items()
+        }
+        for source, targets in nx.all_pairs_shortest_path_length(graph)
+    }
+    return graph, distances
+
+
 def _hop_targets(config: ScenarioConfig) -> list[int]:
     if config.request_count == 1:
         return [config.max_hops]
@@ -104,8 +137,13 @@ def make_episode(config: ScenarioConfig, seed: int) -> EpisodeSpec:
         raise ValueError("topology_attempts must be positive")
     if config.demand_pairs < 1:
         raise ValueError("demand_pairs must be positive")
+    if config.topology_mode not in {"waxman", "parallel_corridors"}:
+        raise ValueError(f"unknown topology_mode: {config.topology_mode}")
 
-    graph, distances = _make_waxman_graph(config, seed)
+    if config.topology_mode == "parallel_corridors":
+        graph, distances = _make_parallel_corridor_graph(config)
+    else:
+        graph, distances = _make_waxman_graph(config, seed)
     nodes = tuple(sorted(int(node) for node in graph.nodes))
     edges = tuple(sorted((min(int(u), int(v)), max(int(u), int(v))) for u, v in graph.edges))
 
@@ -127,17 +165,27 @@ def make_episode(config: ScenarioConfig, seed: int) -> EpisodeSpec:
         request_rng.shuffle(pairs)
     bucket_offsets = {hop: 0 for hop in pair_buckets}
     endpoints: list[tuple[int, int]] = []
-    for hop in hops:
-        pairs = pair_buckets[int(hop)]
-        offset = bucket_offsets[int(hop)]
-        left, right = pairs[offset % len(pairs)]
-        bucket_offsets[int(hop)] = offset + 1
-        endpoints.append((left, right) if request_rng.random() < 0.5 else (right, left))
+    if config.batch_mode:
+        endpoints = [(0, 1) for _ in hops]
+    else:
+        for hop in hops:
+            pairs = pair_buckets[int(hop)]
+            offset = bucket_offsets[int(hop)]
+            left, right = pairs[offset % len(pairs)]
+            bucket_offsets[int(hop)] = offset + 1
+            endpoints.append(
+                (left, right) if request_rng.random() < 0.5 else (right, left)
+            )
 
     # A homogeneous Poisson arrival process: exponential inter-arrival times,
     # discretized into physical slots. Multiple requests may arrive together.
-    inter_arrivals = request_rng.exponential(1.0 / config.arrival_rate, config.request_count)
-    arrivals = np.floor(np.cumsum(inter_arrivals)).astype(int)
+    if config.batch_mode:
+        arrivals = np.zeros(config.request_count, dtype=int)
+    else:
+        inter_arrivals = request_rng.exponential(
+            1.0 / config.arrival_rate, config.request_count
+        )
+        arrivals = np.floor(np.cumsum(inter_arrivals)).astype(int)
     requests = tuple(
         RequestSpec(
             f"r{index}", endpoints[index][0], endpoints[index][1],

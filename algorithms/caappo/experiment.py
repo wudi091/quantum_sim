@@ -54,6 +54,7 @@ class CAAPPOVariant:
     beta: float = 1.0
     use_dag_state: bool = True
     use_capacity_context: bool = True
+    use_route_overlap_context: bool = True
     potential_shaping: bool = True
 
     def __post_init__(self) -> None:
@@ -545,6 +546,7 @@ def train_variant_checkpoint(
             gamma_per_slot=variant.gamma_per_slot,
             beta=variant.beta,
             potential_shaping=variant.potential_shaping,
+            use_route_overlap_context=variant.use_route_overlap_context,
             dynamic_repair_paths=variant.dynamic_repair_paths,
             dynamic_repair_construction_kinds=variant.construction_kinds,
         )

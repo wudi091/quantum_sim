@@ -44,6 +44,7 @@ class TorchRouteSample:
     feature: np.ndarray
     log_probability: float
     entropy: float
+    candidate_contexts: tuple[tuple[float, ...], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -63,6 +64,7 @@ class TorchRouteRecord:
     context: tuple[float, ...]
     old_log_probability: float
     advantage: float
+    candidate_contexts: tuple[tuple[float, ...], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -311,16 +313,27 @@ class TorchCAAPPOPolicy(nn.Module):
     def _route_features(
         self,
         candidates: Sequence[RouteConstructionCandidate],
-        context: Sequence[float],
+        context: Sequence[float] | Sequence[Sequence[float]],
     ) -> Tensor:
-        context_array = np.asarray(tuple(context), dtype=np.float32)
-        if context_array.shape != (self.admission_context_dim,):
+        context_array = np.asarray(context, dtype=np.float32)
+        if context_array.ndim == 1:
+            if context_array.shape != (self.admission_context_dim,):
+                raise ValueError(
+                    f"admission context must have {self.admission_context_dim} entries"
+                )
+            context_array = np.repeat(
+                context_array[None, :], len(candidates), axis=0
+            )
+        elif context_array.shape != (
+            len(candidates), self.admission_context_dim
+        ):
             raise ValueError(
-                f"admission context must have {self.admission_context_dim} entries"
+                "candidate admission contexts must have shape "
+                f"({len(candidates)}, {self.admission_context_dim})"
             )
         return self._tensor(np.vstack([
-            np.concatenate((self._candidate_feature(candidate), context_array))
-            for candidate in candidates
+            np.concatenate((self._candidate_feature(candidate), context_array[index]))
+            for index, candidate in enumerate(candidates)
         ]))
 
     def _state_feature(
@@ -379,7 +392,7 @@ class TorchCAAPPOPolicy(nn.Module):
     def sample_route(
         self,
         candidates: Sequence[RouteConstructionCandidate],
-        context: Sequence[float],
+        context: Sequence[float] | Sequence[Sequence[float]],
         *,
         deterministic: bool = False,
     ) -> TorchRouteSample:
@@ -392,20 +405,25 @@ class TorchCAAPPOPolicy(nn.Module):
             distribution.sample().item()
         )
         action = torch.as_tensor(index, device=self.device)
+        contexts = tuple(
+            tuple(float(value) for value in row)
+            for row in features[:, 5:].detach().cpu().numpy()
+        )
         return TorchRouteSample(
             candidates[index],
             index,
-            tuple(float(value) for value in context),
+            contexts[index],
             features[index].detach().cpu().numpy(),
             float(distribution.log_prob(action).detach().item()),
             float(distribution.entropy().detach().item()),
+            contexts,
         )
 
     def evaluate_route_log_probability(
         self,
         candidates: Sequence[RouteConstructionCandidate],
         index: int,
-        context: Sequence[float],
+        context: Sequence[float] | Sequence[Sequence[float]],
     ) -> Tensor:
         if index < 0 or index >= len(candidates):
             raise ValueError("route sample index out of range")
@@ -822,7 +840,7 @@ class TorchCAAPPOPolicy(nn.Module):
                 new_log_probability = self.evaluate_route_log_probability(
                     record.candidates,
                     record.index,
-                    record.context,
+                    record.candidate_contexts or record.context,
                 )
                 old_log_probability = torch.as_tensor(
                     record.old_log_probability,
@@ -849,7 +867,10 @@ class TorchCAAPPOPolicy(nn.Module):
                     clipped_ratio * advantage,
                 ))
                 route_logits = self.route_actor(
-                    self._route_features(record.candidates, record.context)
+                    self._route_features(
+                        record.candidates,
+                        record.candidate_contexts or record.context,
+                    )
                 ).squeeze(-1)
                 entropies.append(Categorical(logits=route_logits).entropy())
             policy_mean = torch.stack(policy_losses).mean() if policy_losses else torch.zeros((), device=self.device)

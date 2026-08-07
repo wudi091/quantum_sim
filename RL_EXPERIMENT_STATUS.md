@@ -31,42 +31,63 @@ reported completion rate 1.0 and risk count 0 on the three validation seeds.
 The different best epochs show substantial optimization-speed variance, so
 validation performance alone is not treated as convergence evidence.
 
-## Frozen 30-seed results
+## Historical medium-workload run
+
+The original 30-seed medium-workload comparison was produced before the
+executor-boundary DAG isolation fix. The trained-policy rows are retained as
+diagnostic history, but its fixed-baseline rows are not authoritative because
+reusing a candidate catalogue could contaminate later baseline executions.
+Those numbers must not be used as the paper result.
+
+## Parallel-corridor RL run
+
+To test the joint path-selection part of the problem, the current workload has
+two equal-length, node-disjoint corridors, two simultaneous requests, and
+unit link memory capacity. Three independent CAAPPO replicas were trained for
+400 episodes (training seeds 11, 12, 13); validation uses seeds 1101--1103 and
+frozen evaluation uses seeds 1201--1230. The main variant includes the
+candidate-specific route-overlap context. The `no_route_overlap` variant
+removes only that context feature.
+
+The fixed baselines below were regenerated after the DAG isolation audit fix;
+each run constructs a pristine execution DAG and repeated evaluation is
+idempotent.
 
 Evaluation seeds are the independent units. The three trained replicas are
 averaged within each evaluation seed before confidence intervals are computed.
 
 | Method | Completion rate | Censored flow-time (ps) | Risk count |
 |---|---:|---:|---:|
-| CAAPPO, trained | 0.8296 [0.7202, 0.9390] | 55,278,525 [22,391,560, 88,165,489] | 0.5111 [0.1830, 0.8393] |
-| CAAPPO, untrained | 0.6037 [0.4984, 0.7090] | 112,257,185 [82,789,473, 141,724,896] | 1.1889 [0.8730, 1.5048] |
-| Shortest path + left-deep | 0.6444 [0.5234, 0.7655] | 95,704,186 [63,964,830, 127,443,542] | 1.0667 [0.7035, 1.4298] |
-| Shortest path + balanced | 0.6556 [0.5405, 0.7706] | 92,895,520 [62,650,167, 123,140,873] | 1.0333 [0.6883, 1.3784] |
+| CAAPPO, trained | 0.5389 [0.4241, 0.6536] | 14,491,677 [11,014,801, 17,968,554] | 0.9222 [0.6927, 1.1517] |
+| CAAPPO, no route-overlap context | 0.1722 [0.1240, 0.2205] | 29,005,170 [28,725,454, 29,284,886] | 1.6556 [1.5591, 1.7520] |
+| CAAPPO, no construction choice | 0.5722 [0.4396, 0.7048] | 14,307,678 [10,355,299, 18,260,057] | 0.8556 [0.5903, 1.1208] |
+| CAAPPO, no route choice | 0.1444 [0.0982, 0.1907] | 28,892,614 [28,394,136, 29,391,092] | 1.7111 [1.6185, 1.8037] |
+| CAAPPO, untrained | 0.3722 [0.2869, 0.4576] | 20,123,007 [17,710,423, 22,535,591] | 1.2556 [1.0849, 1.4262] |
+| Shortest path + left-deep | 0.1500 [0.0666, 0.2334] | 28,317,170 [26,952,331, 29,682,008] | 1.7000 [1.5332, 1.8668] |
+| Split paths + left-deep | 0.5000 [0.3590, 0.6410] | 15,055,510 [10,843,561, 19,267,459] | 1.0000 [0.7181, 1.2819] |
+| Split paths + balanced | 0.5500 [0.4142, 0.6858] | 13,547,011 [9,486,059, 17,607,963] | 0.9000 [0.6284, 1.1716] |
 
-Paired against shortest-left-deep, trained CAAPPO improves completion rate by
-0.1852 with 95% CI [0.0775, 0.2929], reduces censored flow-time by 40,425,661 ps
-with CI [12,410,173, 68,441,150] in absolute reduction, and reduces risk count
-by 0.5556 with CI [0.2325, 0.8786]. Against balanced construction, the
-completion-rate improvement is 0.1741 with CI [0.0662, 0.2819].
+Relative to shortest-left-deep, trained CAAPPO has completion-rate delta
+`+0.3889` (95% CI `[+0.2368, +0.5410]`). Relative to the stronger
+split-balanced heuristic, the delta is `-0.0111` (95% CI
+`[-0.0996, +0.0774]`), so this experiment does not establish superiority over
+that heuristic. Removing route-overlap context reduces completion by `0.3778`
+relative to split-balanced (95% CI `[-0.5088, -0.2468]`).
 
-Results are stored in `results/caappo-medium-seeded-comparison30.json` and its
-CSV companion. Checkpoints and generated results are intentionally ignored by
-Git.
+Results are stored in `results/parallel-corridor-comparison30.json` and its
+CSV companion. The twelve frozen checkpoint evaluations are stored beside it.
 
 ## Claim boundary
 
-The policy clearly learned construction selection: across 90 frozen replica x
-evaluation-seed episodes, 162 of 270 admissions selected balanced construction
-and 108 selected left-deep; 64 episodes mixed construction types across the
-batch. The corresponding untrained policies selected balanced only 34 times.
-
-However, trained policies selected a non-shortest catalogue path only 3 times
-out of 270 admissions. The current workload therefore supports a
-construction-aware RL claim, but does not yet provide strong evidence for the
-joint path-selection part of the paper problem. The next experiment must use
-contention-aware topology/request distributions where an alternate route is
-sometimes optimal, followed by route-choice and construction-choice
-ablations.
+The current parallel-corridor run supports a narrower claim: CAAPPO learns to
+use candidate-specific batch route context, and the context ablation fails on
+the same contention workload. The no-route-choice ablation also collapses to
+the shortest corridor, while the no-construction-choice ablation remains
+competitive on this particular workload. The learned policy is not better
+than the hand-designed split-balanced policy within the current confidence
+interval, and these results do not establish convergence or generalization
+beyond this topology family. Larger topologies and additional workload
+families remain required for a paper claim.
 
 This is positive initial RL evidence, not a convergence claim and not yet a
 paper-complete CCFA result.

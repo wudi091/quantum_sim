@@ -50,6 +50,7 @@
       "beta": 1.0,
       "use_dag_state": true,
       "use_capacity_context": true,
+      "use_route_overlap_context": true,
       "potential_shaping": true
     }
   ]

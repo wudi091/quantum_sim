@@ -50,7 +50,9 @@ class SequenceConstructionExecutor:
         initial_segments: Iterable[LogicalSegment] = (),
         horizon_ps: int | None = None,
     ):
-        dag_list = tuple(dags)
+        # Executors own mutable DAG state.  Rebuild each graph so a catalogue
+        # can be evaluated repeatedly and independently across environments.
+        dag_list = tuple(dag.clone() for dag in dags)
         self.dags = {dag.request_id: dag for dag in dag_list}
         if len(self.dags) != len(dag_list) or not dag_list:
             raise ValueError("construction DAG request IDs must be unique and non-empty")

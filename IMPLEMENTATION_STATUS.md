@@ -93,6 +93,11 @@ Implemented and tested:
   points, and selects risk-feasible validation checkpoints when possible. The
   primary evaluation-seed CI estimand and separate training-replica dispersion
   are both reported explicitly.
+- `ConstructionDAG.clone()` reconstructs a pristine operation graph with fresh
+  execution markers. The SeQUeNCe executor applies this boundary on every
+  construction run, so fixed-plan evaluation and `ConstructionBatchEnv.reset()`
+  are idempotent even when the same catalogue objects are reused. Regression
+  tests cover repeated evaluator runs and reset restoration.
 
 The current SeQUeNCe capability declaration is intentionally conservative:
 inter-epoch launch is enabled for protocol-compatible operations, while
@@ -109,13 +114,15 @@ treating every SWAP as physically complete when a shorter logical boundary
 event fires. This prevents delayed SWAP messages from accessing Bell states
 after a request release has already freed the underlying memories.
 
-An initial corrected-RNG CAAPPO run trained three independent replicas for 300
-episodes each. On 30 frozen evaluation seeds, replica-averaged completion rate
-was 0.8296 versus 0.6444 for shortest-left-deep and 0.6556 for balanced. The
-paired completion-rate improvements have 95% CIs [0.0775, 0.2929] and [0.0662,
-0.2819], respectively. See `RL_EXPERIMENT_STATUS.md`. This is positive initial
-RL evidence, but only 3 of 270 admissions used a non-shortest path, so the
-joint path-selection claim remains unproven on the current workload.
+The current parallel-corridor run trains three independent CAAPPO replicas for
+400 episodes each on the SeQUeNCe backend, with route-overlap, no-route-
+overlap, no-construction-choice, and no-route-choice variants. The frozen
+30-seed completion rates are 0.5389, 0.1722, 0.5722, and 0.1444 respectively;
+the split-balanced heuristic reaches 0.5500. This is evidence that the RL
+policy uses the batch context, but it is not evidence of optimality or
+convergence; the strong split heuristic remains statistically indistinguishable
+from CAAPPO. The corrected result and claim boundary are recorded in
+`RL_EXPERIMENT_STATUS.md`.
 
 The SeQUeNCe executor also rejects logical-only `initial_segments`; importing
 an existing physical state requires a future explicit logical-to-physical pair

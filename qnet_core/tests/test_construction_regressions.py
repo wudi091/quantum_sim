@@ -51,6 +51,36 @@ def _one_hop_generation(
 
 
 class ConstructionRegressionTests(unittest.TestCase):
+    def test_fixed_evaluator_is_idempotent_for_catalogue_candidates(self):
+        spec = EpisodeSpec(
+            seed=900,
+            nodes=(0, 1),
+            edges=((0, 1),),
+            requests=(RequestSpec("r", 0, 1),),
+            horizon=10,
+            physical=PhysicalConfig(
+                generation_probability=1.0,
+                memory_capacity=1,
+                node_memory_capacity=1,
+                quantum_distance_m=1.0,
+            ),
+        )
+        candidate = build_route_construction_catalogue(
+            spec.planning, candidate_count=1, construction_kinds=("left_deep",)
+        )[0]
+
+        first = run_joint_plan_baseline(spec, {"r": candidate})
+        second = run_joint_plan_baseline(spec, {"r": candidate})
+
+        self.assertEqual(dict(first.metrics), dict(second.metrics))
+        self.assertEqual(
+            tuple((event.event_kind, event.success, event.physical_time_ps)
+                  for event in first.event_trace),
+            tuple((event.event_kind, event.success, event.physical_time_ps)
+                  for event in second.event_trace),
+        )
+        self.assertEqual(first.settlements, second.settlements)
+
     def test_multi_pair_catalogue_serializes_terminal_deliveries(self):
         spec = EpisodeSpec(
             seed=901,

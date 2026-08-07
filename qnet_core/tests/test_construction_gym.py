@@ -8,6 +8,37 @@ from qnet_core.spec import EpisodeSpec, PhysicalConfig
 
 
 class ConstructionBatchEnvTests(unittest.TestCase):
+    def test_reset_restores_pristine_ready_operations(self):
+        spec = EpisodeSpec(
+            seed=400,
+            nodes=(0, 1, 2),
+            edges=((0, 1), (1, 2)),
+            requests=(RequestSpec("r0", 0, 2, ttl=20),),
+            horizon=20,
+            physical=PhysicalConfig(
+                generation_probability=1.0,
+                swap_probability=1.0,
+                memory_capacity=2,
+                node_memory_capacity=4,
+                quantum_distance_m=1.0,
+            ),
+        )
+        candidates = build_route_construction_catalogue(spec.planning, candidate_count=1)
+        selected = ShortestPathLeftDeepPolicy().select(candidates)
+        env = ConstructionBatchEnv(spec, selected)
+
+        initial = env.reset()
+        initial_ready = tuple(operation.op_id for operation in initial.ready_operations)
+        state = initial
+        while not state.terminated:
+            state = env.step(state.ready_operations if state.ready_operations else ())
+
+        reset = env.reset()
+        self.assertEqual(
+            initial_ready,
+            tuple(operation.op_id for operation in reset.ready_operations),
+        )
+
     def test_event_env_launches_operations_and_settles_request(self):
         spec = EpisodeSpec(
             seed=401,

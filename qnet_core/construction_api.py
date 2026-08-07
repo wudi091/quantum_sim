@@ -374,6 +374,22 @@ class ConstructionDAG:
         self.dead: set[str] = set()
         self._add_many(operations)
 
+    def clone(self) -> "ConstructionDAG":
+        """Return a pristine executable copy with the same operation graph.
+
+        The operation graph is the immutable catalogue definition, while
+        ``started``, ``completed`` and ``dead`` are executor-owned state.  A
+        fresh DAG is therefore preferable to ``copy.deepcopy`` at execution
+        boundaries: it preserves the definition and deliberately resets the
+        mutable execution markers.
+        """
+
+        return ConstructionDAG(
+            self.request_id,
+            self.operations,
+            version=self.version,
+        )
+
     def _add_many(self, operations: tuple[ConstructionOperation, ...]) -> None:
         staged = dict(self._operations)
         output_ids = {
