@@ -241,7 +241,11 @@ class TorchRelationAwareDAGEncoder(nn.Module):
 
 
 class TorchCAAPPOPolicy(nn.Module):
-    """Trainable CAAPPO heads with exact environment-side action masking."""
+    """Trainable CAAPPO heads over a lossy neutral-snapshot projection.
+
+    Environment-side action masks remain exact for the supplied snapshot even
+    though the learned encoder does not claim a Markov-sufficient observation.
+    """
 
     admission_context_dim = 8
     repair_option_dim = 8
@@ -489,17 +493,24 @@ class TorchCAAPPOPolicy(nn.Module):
         )
         scores = self.operation_actor(operation_features).squeeze(-1)
         selected_indices: list[int] = []
-        seed_legal = tuple(
-            index for index, operation in enumerate(ordered)
-            if oracle.can_add((), operation)
+        seed_legal = (
+            tuple(
+                index for index, operation in enumerate(ordered)
+                if oracle.can_add((), operation)
+            )
+            if not stop_legal else ()
         )
         legal_indices: list[int] = []
         seed_index = -1
+        mask_pruned_check_count = 0
+        mask_check_count = 0
         log_probability = torch.zeros((), device=self.device)
         entropy = torch.zeros((), device=self.device)
         if not stop_legal:
             if not seed_legal:
                 raise ValueError("no legal operation and STOP is not legal")
+            mask_check_count += len(ordered)
+            mask_pruned_check_count += len(ordered) - len(seed_legal)
             seed_logits = scores[list(seed_legal)]
             seed_distribution = Categorical(logits=seed_logits)
             seed_position = (
@@ -518,9 +529,11 @@ class TorchCAAPPOPolicy(nn.Module):
             candidate_indices = range(len(ordered))
         for index in candidate_indices:
             operation = ordered[index]
+            mask_check_count += 1
             if not oracle.can_add(
                 tuple(ordered[selected] for selected in selected_indices), operation
             ):
+                mask_pruned_check_count += 1
                 continue
             legal_indices.append(index)
             distribution = Bernoulli(logits=scores[index])
@@ -556,6 +569,8 @@ class TorchCAAPPOPolicy(nn.Module):
             seed_index,
             state_snapshot=snapshot,
             state_operations=tuple(ordered),
+            execution_mask_pruned_check_count=mask_pruned_check_count,
+            execution_mask_check_count=mask_check_count,
         )
         return TorchOperationSample(sample)
 

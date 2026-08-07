@@ -1,9 +1,11 @@
 import unittest
 from dataclasses import replace
+from unittest.mock import patch
 
 from algorithms.caappo import ShortestPathLeftDeepPolicy
 from qnet_core.construction_api import (
     ConstructionDAG,
+    ConstructionLaunchRejected,
     ConstructionOperation,
     OperationKind,
     RepairKind,
@@ -141,6 +143,15 @@ class JointConstructionBatchEnvTests(unittest.TestCase):
         dropped = env.drop("r0")
         self.assertTrue(dropped.terminated)
         self.assertEqual(env.metrics()["risk_count"], 1.0)
+        self.assertEqual(env.metrics()["physical_failure_count"], 1.0)
+        self.assertEqual(
+            env.metrics()["generation_protocol_attempt_count"], 1.0
+        )
+        self.assertEqual(
+            env.metrics()["generation_physical_failure_count"], 1.0
+        )
+        self.assertEqual(env.metrics()["physical_backend_rejection_count"], 0.0)
+        self.assertEqual(env.metrics()["executor_rejection_count"], 0.0)
         self.assertEqual(
             env.metrics()["censored_flow_time_ps"],
             spec.horizon * spec.physical.slot_duration_ps,
@@ -783,6 +794,83 @@ class JointConstructionBatchEnvTests(unittest.TestCase):
         self.assertTrue(any(
             event.failure_cause == "expiration"
             for event in env.core._event_log
+        ))
+        self.assertEqual(env.metrics()["expiration_count"], 1.0)
+        self.assertGreater(
+            env.metrics()["physical_memory_time_unit_slots"], 0.0
+        )
+
+    def test_executor_launch_rejection_is_an_observable_repair_event(self):
+        spec = EpisodeSpec(
+            seed=514,
+            nodes=(0, 1),
+            edges=((0, 1),),
+            requests=(RequestSpec("r0", 0, 1, ttl=20),),
+            horizon=20,
+            physical=PhysicalConfig(
+                generation_probability=1.0,
+                node_memory_capacity=1,
+                quantum_distance_m=1.0,
+            ),
+        )
+        catalogue = build_route_construction_catalogue(
+            spec.planning, candidate_count=1
+        )
+        env = JointConstructionBatchEnv(spec, catalogue)
+        env.reset()
+        admitted = env.admit({"r0": catalogue[0]})
+
+        with patch.object(
+            env.core.executor,
+            "launch",
+            side_effect=ConstructionLaunchRejected(
+                "synthetic scheduler rejection"
+            ),
+        ):
+            rejected = env.step(admitted.ready_operations)
+
+        self.assertEqual(rejected.phase, JointPhase.REPAIR)
+        self.assertEqual(env.metrics()["executor_rejection_count"], 1.0)
+        self.assertEqual(
+            env.metrics()["executor_launch_batch_attempt_count"], 1.0
+        )
+        self.assertTrue(any(
+            event.failure_cause == "executor_launch_rejection"
+            for event in env.core.event_trace
+        ))
+
+    def test_executor_internal_launch_error_remains_fail_fast(self):
+        spec = EpisodeSpec(
+            seed=515,
+            nodes=(0, 1),
+            edges=((0, 1),),
+            requests=(RequestSpec("r0", 0, 1, ttl=20),),
+            horizon=20,
+            physical=PhysicalConfig(
+                generation_probability=1.0,
+                node_memory_capacity=1,
+                quantum_distance_m=1.0,
+            ),
+        )
+        catalogue = build_route_construction_catalogue(
+            spec.planning, candidate_count=1
+        )
+        env = JointConstructionBatchEnv(spec, catalogue)
+        env.reset()
+        admitted = env.admit({"r0": catalogue[0]})
+
+        with patch.object(
+            env.core.executor,
+            "launch",
+            side_effect=RuntimeError("injected backend invariant failure"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "invariant failure"):
+                env.step(admitted.ready_operations)
+
+        self.assertEqual(env.metrics()["executor_rejection_count"], 0.0)
+        self.assertFalse(any(
+            event.failure_cause == "executor_launch_rejection"
+            for event in env.core.event_trace
         ))
 
 

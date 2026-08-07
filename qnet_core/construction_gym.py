@@ -5,10 +5,20 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Mapping, Sequence
 
-from .construction_api import ConstructionOperation, ConstructionSnapshot, ExecutionEvent
+from .construction_api import (
+    ConstructionLaunchRejected,
+    ConstructionOperation,
+    ConstructionSnapshot,
+    ExecutionEvent,
+)
 from .construction_catalog import RouteConstructionCandidate
 from .construction_executor import ConstructionDAGExecutor
-from .construction_metrics import RequestSettlement, censored_flow_time
+from .construction_metrics import (
+    MemoryTelemetry,
+    RequestSettlement,
+    censored_flow_time,
+    execution_event_metrics,
+)
 from .runtime import make_sequence_construction_executor
 from .spec import EpisodeSpec
 
@@ -51,6 +61,9 @@ class ConstructionBatchEnv:
         self._boundary_event_counter = 0
         self._last_time_ps = 0
         self._flow_cost_ps = 0
+        self._memory_telemetry = MemoryTelemetry()
+        self._executor_launch_batch_attempt_count = 0
+        self._executor_rejection_count = 0
 
     @property
     def executor(self):
@@ -65,6 +78,13 @@ class ConstructionBatchEnv:
     @property
     def horizon_ps(self) -> int:
         return self.spec.horizon * self.spec.physical.slot_duration_ps
+
+    @property
+    def event_trace(self) -> tuple[ExecutionEvent, ...]:
+        return tuple(self._event_log)
+
+    def _observe_memory_usage(self) -> None:
+        self._memory_telemetry.observe(self.executor.snapshot())
 
     def _arrival_ps(self, request_id: str) -> int:
         request = next(item for item in self.spec.requests if item.id == request_id)
@@ -91,6 +111,10 @@ class ConstructionBatchEnv:
         self._boundary_event_counter = 0
         self._last_time_ps = self.time_ps
         self._flow_cost_ps = 0
+        self._memory_telemetry = MemoryTelemetry()
+        self._executor_launch_batch_attempt_count = 0
+        self._executor_rejection_count = 0
+        self._observe_memory_usage()
         return self._step_result(0.0, False, {"event_kind": "reset"})
 
     def _active_request_ids(self) -> set[str]:
@@ -247,6 +271,42 @@ class ConstructionBatchEnv:
         for request_id in tuple(sorted(self._settled)):
             self.executor.release_request(request_id)
 
+    def _launch_rejection_events(
+        self,
+        operations: Sequence[ConstructionOperation],
+    ) -> tuple[ExecutionEvent, ...]:
+        snapshot = self.executor.snapshot()
+        events = []
+        by_request: dict[str, ConstructionOperation] = {}
+        for operation in operations:
+            by_request.setdefault(operation.request_id, operation)
+        for request_id, operation in sorted(by_request.items()):
+            self._boundary_event_counter += 1
+            event = ExecutionEvent(
+                event_id=(
+                    f"launch-rejection-{self._boundary_event_counter:08d}"
+                ),
+                operation_id=operation.op_id,
+                request_id=request_id,
+                attempt_id=(
+                    f"{operation.op_id}:launch-rejection:"
+                    f"{self._boundary_event_counter}"
+                ),
+                event_kind="launch_rejection",
+                physical_time_ps=self.time_ps,
+                success=False,
+                failure_cause="executor_launch_rejection",
+                in_flight_operation_ids=tuple(
+                    item.operation_id for item in snapshot.in_flight
+                ),
+            )
+            events.append(event)
+            self._event_log.append(event)
+        self._event_log.sort(
+            key=lambda item: (item.physical_time_ps, item.event_id)
+        )
+        return tuple(events)
+
     def _advance(self) -> tuple[tuple[ExecutionEvent, ...], int]:
         previous = self.time_ps
         if self.executor.has_in_flight:
@@ -288,6 +348,7 @@ class ConstructionBatchEnv:
             else:
                 batch = self.executor.wait_until(self.horizon_ps)
         self._event_log.extend(batch.events)
+        self._observe_memory_usage()
         return batch.events, max(0, batch.physical_time_ps - previous)
 
     def _finalize_horizon(self) -> tuple[str, ...]:
@@ -348,14 +409,25 @@ class ConstructionBatchEnv:
             if request.id not in self._settled
         }
         selected = tuple(operations)
+        launch_rejected = False
         if selected:
             ready_ids = {operation.op_id for operation in self.ready_operations()}
             if any(operation.op_id not in ready_ids for operation in selected):
                 raise ValueError("operation set contains a non-ready operation")
-            self.executor.launch(selected)
+            self._executor_launch_batch_attempt_count += 1
+            try:
+                self.executor.launch(selected)
+            except ConstructionLaunchRejected:
+                self._executor_rejection_count += 1
+                events = self._launch_rejection_events(selected)
+                duration = 0
+                launch_rejected = True
+            else:
+                self._observe_memory_usage()
         elif not self.stop_legal():
             raise ValueError("STOP is not legal in the current construction state")
-        events, duration = self._advance()
+        if not launch_rejected:
+            events, duration = self._advance()
         completed_now, failed_ids, observed_failures = self._settle_events(
             events, interval_start_ps
         )
@@ -363,6 +435,7 @@ class ConstructionBatchEnv:
             len(values) for values in self._delivered_terminal_segments.values()
         )
         self._release_settled_resources()
+        self._observe_memory_usage()
         terminated = False
         if self.time_ps >= self.horizon_ps or (
             len(self._settled) == len(self.spec.requests)
@@ -456,6 +529,7 @@ class ConstructionBatchEnv:
             operations,
             supersede_uncommitted=supersede_uncommitted,
         )
+        self._observe_memory_usage()
         if terminal_segment_ids is not None:
             self._terminal_segments[request_id] = tuple(terminal_segment_ids)
         return self._step_result(
@@ -510,6 +584,7 @@ class ConstructionBatchEnv:
         )
         self._settled[request_id] = settlement
         self._release_settled_resources()
+        self._observe_memory_usage()
         lump = max(0, self.horizon_ps - self.time_ps)
         self._flow_cost_ps += lump
         batch_size = max(len(self.spec.requests), 1)
@@ -540,6 +615,7 @@ class ConstructionBatchEnv:
         )
 
     def metrics(self) -> dict[str, float]:
+        self._observe_memory_usage()
         settlements = tuple(
             self._settled.get(
                 request.id,
@@ -571,6 +647,10 @@ class ConstructionBatchEnv:
             p95_latency = float(ordered_latencies[p95_index])
         else:
             p95_latency = 0.0
+        event_metrics = execution_event_metrics(self._event_log)
+        memory_metrics = self._memory_telemetry.metrics(
+            self.spec.physical.slot_duration_ps
+        )
         return {
             "completed_requests": float(completed),
             "delivered_pairs": float(delivered_pairs),
@@ -583,4 +663,12 @@ class ConstructionBatchEnv:
             "makespan_ps": float(
                 max((event.physical_time_ps for event in self._event_log), default=0)
             ),
+            "executor_launch_batch_attempt_count": float(
+                self._executor_launch_batch_attempt_count
+            ),
+            "executor_rejection_count": float(
+                self._executor_rejection_count
+            ),
+            **memory_metrics,
+            **event_metrics,
         }

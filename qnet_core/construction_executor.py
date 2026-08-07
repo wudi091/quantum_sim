@@ -12,6 +12,7 @@ import random
 from typing import Iterable, Mapping
 
 from .construction_api import (
+    ConstructionLaunchRejected,
     ConstructionDAG,
     ConstructionOperation,
     ConstructionSnapshot,
@@ -317,7 +318,10 @@ class ConstructionDAGExecutor:
 
     def launch(self, feasible_set: Iterable[ConstructionOperation]) -> tuple[str, ...]:
         operations = tuple(feasible_set)
-        self._validate_launch(operations)
+        try:
+            self._validate_launch(operations)
+        except ValueError as exc:
+            raise ConstructionLaunchRejected(str(exc)) from exc
         reservation_ids: list[str] = []
         for operation in sorted(operations, key=lambda item: item.canonical_key):
             dag = self.dags[operation.request_id]

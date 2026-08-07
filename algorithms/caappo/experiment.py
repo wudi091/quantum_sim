@@ -136,6 +136,42 @@ BASELINES = {
 }
 
 
+RATIO_METRICS = {
+    "generation_physical_failure_rate": (
+        "generation_physical_failure_count",
+        "generation_protocol_attempt_count",
+    ),
+    "swap_physical_failure_rate": (
+        "swap_physical_failure_count",
+        "swap_protocol_attempt_count",
+    ),
+    "physical_failure_rate": (
+        "physical_failure_count",
+        "physical_protocol_attempt_count",
+    ),
+    "fidelity_violation_rate": (
+        "fidelity_violation_count",
+        "fidelity_check_count",
+    ),
+    "executor_rejection_rate": (
+        "executor_rejection_count",
+        "executor_launch_batch_attempt_count",
+    ),
+    "expiration_event_density_per_physical_memory_unit_slot": (
+        "expiration_count",
+        "physical_memory_time_unit_slots",
+    ),
+    "admission_mask_pruned_fraction": (
+        "admission_mask_pruned_check_count",
+        "admission_mask_check_count",
+    ),
+    "execution_mask_pruned_fraction": (
+        "execution_mask_pruned_check_count",
+        "execution_mask_check_count",
+    ),
+}
+
+
 def _baseline_policy_types(config: ConstructionExperimentConfig):
     policies = dict(BASELINES)
     if config.scenario.topology_mode == "parallel_corridors":
@@ -179,6 +215,10 @@ def _selected_candidate_records(
         }
         for request_id, candidate_id in selected_candidates
     ]
+
+
+def _event_trace_records(events) -> list[dict[str, object]]:
+    return [asdict(event) for event in events]
 
 
 def _collapse_training_replicas(
@@ -261,6 +301,52 @@ def _aggregate(rows: Iterable[dict[str, object]]) -> list[dict[str, object]]:
                 "ci95_high": mean + half_width,
                 "ci_supported": len(samples) >= 2,
             })
+        for metric, (numerator_name, denominator_name) in RATIO_METRICS.items():
+            clusters = [
+                (float(row[numerator_name]), float(row[denominator_name]))
+                for row in values
+                if isinstance(row.get(numerator_name), (int, float))
+                and isinstance(row.get(denominator_name), (int, float))
+                and math.isfinite(float(row[numerator_name]))
+                and math.isfinite(float(row[denominator_name]))
+                and float(row[denominator_name]) > 0.0
+            ]
+            denominator_total = sum(denominator for _numerator, denominator in clusters)
+            if not clusters or denominator_total <= 0.0:
+                continue
+            numerator_total = sum(numerator for numerator, _denominator in clusters)
+            ratio = numerator_total / denominator_total
+            cluster_count = len(clusters)
+            mean_denominator = denominator_total / cluster_count
+            influence = np.asarray([
+                (numerator - ratio * denominator) / mean_denominator
+                for numerator, denominator in clusters
+            ], dtype=np.float64)
+            influence_std = (
+                float(influence.std(ddof=1)) if cluster_count > 1 else 0.0
+            )
+            standard_error = (
+                influence_std / math.sqrt(cluster_count)
+                if cluster_count > 1 else 0.0
+            )
+            half_width = 1.96 * standard_error
+            result.append({
+                "method": method,
+                "variant": variant,
+                "metric": metric,
+                "n": cluster_count,
+                "mean": float(ratio),
+                "influence_std": influence_std,
+                "standard_error": standard_error,
+                "ci95_low": float(ratio - half_width),
+                "ci95_high": float(ratio + half_width),
+                "ci_supported": cluster_count >= 2,
+                "aggregation": "ratio_of_sums_cluster_delta",
+                "numerator_metric": numerator_name,
+                "denominator_metric": denominator_name,
+                "numerator_total": float(numerator_total),
+                "denominator_total": float(denominator_total),
+            })
     return result
 
 
@@ -296,6 +382,23 @@ def _aggregate_training_replicas(
             ]
             if samples:
                 replica[key] = float(np.mean(samples))
+        for metric, (numerator_name, denominator_name) in RATIO_METRICS.items():
+            clusters = [
+                (float(value[numerator_name]), float(value[denominator_name]))
+                for value in values
+                if isinstance(value.get(numerator_name), (int, float))
+                and isinstance(value.get(denominator_name), (int, float))
+                and math.isfinite(float(value[numerator_name]))
+                and math.isfinite(float(value[denominator_name]))
+                and float(value[denominator_name]) > 0.0
+            ]
+            denominator_total = sum(
+                denominator for _numerator, denominator in clusters
+            )
+            if denominator_total > 0.0:
+                replica[metric] = sum(
+                    numerator for numerator, _denominator in clusters
+                ) / denominator_total
         replica_rows.append(replica)
 
     grouped: dict[tuple[str, str], list[dict[str, object]]] = {}
@@ -357,6 +460,7 @@ def _run_baselines(config: ConstructionExperimentConfig) -> list[dict[str, objec
                 "variant": name,
                 "seed": seed,
                 **_numeric_metrics(dict(outcome.metrics)),
+                "event_trace": _event_trace_records(outcome.event_trace),
                 "wall_seconds": perf_counter() - started,
             })
     return rows
@@ -728,6 +832,7 @@ def evaluate_checkpoint(
             "selected_candidates": _selected_candidate_records(
                 outcome.selected_candidates, candidates
             ),
+            "event_trace": _event_trace_records(outcome.event_trace),
             "checkpoint_sha256": checkpoint_sha256(checkpoint),
             "checkpoint_state": "best" if use_best and loaded.best_policy_state_dict else "final",
             "wall_seconds": perf_counter() - started,
@@ -1078,15 +1183,17 @@ def _manifest(
             "averaged within seed; ci_supported=false when n<2"
         ),
         "ci_estimand": (
-            "expected performance over training randomness on held-out "
-            "evaluation seeds"
+            "performance over held-out evaluation seeds, conditional on the "
+            "fixed averaged ensemble of supplied training replicas"
         ),
         "training_replica_uncertainty": (
-            "reported separately in training_replica_aggregate"
+            "descriptive dispersion across supplied replicas is reported "
+            "separately in training_replica_aggregate; it is not combined "
+            "with the primary conditional CI"
         ),
         "legacy_baseline_note": (
             "QDDCA and QCAST reproductions remain available separately; their "
-            "legacy action spaces are not mixed into this construction-SMDP table."
+            "legacy action spaces are not mixed into this construction-event table."
         ),
         "config": asdict(config),
     }
@@ -1133,7 +1240,14 @@ def write_results(result: dict[str, object], output: Path) -> tuple[Path, Path]:
     with temporary_csv.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
-        writer.writerows(rows)
+        writer.writerows({
+            key: (
+                json.dumps(value, sort_keys=True, separators=(",", ":"))
+                if isinstance(value, (dict, list, tuple))
+                else value
+            )
+            for key, value in row.items()
+        } for row in rows)
     temporary_csv.replace(csv_path)
     return output, csv_path
 

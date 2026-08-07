@@ -103,14 +103,28 @@ manifest. All experiment parameters can also be supplied as JSON through
 `--config`; the `manifest.config` object in a previous run result is accepted
 directly for reproduction.
 
-The primary CI is explicitly the expected performance over training randomness
-on held-out evaluation seeds (replicas are averaged within each evaluation
-seed). A separate `training_replica_aggregate` reports dispersion across
-independently trained replicas, so these uncertainty questions are not
-conflated.
+The primary CI measures performance over held-out evaluation seeds conditional
+on the fixed averaged ensemble of supplied training replicas. Replicas are
+averaged within each evaluation seed. A separate
+`training_replica_aggregate` reports descriptive dispersion across the
+supplied independently trained replicas; it is not combined into the primary
+conditional CI.
+
+Rows also preserve selected candidates and neutral physical event traces.
+Physical failure, backend rejection, fidelity rejection, expiration,
+post-completion validation failure, and executor launch rejection remain
+separate counts. Derived rates use ratio-of-sums over evaluation-seed clusters;
+zero-denominator clusters are omitted for that rate, and cluster influence/
+delta intervals are reported. The expiration metric is an event density per
+physical memory-unit-slot, not an intrinsic hazard. Admission and execution
+mask-pruning fractions describe different policy stages and are absent for
+fixed baselines where no corresponding learned-action mask exists.
 
 The harness keeps QDDCA and QCAST reproductions separate because their legacy
-action spaces are not the construction-SMDP action space used by this table.
+action spaces are not the construction-event action space used by this table.
+The fully observed SMDP interpretation is conditional on the documented
+Snapshot Sufficiency Assumption; the current Torch encoder uses a lossy
+information-state projection of the neutral environment snapshot.
 Confidence intervals use evaluation seeds as the independent units; repeated
 training replicas are averaged within each evaluation seed before aggregation.
 The `no_capacity_context` ablation removes only the observation feature; the

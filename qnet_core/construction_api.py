@@ -26,6 +26,10 @@ class RepairKind:
     REROUTE = "REROUTE"
 
 
+class ConstructionLaunchRejected(ValueError):
+    """Expected rejection of a submitted launch set by executor validation."""
+
+
 @dataclass(frozen=True)
 class ResourceDemand:
     """A canonical, additive resource-demand vector.
@@ -280,11 +284,12 @@ class ExecutionEventBatch:
 
 @dataclass(frozen=True)
 class ConstructionSnapshot:
-    """Complete planner-visible event-process state at one decision epoch.
+    """Planner-visible neutral event-process snapshot at one decision epoch.
 
     ``reservations`` includes both in-flight operation demands and resources
     held by resident logical segments.  ``backend_state`` contains immutable,
-    simulator-neutral summaries only.
+    simulator-neutral summaries only.  A backend must separately establish
+    whether those summaries are Markov-sufficient; this DTO does not assert it.
     """
 
     physical_time_ps: int

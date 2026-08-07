@@ -64,6 +64,21 @@ class ConstructionBatchEnvTests(unittest.TestCase):
             state = env.step(ready if ready else ())
         self.assertEqual(env.metrics()["completed_requests"], 1.0)
         self.assertEqual(env.metrics()["risk_count"], 0.0)
+        self.assertGreater(env.metrics()["peak_memory_usage"], 0.0)
+        self.assertEqual(
+            env.metrics()["peak_memory_usage"],
+            env.metrics()["peak_physical_memory_usage"],
+        )
+        self.assertGreaterEqual(
+            env.metrics()["peak_reserved_memory_units"],
+            env.metrics()["peak_physical_memory_usage"],
+        )
+        self.assertGreater(
+            env.metrics()["physical_memory_time_unit_ps"], 0.0
+        )
+        self.assertEqual(env.metrics()["physical_failure_count"], 0.0)
+        self.assertEqual(env.metrics()["fidelity_violation_count"], 0.0)
+        self.assertTrue(env.event_trace)
         self.assertEqual(
             state.info["cumulative_flow_cost_ps"],
             env.metrics()["censored_flow_time_ps"],
@@ -113,6 +128,9 @@ class ConstructionBatchEnvTests(unittest.TestCase):
             state.info["cumulative_flow_cost_ps"],
             env.metrics()["censored_flow_time_ps"],
         )
+        self.assertEqual(env.metrics()["fidelity_violation_count"], 1.0)
+        self.assertEqual(env.metrics()["fidelity_check_count"], 1.0)
+        self.assertEqual(env.metrics()["physical_failure_count"], 0.0)
         self.assertAlmostEqual(state.reward, -2.0)
 
     def test_metrics_does_not_settle_live_requests(self):

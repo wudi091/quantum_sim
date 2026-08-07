@@ -55,6 +55,10 @@ idempotent.
 
 Evaluation seeds are the independent units. The three trained replicas are
 averaged within each evaluation seed before confidence intervals are computed.
+The resulting primary CI is conditional on this fixed averaged ensemble; it
+does not integrate uncertainty over a hypothetical population of training
+seeds. `training_replica_aggregate` separately reports descriptive dispersion
+across the three supplied replicas.
 
 | Method | Completion rate | Censored flow-time (ps) | Risk count |
 |---|---:|---:|---:|
@@ -76,10 +80,34 @@ relative to split-balanced (95% CI `[-0.5088, -0.2468]`).
 
 Results are stored in `results/parallel-corridor-comparison30.json` and its
 CSV companion. The twelve frozen checkpoint evaluations are stored beside it.
-The trained-variant and fixed-baseline rows are independently reproducible via
-the formal `compare` CLI output
-`results/parallel-corridor-comparison30-formal.json`; the canonical table also
-includes the separately generated untrained control rows.
+The current formal `compare` CLI output is
+`results/parallel-corridor-comparison30-formal.json` with its CSV companion;
+it contains 510 rows across the 12 checkpoints and fixed baselines. The table
+above also includes separately generated untrained control rows that are not
+part of those 510 formal rows.
+
+## Telemetry and statistical semantics
+
+Each formal row includes the selected route/construction records and a neutral,
+machine-readable physical event trace. Memory telemetry distinguishes actual
+non-RAW SeQUeNCe memory occupancy from executor reservations and integrates
+physical memory-unit-ps at every SeQUeNCe memory-manager state transition.
+
+Failure counts are disjoint by interpretation: stochastic protocol failure,
+physical-backend rejection, fidelity rejection, expiration, post-completion
+validation failure, and executor launch rejection. Counts are not probabilities.
+Protocol-attempt and fidelity-check counts are exported as their denominators;
+aggregate rates are ratios of summed counts and exposures across evaluation-
+seed clusters, with zero-denominator clusters excluded only from that rate.
+Their confidence intervals use the evaluation-seed cluster influence/delta
+approximation.
+
+The expiration rate field is named
+`expiration_event_density_per_physical_memory_unit_slot`: it is an observed
+event density normalized by physical memory exposure, not an intrinsic memory
+hazard. Admission-mask and execution-mask pruning fractions refer to different
+decision stages and are not compared with fixed baselines, where those fields
+are not applicable.
 
 ## Claim boundary
 

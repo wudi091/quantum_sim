@@ -106,6 +106,22 @@ Implemented and tested:
   through the neutral executor contract and waits for it even when no
   operation is in flight. This keeps expiration events, settlement timestamps,
   and makespan consistent with the SeQUeNCe backend.
+- frozen RL and fixed-plan rows include machine-readable neutral event traces.
+  SeQUeNCe memory-manager RAW/OCCUPIED/ENTANGLED transitions feed exact
+  physical peak-memory and memory-time exposure telemetry without exposing
+  simulator objects to the planner. A staggered-protocol regression checks an
+  exact `60,000,040` memory-unit-ps exposure.
+- physical outcomes are separated into stochastic protocol failure,
+  physical-backend rejection, fidelity rejection, expiration,
+  post-completion validation failure, and executor launch rejection. Protocol
+  attempt and fidelity-check denominators are exported explicitly; backend
+  preparation refusals do not enter stochastic-failure numerators or protocol-
+  attempt denominators.
+- aggregate event rates use ratio-of-sums over evaluation-seed clusters and a
+  cluster influence/delta confidence interval. Zero-exposure clusters are
+  omitted only for the affected rate. The primary CI is conditional on the
+  fixed averaged ensemble of supplied training replicas; replica dispersion is
+  reported separately and is not folded into that CI.
 
 The current SeQUeNCe capability declaration is intentionally conservative:
 inter-epoch launch is enabled for protocol-compatible operations, while
@@ -126,7 +142,8 @@ The current parallel-corridor run trains three independent CAAPPO replicas for
 400 episodes each on the SeQUeNCe backend, with route-overlap, no-route-
 overlap, no-construction-choice, and no-route-choice variants. The frozen
 30-seed completion rates are 0.5389, 0.1722, 0.5722, and 0.1444 respectively;
-the split-balanced heuristic reaches 0.5500. This is evidence that the RL
+the split-balanced heuristic reaches 0.5500. The formal comparison contains 12
+frozen checkpoints and 510 evaluation rows. This is evidence that the RL
 policy uses the batch context, but it is not evidence of optimality or
 convergence; the strong split heuristic remains statistically indistinguishable
 from CAAPPO. The corrected result and claim boundary are recorded in
@@ -157,6 +174,14 @@ evaluator, request-level fidelity gate, deadline/expiration settlement, bounded
 nominal oracle, and reproducible sanity harness are implemented; mixed-protocol
 physical scheduling, converged training, and statistically supported paper
 claims remain outside the current claim.
+
+The neutral `ConstructionSnapshot` is an execution interface, not a proven
+Markov sufficient statistic for SeQUeNCe internals. The current backend exposes
+construction-level pending attempts and neutral timeline summaries, while the
+Torch encoder uses a further lossy projection of operation features and global
+counts. The paper may use the fully observed SMDP formalization only under the
+documented Snapshot Sufficiency Assumption; the current learned policy should
+otherwise be described as operating on a partially observed information state.
 
 Current regression commands, using the Conda environment
 `D:\\software\\miniconda3\\envs\\qnet312` (Python 3.12.13, SeQUeNCe 1.0.0):

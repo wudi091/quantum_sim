@@ -263,6 +263,10 @@ class ConstructionRegressionTests(unittest.TestCase):
             event for event in result.event_trace
             if event.failure_cause == "expiration"
         )
+        self.assertEqual(result.metrics["expiration_count"], 1.0)
+        self.assertGreater(result.metrics["peak_memory_usage"], 0.0)
+        self.assertNotIn("admission_mask_check_count", result.metrics)
+        self.assertNotIn("execution_mask_check_count", result.metrics)
         self.assertEqual(
             result.settlements[0].settlement_time, expiration.physical_time_ps
         )

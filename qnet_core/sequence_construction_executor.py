@@ -12,6 +12,7 @@ from typing import Iterable, Mapping
 
 from .command_api import ResourceClaim, SwapAction
 from .construction_api import (
+    ConstructionLaunchRejected,
     ConstructionDAG,
     ConstructionOperation,
     ConstructionSnapshot,
@@ -603,7 +604,15 @@ class SequenceConstructionExecutor:
 
     def launch(self, feasible_set: Iterable[ConstructionOperation]) -> tuple[str, ...]:
         operations = tuple(feasible_set)
-        self._validate_launch(operations)
+        try:
+            self._validate_launch(operations)
+            generation_ops = [
+                operation for operation in operations
+                if operation.kind == OperationKind.GEN
+            ]
+            generation_claims = self._generation_claims(generation_ops)
+        except ValueError as exc:
+            raise ConstructionLaunchRejected(str(exc)) from exc
         now = self.physical_time_ps
         available_at_launch = self._available_segment_ids()
         attempt_ids: dict[str, str] = {}
@@ -611,8 +620,6 @@ class SequenceConstructionExecutor:
             attempt = self._attempts.get(operation.op_id, 0) + 1
             attempt_ids[operation.op_id] = f"{operation.op_id}:attempt:{attempt}"
 
-        generation_ops = [operation for operation in operations if operation.kind == OperationKind.GEN]
-        generation_claims = self._generation_claims(generation_ops)
         prepared_generation_items: tuple[PreparedGeneration, ...] = ()
         prepared_generations: dict[ResourceClaim, PreparedGeneration] = {}
         prepared_swaps: list[PreparedSwap] = []
@@ -646,7 +653,7 @@ class SequenceConstructionExecutor:
                     swap_actions[operation.op_id], attempt_id
                 )
                 if swap is None:
-                    raise ValueError(
+                    raise ConstructionLaunchRejected(
                         f"physical backend rejected swap: {operation.op_id}"
                     )
                 prepared_swaps.append(swap)
@@ -784,6 +791,8 @@ class SequenceConstructionExecutor:
             outcomes = self.backend.finish_generation((pending.generation,)) if pending.generation else {}
             physical_pair_id = outcomes.get(claim) if claim is not None else None
             success = physical_pair_id is not None
+            if pending.generation is not None and pending.generation.failure_cause:
+                failure_cause = pending.generation.failure_cause
             if pending.generation is not None:
                 # The generation allocation is an atomic launch reservation;
                 # after the terminal event the resulting segments are owned by

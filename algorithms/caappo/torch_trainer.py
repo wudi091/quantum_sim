@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from qnet_core.construction_catalog import RouteConstructionCandidate
+from qnet_core.construction_api import ExecutionEvent
 from qnet_core.construction_decoder import CapacityFeasibilityOracle
 from qnet_core.joint_construction_gym import (
     JointConstructionBatchEnv,
@@ -32,6 +33,7 @@ class TorchEpisodeTrainingResult:
     metrics: dict[str, float]
     update_stats: TorchUpdateStats | None
     selected_candidates: tuple[tuple[str, str], ...]
+    event_trace: tuple[ExecutionEvent, ...]
 
 
 @dataclass(frozen=True)
@@ -43,7 +45,12 @@ class _Decision:
 
 
 class TorchCAAPPORolloutTrainer:
-    """Run masked PPO decisions through the SeQUeNCe-backed joint SMDP."""
+    """Run masked PPO on a SeQUeNCe-backed joint event environment.
+
+    The policy encoder consumes a lossy information-state projection. A fully
+    observed SMDP interpretation requires the separate snapshot-sufficiency
+    assumption documented by the research plan.
+    """
 
     def __init__(
         self,
@@ -262,13 +269,18 @@ class TorchCAAPPORolloutTrainer:
         env: JointConstructionBatchEnv,
         *,
         deterministic: bool,
-    ) -> tuple[JointStep, tuple[TorchRouteRecord, ...]]:
+    ) -> tuple[JointStep, tuple[TorchRouteRecord, ...], int, int]:
         state = env.reset()
         selected: dict[str, RouteConstructionCandidate] = {}
         samples = []
+        admission_mask_pruned_check_count = 0
+        admission_mask_check_count = 0
         request_order = tuple(sorted(env.admission_candidates))
         for request_index, request_id in enumerate(request_order):
             legal = env.legal_admission_candidates(request_id)
+            candidates = env.admission_candidates[request_id]
+            admission_mask_check_count += len(candidates)
+            admission_mask_pruned_check_count += len(candidates) - len(legal)
             if not legal:
                 raise ValueError(
                     f"no legal admission candidate for request {request_id}"
@@ -299,7 +311,12 @@ class TorchCAAPPORolloutTrainer:
             )
             for sample, legal in samples
         )
-        return state, records
+        return (
+            state,
+            records,
+            admission_mask_pruned_check_count,
+            admission_mask_check_count,
+        )
 
     def _discount(self, duration_ps: int, slot_duration_ps: int) -> float:
         slots = max(0.0, float(duration_ps) / max(slot_duration_ps, 1))
@@ -331,9 +348,14 @@ class TorchCAAPPORolloutTrainer:
                 self.dynamic_repair_construction_kinds
             ),
         )
-        state, route_records = self._select_routes(
-            env, deterministic=deterministic
-        )
+        (
+            state,
+            route_records,
+            admission_mask_pruned_check_count,
+            admission_mask_check_count,
+        ) = self._select_routes(env, deterministic=deterministic)
+        execution_mask_pruned_check_count = 0
+        execution_mask_check_count = 0
         decisions: list[_Decision] = []
         cumulative_risk = 0.0
 
@@ -380,6 +402,12 @@ class TorchCAAPPORolloutTrainer:
                 stop_legal=env.core.stop_legal(),
                 deterministic=deterministic,
             ).sample
+            execution_mask_pruned_check_count += (
+                operation_sample.execution_mask_pruned_check_count
+            )
+            execution_mask_check_count += (
+                operation_sample.execution_mask_check_count
+            )
             operation_by_id = {
                 operation.op_id: operation for operation in state.ready_operations
             }
@@ -400,7 +428,19 @@ class TorchCAAPPORolloutTrainer:
                 int(state.info.get("duration_ps", 0)),
             ))
 
-        metrics = env.metrics()
+        metrics = dict(env.metrics())
+        metrics["admission_mask_pruned_check_count"] = float(
+            admission_mask_pruned_check_count
+        )
+        metrics["admission_mask_check_count"] = float(
+            admission_mask_check_count
+        )
+        metrics["execution_mask_pruned_check_count"] = float(
+            execution_mask_pruned_check_count
+        )
+        metrics["execution_mask_check_count"] = float(
+            execution_mask_check_count
+        )
         episode_risk = float(metrics["risk_count"])
         if abs(cumulative_risk - episode_risk) > 1e-9:
             raise RuntimeError("transition risk accounting diverged from episode risk")
@@ -487,6 +527,7 @@ class TorchCAAPPORolloutTrainer:
                 (request_id, env.selected[request_id].candidate_id)
                 for request_id in sorted(env.selected)
             ),
+            event_trace=env.core.event_trace,
         )
 
     def train(

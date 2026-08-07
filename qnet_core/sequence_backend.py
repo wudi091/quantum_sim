@@ -47,6 +47,7 @@ class PreparedGeneration:
     pair_id: str
     context: tuple[object, ...] | None
     started_time_ps: int
+    failure_cause: str = ""
 
 
 @dataclass(frozen=True)
@@ -290,6 +291,11 @@ class SequenceBackend:
         for router in self.nodes.values():
             for memory in router.components[router.memo_arr_name]:
                 self._memory_owner_by_name[memory.name] = router
+        self._physical_memory_current_usage = 0
+        self._physical_memory_peak_usage = 0
+        self._physical_memory_time_unit_ps = 0
+        self._physical_memory_last_time_ps = self.physical_time_ps
+        self._install_memory_telemetry()
         self._edge_generation_probabilities = {
             edge: self._effective_generation_probability(edge)
             for edge in self._topology_edges
@@ -306,6 +312,56 @@ class SequenceBackend:
         """Current SeQUeNCe timeline timestamp in picoseconds."""
 
         return int(self.timeline.now())
+
+    def _flush_memory_telemetry(self) -> None:
+        now = self.physical_time_ps
+        if now < self._physical_memory_last_time_ps:
+            raise RuntimeError("SeQUeNCe memory telemetry time moved backwards")
+        self._physical_memory_time_unit_ps += (
+            self._physical_memory_current_usage
+            * (now - self._physical_memory_last_time_ps)
+        )
+        self._physical_memory_last_time_ps = now
+
+    def _record_memory_state_transition(
+        self,
+        old_state: str,
+        new_state: str,
+    ) -> None:
+        self._flush_memory_telemetry()
+        old_occupied = str(old_state).upper() != "RAW"
+        new_occupied = str(new_state).upper() != "RAW"
+        self._physical_memory_current_usage += (
+            int(new_occupied) - int(old_occupied)
+        )
+        if self._physical_memory_current_usage < 0:
+            raise RuntimeError("physical memory usage became negative")
+        self._physical_memory_peak_usage = max(
+            self._physical_memory_peak_usage,
+            self._physical_memory_current_usage,
+        )
+
+    def _install_memory_telemetry(self) -> None:
+        """Observe every SeQUeNCe memory-manager state transition."""
+
+        for router in self.nodes.values():
+            manager = router.resource_manager.memory_manager
+            original_update = manager.update
+
+            def tracked_update(
+                memory,
+                state,
+                *,
+                _manager=manager,
+                _original_update=original_update,
+            ):
+                old_state = str(
+                    _manager.get_info_by_memory(memory).state
+                )
+                _original_update(memory, state)
+                self._record_memory_state_transition(old_state, str(state))
+
+            manager.update = tracked_update
 
     def _event_seed(self, *parts: object) -> int:
         payload = "|".join(map(str, (self.spec.seed, *parts))).encode()
@@ -591,6 +647,8 @@ class SequenceBackend:
     def construction_state(self) -> tuple[tuple[str, object], ...]:
         """Return a side-effect-free neutral summary for construction DTOs."""
 
+        self._flush_memory_telemetry()
+
         node_memory = []
         for node, router in sorted(self.nodes.items()):
             counts: dict[str, int] = {}
@@ -635,6 +693,18 @@ class SequenceBackend:
                 for (u, v), amount in sorted(link_occupancy.items())
             )),
             ("node_memory", tuple(node_memory)),
+            (
+                "physical_memory_usage",
+                int(self._physical_memory_current_usage),
+            ),
+            (
+                "peak_physical_memory_usage",
+                int(self._physical_memory_peak_usage),
+            ),
+            (
+                "physical_memory_time_unit_ps",
+                int(self._physical_memory_time_unit_ps),
+            ),
             ("pair_reservations", tuple(pair_reservations)),
             ("physical_formalism", "bell_diagonal"),
             ("stochastic_model", "seeded_conditionally_independent_protocol_outcomes"),
@@ -864,13 +934,23 @@ class SequenceBackend:
                 pair_id = f"event-epr-{digest}"
                 if rejected:
                     prepared.append(PreparedGeneration(
-                        claim, allocation_id, pair_id, None, self.physical_time_ps
+                        claim,
+                        allocation_id,
+                        pair_id,
+                        None,
+                        self.physical_time_ps,
+                        "physical_backend_rejection",
                     ))
                     continue
                 context = self._prepare_generation(u, v, claim.lane, pair_id)
                 if context is None:
                     prepared.append(PreparedGeneration(
-                        claim, allocation_id, pair_id, None, self.physical_time_ps
+                        claim,
+                        allocation_id,
+                        pair_id,
+                        None,
+                        self.physical_time_ps,
+                        "physical_backend_rejection",
                     ))
                     continue
                 pending_edges[edge] = pending_edges.get(edge, 0) + 1

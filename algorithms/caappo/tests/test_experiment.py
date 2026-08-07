@@ -1,3 +1,6 @@
+import csv
+import json
+import tempfile
 import unittest
 from collections import Counter
 from pathlib import Path
@@ -6,17 +9,42 @@ from algorithms.caappo.experiment import (
     CAAPPOVariant,
     ConstructionExperimentConfig,
     _aggregate,
+    _aggregate_training_replicas,
     _best_validation,
     _parse_checkpoint_specs,
     _run_baselines,
     _training_episode_seed,
     run_experiment,
+    write_results,
 )
 from qnet_core.scenario import ScenarioConfig
 from qnet_core.spec import PhysicalConfig
 
 
 class ConstructionExperimentTests(unittest.TestCase):
+    def test_csv_structured_fields_are_json_encoded(self):
+        result = {
+            "rows": [{
+                "method": "test",
+                "event_trace": [{"failure_cause": "expiration"}],
+                "selected_candidates": [{"candidate_id": "c0"}],
+            }],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            _json_path, csv_path = write_results(
+                result, Path(directory) / "result.json"
+            )
+            with csv_path.open(newline="", encoding="utf-8") as handle:
+                row = next(csv.DictReader(handle))
+        self.assertEqual(
+            json.loads(row["event_trace"])[0]["failure_cause"],
+            "expiration",
+        )
+        self.assertEqual(
+            json.loads(row["selected_candidates"])[0]["candidate_id"],
+            "c0",
+        )
+
     def test_checkpoint_specs_reject_exact_duplicates(self):
         self.assertEqual(
             _parse_checkpoint_specs(["main=results/main.pt"]),
@@ -104,6 +132,62 @@ class ConstructionExperimentTests(unittest.TestCase):
         self.assertEqual(metric["n"], 2)
         self.assertEqual(metric["mean"], 2.5)
 
+    def test_rate_aggregate_uses_clustered_ratio_of_sums(self):
+        rows = [
+            {
+                "method": "fixed_baseline",
+                "variant": "test",
+                "seed": 1,
+                "physical_failure_count": 1.0,
+                "physical_protocol_attempt_count": 1.0,
+            },
+            {
+                "method": "fixed_baseline",
+                "variant": "test",
+                "seed": 2,
+                "physical_failure_count": 0.0,
+                "physical_protocol_attempt_count": 9.0,
+            },
+            {
+                "method": "fixed_baseline",
+                "variant": "test",
+                "seed": 3,
+                "physical_failure_count": 0.0,
+                "physical_protocol_attempt_count": 0.0,
+            },
+        ]
+
+        aggregate = _aggregate(rows)
+
+        rate = next(row for row in aggregate if row["metric"] == "physical_failure_rate")
+        self.assertAlmostEqual(rate["mean"], 0.1)
+        self.assertEqual(rate["n"], 2)
+        self.assertEqual(rate["aggregation"], "ratio_of_sums_cluster_delta")
+        self.assertEqual(rate["denominator_total"], 10.0)
+        self.assertIn("influence_std", rate)
+        self.assertIn("standard_error", rate)
+        self.assertNotIn("std", rate)
+
+    def test_training_replica_aggregate_includes_ratio_metrics(self):
+        rows = [
+            {
+                "method": "torch_caappo",
+                "variant": "test",
+                "seed": evaluation_seed,
+                "training_seed": training_seed,
+                "physical_failure_count": float(training_seed - 1),
+                "physical_protocol_attempt_count": 2.0,
+            }
+            for training_seed in (1, 2)
+            for evaluation_seed in (101, 102)
+        ]
+
+        aggregate = _aggregate_training_replicas(rows)
+
+        rate = next(row for row in aggregate if row["metric"] == "physical_failure_rate")
+        self.assertEqual(rate["n"], 2)
+        self.assertAlmostEqual(rate["mean"], 0.25)
+
     def test_seeded_harness_reports_rows_and_confidence_intervals(self):
         config = ConstructionExperimentConfig(
             scenario=ScenarioConfig(
@@ -148,9 +232,54 @@ class ConstructionExperimentTests(unittest.TestCase):
             "p95_completion_latency_ps",
             "risk_count",
             "makespan_ps",
+            "peak_memory_usage",
+            "peak_physical_memory_usage",
+            "peak_reserved_memory_units",
+            "physical_memory_time_unit_slots",
+            "expiration_count",
+            "fidelity_violation_count",
+            "fidelity_check_count",
+            "physical_failure_count",
+            "physical_backend_rejection_count",
+            "post_completion_validation_failure_count",
+            "generation_event_count",
+            "generation_protocol_attempt_count",
+            "swap_protocol_attempt_count",
+            "physical_protocol_attempt_count",
+            "executor_rejection_count",
+            "executor_launch_batch_attempt_count",
         }
         self.assertTrue(all(
             primary.issubset(row)
+            for row in result["rows"]
+            if row["method"] != "nominal_oracle"
+        ))
+        rl_rows = [
+            row for row in result["rows"]
+            if row["method"] == "torch_caappo"
+        ]
+        baseline_rows = [
+            row for row in result["rows"]
+            if row["method"] == "fixed_baseline"
+        ]
+        self.assertTrue(all(
+            "admission_mask_check_count" in row
+            and "execution_mask_check_count" in row
+            for row in rl_rows
+        ))
+        self.assertTrue(all(
+            "admission_mask_check_count" not in row
+            and "execution_mask_check_count" not in row
+            for row in baseline_rows
+        ))
+        aggregate_metrics = {row["metric"] for row in result["aggregate"]}
+        self.assertIn("physical_failure_rate", aggregate_metrics)
+        self.assertIn(
+            "expiration_event_density_per_physical_memory_unit_slot",
+            aggregate_metrics,
+        )
+        self.assertTrue(all(
+            isinstance(row["event_trace"], list)
             for row in result["rows"]
             if row["method"] != "nominal_oracle"
         ))

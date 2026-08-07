@@ -137,6 +137,8 @@ class TorchCAAPPOTests(unittest.TestCase):
         ).sample
         self.assertEqual(sample.selected_indices, (0,))
         self.assertEqual(sample.legal_indices, (0,))
+        self.assertEqual(sample.execution_mask_pruned_check_count, 1)
+        self.assertEqual(sample.execution_mask_check_count, 2)
         evaluated = policy.evaluate_operation_log_probability(sample)
         self.assertAlmostEqual(
             sample.log_probability, float(evaluated.detach().item()), places=6

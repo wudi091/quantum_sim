@@ -11,13 +11,49 @@ from qnet_core.construction_api import (
     ResourceDemand,
 )
 from qnet_core.construction_decoder import CapacityFeasibilityOracle
+from qnet_core.construction_metrics import execution_event_metrics
 from qnet_core.construction_plans import balanced_path_dag, left_deep_path_dag
-from qnet_core.sequence_backend import SequenceBackend
+from qnet_core.sequence_backend import PreparedGeneration, SequenceBackend
 from qnet_core.sequence_construction_executor import SequenceConstructionExecutor
 from qnet_core.spec import EpisodeSpec, PhysicalConfig
 
 
 class SequenceConstructionExecutorTests(unittest.TestCase):
+    def test_backend_preparation_rejection_is_not_stochastic_failure(self):
+        backend = self._backend()
+        dag = left_deep_path_dag("r", (0, 1))
+        executor = SequenceConstructionExecutor(
+            (dag,), backend, self._capacities(), horizon_ps=200_000
+        )
+
+        def reject_generation(claims, allocation_id):
+            return tuple(
+                PreparedGeneration(
+                    claim,
+                    allocation_id,
+                    f"rejected-{index}",
+                    None,
+                    backend.physical_time_ps,
+                    "physical_backend_rejection",
+                )
+                for index, claim in enumerate(claims)
+            )
+
+        with patch.object(
+            backend, "begin_generation", side_effect=reject_generation
+        ):
+            executor.launch(executor.ready_operations())
+            batch = executor.advance_to_next_event()
+
+        self.assertEqual(batch.events[0].failure_cause,
+                         "physical_backend_rejection")
+        metrics = execution_event_metrics(batch.events)
+        self.assertEqual(metrics["physical_backend_rejection_count"], 1.0)
+        self.assertEqual(metrics["physical_failure_count"], 0.0)
+        self.assertEqual(metrics["generation_event_count"], 1.0)
+        self.assertEqual(metrics["generation_protocol_attempt_count"], 0.0)
+        self.assertEqual(metrics["physical_protocol_attempt_count"], 0.0)
+
     @staticmethod
     def _backend() -> SequenceBackend:
         return SequenceBackend(EpisodeSpec(

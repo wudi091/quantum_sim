@@ -40,11 +40,13 @@ class JointStep:
 
 
 class JointConstructionBatchEnv:
-    """Event SMDP with an explicit joint ``(path, construction)`` admission.
+    """Event environment with explicit joint ``(path, construction)`` admission.
 
     Admission is a single vector action selecting one catalogue candidate per
     request. Operation-set actions then run through the event-driven
-    construction environment.
+    construction environment. It admits a fully observed SMDP interpretation
+    only when the backend snapshot satisfies the documented sufficiency
+    contract; policies may consume a lossy information-state projection.
     """
 
     def __init__(
@@ -775,7 +777,29 @@ class JointConstructionBatchEnv:
                 "delivered_pairs": 0.0,
                 "completion_rate": 0.0,
                 "censored_flow_time_ps": 0.0,
+                "mean_censored_latency_ps": 0.0,
+                "p95_completion_latency_ps": 0.0,
                 "risk_count": 0.0,
                 "event_count": 0.0,
+                "makespan_ps": 0.0,
+                "peak_memory_usage": 0.0,
+                "peak_physical_memory_usage": 0.0,
+                "peak_reserved_memory_units": 0.0,
+                "physical_memory_time_unit_ps": 0.0,
+                "physical_memory_time_unit_slots": 0.0,
+                "expiration_count": 0.0,
+                "fidelity_violation_count": 0.0,
+                "physical_failure_count": 0.0,
+                "physical_backend_rejection_count": 0.0,
+                "post_completion_validation_failure_count": 0.0,
+                "generation_event_count": 0.0,
+                "generation_protocol_attempt_count": 0.0,
+                "swap_protocol_attempt_count": 0.0,
+                "physical_protocol_attempt_count": 0.0,
+                "fidelity_check_count": 0.0,
+                "generation_physical_failure_count": 0.0,
+                "swap_physical_failure_count": 0.0,
+                "executor_launch_batch_attempt_count": 0.0,
+                "executor_rejection_count": 0.0,
             }
         return self._core.metrics()

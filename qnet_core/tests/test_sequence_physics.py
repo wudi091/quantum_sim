@@ -1,10 +1,76 @@
 import unittest
 
+from qnet_core.command_api import ResourceClaim
 from qnet_core.sequence_backend import SequenceBackend
 from qnet_core.spec import EpisodeSpec, PhysicalConfig
 
 
 class SequencePhysicsTests(unittest.TestCase):
+    def test_memory_exposure_tracks_staggered_physical_transitions_exactly(self):
+        backend = SequenceBackend(EpisodeSpec(
+            seed=15,
+            nodes=(0, 1, 2, 3),
+            edges=((0, 1), (2, 3)),
+            requests=(),
+            horizon=40,
+            physical=PhysicalConfig(
+                generation_probability=1.0,
+                detector_efficiency=0.0,
+                memory_capacity=1,
+                node_memory_capacity=1,
+                quantum_distance_m=1000.0,
+            ),
+        ))
+        first = backend.begin_generation(
+            (ResourceClaim(0, 1, 0),), "first"
+        )
+        backend.advance_physical_to(1_000_000, synchronize=False)
+        second = backend.begin_generation(
+            (ResourceClaim(2, 3, 0),), "second"
+        )
+
+        backend.run_prepared_protocols(first + second)
+        backend.finish_generation(first + second)
+        state = dict(backend.construction_state())
+
+        self.assertEqual(state["physical_memory_usage"], 0)
+        self.assertEqual(state["peak_physical_memory_usage"], 4)
+        self.assertEqual(
+            state["physical_memory_time_unit_ps"], 60_000_040
+        )
+
+    def test_generation_preparation_rejection_has_explicit_cause(self):
+        backend = SequenceBackend(EpisodeSpec(
+            seed=16,
+            nodes=(0, 1, 2),
+            edges=((0, 1), (1, 2)),
+            requests=(),
+            horizon=2,
+            physical=PhysicalConfig(
+                generation_probability=1.0,
+                memory_capacity=2,
+                node_memory_capacity=1,
+                quantum_distance_m=1.0,
+            ),
+        ))
+
+        prepared = backend.begin_generation(
+            (ResourceClaim(0, 1, 0), ResourceClaim(1, 2, 0)),
+            "capacity-test",
+        )
+
+        self.assertEqual(len(prepared), 2)
+        self.assertEqual(
+            sum(item.failure_cause == "physical_backend_rejection"
+                for item in prepared),
+            1,
+        )
+        self.assertEqual(
+            sum(item.context is not None for item in prepared),
+            1,
+        )
+        backend.cancel_generation(prepared)
+
     def test_sequence_entities_and_timeline_expiration(self):
         from sequence.topology.node import BSMNode, QuantumRouter
 

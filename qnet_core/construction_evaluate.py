@@ -5,9 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Mapping
 
-from .construction_api import ExecutionEvent
+from .construction_api import ConstructionLaunchRejected, ExecutionEvent
 from .construction_catalog import RouteConstructionCandidate
-from .construction_metrics import RequestSettlement, censored_flow_time
+from .construction_metrics import (
+    MemoryTelemetry,
+    RequestSettlement,
+    censored_flow_time,
+    execution_event_metrics,
+)
 from .runtime import make_sequence_construction_executor
 from .spec import EpisodeSpec
 
@@ -50,6 +55,15 @@ def run_joint_plan_baseline(
     delivered_segments = {request.id: set() for request in spec.requests}
     settled: dict[str, RequestSettlement] = {}
     event_trace: list[object] = []
+    memory_telemetry = MemoryTelemetry()
+    executor_launch_batch_attempt_count = 0
+    executor_rejection_count = 0
+    launch_rejection_counter = 0
+
+    def observe_memory_usage() -> None:
+        memory_telemetry.observe(executor.snapshot())
+
+    observe_memory_usage()
 
     def arrival_ps(request_id: str) -> int:
         return requests[request_id].arrival * spec.physical.slot_duration_ps
@@ -87,6 +101,33 @@ def run_joint_plan_baseline(
             )
             event_trace.append(event)
             settle_failure(request_id, time_ps)
+
+    def append_launch_rejections(operations) -> None:
+        nonlocal launch_rejection_counter
+        snapshot = executor.snapshot()
+        by_request = {}
+        for operation in operations:
+            by_request.setdefault(operation.request_id, operation)
+        for request_id, operation in sorted(by_request.items()):
+            launch_rejection_counter += 1
+            event = ExecutionEvent(
+                event_id=f"launch-rejection-{launch_rejection_counter:08d}",
+                operation_id=operation.op_id,
+                request_id=request_id,
+                attempt_id=(
+                    f"{operation.op_id}:launch-rejection:"
+                    f"{launch_rejection_counter}"
+                ),
+                event_kind="launch_rejection",
+                physical_time_ps=executor.physical_time_ps,
+                success=False,
+                failure_cause="executor_launch_rejection",
+                in_flight_operation_ids=tuple(
+                    item.operation_id for item in snapshot.in_flight
+                ),
+            )
+            event_trace.append(event)
+            settle_failure(request_id, executor.physical_time_ps)
 
     def process_events(events) -> None:
         for event in events:
@@ -126,6 +167,7 @@ def run_joint_plan_baseline(
         # event batch to prevent late outputs from retaining capacity.
         for request_id in settled:
             executor.release_request(request_id)
+        observe_memory_usage()
 
     def pack_ready(operations):
         snapshot = executor.snapshot()
@@ -164,7 +206,14 @@ def run_joint_plan_baseline(
         if ready:
             packed = pack_ready(ready)
             if packed:
-                executor.launch(packed)
+                executor_launch_batch_attempt_count += 1
+                try:
+                    executor.launch(packed)
+                except ConstructionLaunchRejected:
+                    executor_rejection_count += 1
+                    append_launch_rejections(packed)
+                    continue
+                observe_memory_usage()
                 continue
             if not executor.has_in_flight:
                 # A physically unavailable operation is a terminal failed
@@ -182,6 +231,7 @@ def run_joint_plan_baseline(
             boundary = min((horizon_ps, *future_deadlines))
             batch = executor.advance_to_next_event(boundary_ps=boundary)
             event_trace.extend(batch.events)
+            observe_memory_usage()
             process_events(batch.events)
             append_due_deadlines(executor.physical_time_ps)
             continue
@@ -203,6 +253,7 @@ def run_joint_plan_baseline(
             target = min(horizon_ps, *future_boundaries)
             batch = executor.wait_until(target)
             event_trace.extend(batch.events)
+            observe_memory_usage()
             process_events(batch.events)
             append_due_deadlines(executor.physical_time_ps)
             continue
@@ -223,6 +274,10 @@ def run_joint_plan_baseline(
     ]
     flow_time = censored_flow_time(settlements, horizon_ps)
     completed = sum(settlement.success for settlement in settlements)
+    event_metrics = execution_event_metrics(event_trace)
+    memory_metrics = memory_telemetry.metrics(
+        spec.physical.slot_duration_ps
+    )
     metrics = {
         "completed_requests": float(completed),
         "delivered_pairs": float(sum(len(values) for values in delivered_segments.values())),
@@ -233,5 +288,11 @@ def run_joint_plan_baseline(
         "risk_count": float(len(settlements) - completed),
         "makespan_ps": float(max((event.physical_time_ps for event in event_trace), default=0)),
         "event_count": float(len(event_trace)),
+        "executor_launch_batch_attempt_count": float(
+            executor_launch_batch_attempt_count
+        ),
+        "executor_rejection_count": float(executor_rejection_count),
+        **memory_metrics,
+        **event_metrics,
     }
     return ConstructionEvaluation(metrics, settlements, tuple(event_trace))

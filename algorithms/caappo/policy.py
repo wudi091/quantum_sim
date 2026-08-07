@@ -45,6 +45,8 @@ class PolicySample:
     repair_option_features: tuple[tuple[float, ...], ...] = ()
     state_snapshot: ConstructionSnapshot | None = None
     state_operations: tuple[ConstructionOperation, ...] = ()
+    execution_mask_pruned_check_count: int = 0
+    execution_mask_check_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -313,16 +315,25 @@ class CAAPPOPolicy:
         selected: list[ConstructionOperation] = []
         selected_indices: list[int] = []
         legal_indices: list[int] = []
-        seed_legal_indices = tuple(
-            index for index, operation in enumerate(ordered)
-            if oracle.can_add((), operation)
+        seed_legal_indices = (
+            tuple(
+                index for index, operation in enumerate(ordered)
+                if oracle.can_add((), operation)
+            )
+            if not stop_legal else ()
         )
         seed_index = -1
+        mask_pruned_check_count = 0
+        mask_check_count = 0
         log_probability = 0.0
         entropy = 0.0
         if not stop_legal:
             if not seed_legal_indices:
                 raise ValueError("no legal operation and STOP is not legal")
+            mask_check_count += len(ordered)
+            mask_pruned_check_count += (
+                len(ordered) - len(seed_legal_indices)
+            )
             seed_probabilities = _softmax(scores[list(seed_legal_indices)])
             seed_position = int(
                 np.argmax(seed_probabilities)
@@ -343,7 +354,9 @@ class CAAPPOPolicy:
 
         for index in candidate_indices:
             operation = ordered[index]
+            mask_check_count += 1
             if not oracle.can_add(selected, operation):
+                mask_pruned_check_count += 1
                 continue
             legal_indices.append(index)
             probability = self._sigmoid(float(scores[index]))
@@ -377,6 +390,8 @@ class CAAPPOPolicy:
             tuple(selected_indices),
             seed_legal_indices,
             seed_index,
+            execution_mask_pruned_check_count=mask_pruned_check_count,
+            execution_mask_check_count=mask_check_count,
         )
 
     def repair_sample(

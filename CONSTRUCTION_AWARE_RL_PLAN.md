@@ -18,7 +18,7 @@ action-rejection transition and is a future experiment, not a current result.
 
 修订后的方案保留一个主贡献。当前仓库已经实现 neutral DTO、事件驱动 executor、SeQUeNCe 物理适配器、NumPy reference CAAPPO、可运行的 PyTorch policy heads、bounded nominal oracle 和 seeded sanity harness；仍未完成的部分继续作为 paper-complete gates，不把当前实现写成完整 CCFA 系统：
 
-> 将批量量子纠缠路由建模为 construction-aware、事件驱动、受约束的 SMDP，并把动作定义为 construction DAG precedence frontier 与资源可行 concurrent-set family 的交集。
+> 在 Snapshot Sufficiency Assumption 下，将批量量子纠缠路由建模为 construction-aware、事件驱动、受约束的 SMDP，并把动作定义为 construction DAG precedence frontier 与资源可行 concurrent-set family 的交集；当前 CAAPPO 实现使用该环境快照的有损 information-state projection。
 
 当前环境检查结果：
 
@@ -58,7 +58,7 @@ Path-only routing 隐藏了 elementary EPR 生成批次、swap 依赖、swap 并
 | Audit issue | Resolution in this document | Status |
 |---|---|---|
 | Pairwise conflict cannot express finite capacity | Resource-demand vector, residual capacity, slot assignment and hyperedge semantics | Implemented for additive demands; physical scheduler remains conservative |
-| Markov state was underspecified | Full `ConstructionSnapshot`/`Z_k` sufficient-statistic contract | Implemented as a simulator-neutral reference snapshot |
+| Markov state was underspecified | Full `ConstructionSnapshot`/`Z_k` sufficient-statistic contract | Contract specified; sufficiency is not established for the current SeQUeNCe observation |
 | Route/repair/STOP transition was open | Event-typed route action, immutable prefix, explicit release and progress rules | Implemented for fixed catalogue admission and structured retry/reroute/drop |
 | Flow-time and discount were mixed | Finite-horizon undiscounted theorem; discounted variant separated | Fixed |
 | DROP conflicted with completion latency | Failed requests use horizon-censored completion time and receive a lump remaining-horizon penalty at settlement | Fixed |
@@ -73,7 +73,7 @@ Path-only routing 隐藏了 elementary EPR 生成批次、swap 依赖、swap 并
 
 论文工作名：**CAAPPO: Construction-Aware Precedence-Antichain Policy Optimization**。
 
-这里的 antichain 只指 construction DAG precedence frontier；实际动作是该 frontier 与 capacity/resource-feasible concurrent-set family 的交集。环境形式化为 construction-aware SMDP；CAAPPO 是其上的 centralized graph actor-critic 实现。
+这里的 antichain 只指 construction DAG precedence frontier；实际动作是该 frontier 与 capacity/resource-feasible concurrent-set family 的交集。在 Assumption 1 成立时，环境可形式化为 construction-aware SMDP；当前 CAAPPO 是在中性环境快照的有损 information-state projection 上运行的 centralized graph actor-critic，因此实现层按部分观测过程解释，不把 fully observed Markov 性当作既成结论。
 
 ### 3.1 Construction DAG
 
@@ -104,7 +104,7 @@ fidelity rule
 
 ### 3.2 State
 
-事件时刻 `t_k` 的完整执行快照为 `Z_k`，策略观测是该快照的结构化序列化：
+事件时刻 `t_k` 的理论完整状态为 `Z_k`。环境通过 `ConstructionSnapshot` 暴露 simulator-neutral DTO；只有 backend 给出 Assumption 1 所需的 sufficient summary 时，它才等价于完整 `Z_k`。当前 Torch encoder 只消费 operation/DAG 特征与少量全局计数，是该 DTO 的有损 information-state projection，而不是完整状态的结构化序列化：
 
 \[
 Z_k=(X_k,Q_k,G_k^{front},M_k,B_k,t_k),
@@ -120,20 +120,39 @@ Z_k=(X_k,Q_k,G_k^{front},M_k,B_k,t_k),
 
 节点 ID 只作为结构索引，不作为策略语义特征。图编码器使用 relation-aware message passing，关系包括 `connected_to`、`depends_on`、`consumes`、`owns` 和 `conflicts_with`。
 
-### 3.3 Joint route and construction decision
-
-路径和构造计划是一个按事件类型条件化的联合动作，而不是两个没有闭合语义的独立 head：
+当前实现使用 phase-specific information state。admission 阶段没有 `ConstructionSnapshot`；记其观测为 `O_k^{adm}`，包含 phase tag、当前 request/candidate set、已选择的 candidate prefix、preview resource usage 和 legal-candidate mask。execution/repair 阶段环境暴露中性 DTO `S_k=ConstructionSnapshot_k`。对应编码为
 
 \[
-\pi_\theta(a_k\mid Z_k)=
-\pi_{\mathrm{route}}(p_k\mid Z_k,e_k)\,
-\pi_{\mathrm{set}}(A_k\mid Z_k,e_k,p_k).
+I_k=
+\begin{cases}
+I_k^{adm}=g_{adm}(O_k^{adm}), & e_k=\mathrm{ADMISSION},\\
+I_k^{exec}=g_\psi(S_k), & e_k\in\{\mathrm{EXECUTION},\mathrm{REPAIR}\}.
+\end{cases}
 \]
 
-`e_k` 是事件类型：`ADMISSION`、`EXECUTION`、`REPAIR`、`TERMINAL`。
+由于 `g_{adm}` 和 `g_\psi` 都是有损投影，当前实现不假定 `I_k` 为 Markov sufficient statistic。Assumption 1 下的理论环境转移核仍写为 `P(Z_{k+1}\mid Z_k,a_k)`；下面的 actor 公式描述实际实现，因此条件于相应 phase information state。
+
+### 3.3 Joint route and construction decision
+
+路径和构造计划是按事件类型条件化的联合决策过程，而不是两个同时读取同一状态、却没有闭合转移语义的独立 head：
+
+\[
+\pi_\theta(a_k\mid I_k,e_k)=
+\begin{cases}
+\pi_{\mathrm{route}}(p_{k,j}\mid I_k^{adm}),
+& e_k=\mathrm{ADMISSION},\\
+\pi_{\mathrm{set}}(A_k\mid I_k^{exec},p_k),
+& e_k=\mathrm{EXECUTION},\\
+\pi_{\mathrm{repair}}(r_k\mid I_k^{exec},p_k),
+& e_k=\mathrm{REPAIR},\\
+1, & e_k=\mathrm{TERMINAL}.
+\end{cases}
+\]
+
+`e_k` 是事件类型：`ADMISSION`、`EXECUTION`、`REPAIR`、`TERMINAL`；`p_{k,j}` 是 canonical request order 中第 `j` 个自回归 admission choice，`r_k` 是 structured RETRY/REROUTE/DROP choice。
 
 - `ADMISSION`：按固定 canonical request order 自回归选择当前到达请求的 route skeleton，形成 route vector `p=(p_i)`；不开始物理 operation。
-- `EXECUTION`：route head 输出 `NOOP`，operation head 在已提交 route 和现有 logical segments 上选择 ready set。
+- `EXECUTION`：admission route vector 保持固定，operation head 在已提交 route 和现有 logical segments 上选择 ready set；这一阶段不再次调用 route head。
 - `REPAIR`：只能保留已完成或已启动 operation 形成的不可撤销前缀；in-flight operation 在第一版不允许被策略取消，必须等待其 terminal event；失败分支被标记为 dead，释放的 pair/resource 经过 executor 反馈后才能重新使用。`RETRY` 重建缺失前缀，`REROUTE` 从固定 catalogue 或 bounded topology-generated repair catalogue 选择替代 `(P,C)`，用显式 RELEASE 前缀释放旧 segment，废弃旧 DAG 的未提交后缀，并把替代计划重编号到单调递增的新 DAG version。每个 request 维护已尝试的 `(route, construction)` lineage，后续 reroute 不重复尝试同一计划，但允许同一路径的另一构造计划；任意无界路径合成仍是后续 gate。
 - `TERMINAL`：不再采样 action。
 
@@ -188,7 +207,7 @@ ready operations
 
 为避免同一集合的不同排列造成重复 credit assignment，使用稳定、全局唯一且与结构状态无关的 injective canonical key `kappa(o)`，例如由 `(request_id, DAG version, local operation ordinal, kind, endpoints)` 的结构化 tuple 派生，而不是由 route catalogue 枚举顺序派生。只允许按递增 key 解码；online repair 新增 operation 使用新的 DAG version 和 local ordinal。该 key 只用于动作表示，不输入图编码器，也不携带路由偏好。
 
-### 3.5 Event-driven SMDP transition
+### 3.5 Event-driven transition (SMDP under Assumption 1)
 
 策略提交 `A_k` 后，`ConstructionDAGExecutor` 原子地预留资源并启动可并行 operations。executor 聚合同一物理时间戳的 arrival、generation、swap、expiration 和 deadline events，然后推进 SeQUeNCe 到下一个会改变完整 `Z_k`、累计 reward 或未来 transition kernel 的时间戳；只有经过 backend 证明完全不影响这三者的内部事件才允许跳过。定义：
 
@@ -312,7 +331,7 @@ F(Z_k,a_k,Z_{k+1})=\Phi(Z_{k+1})-\Phi(Z_k).
 
 ## 4. 物理执行契约
 
-下面的契约是 CAAPPO 实现的边界。当前仓库已经实现这些 DTO 和两类 executor；其中 SeQUeNCe executor 是真实物理路径，deterministic executor 只作为 contract oracle。
+下面的契约是 CAAPPO 的目标实现边界。当前仓库已经实现这些 DTO 和两类 executor；其中 SeQUeNCe executor 是真实物理路径，deterministic executor 只作为 contract oracle。当前 SeQUeNCe snapshot 提供 construction-level pending attempts 和中性 backend 摘要，但尚未证明其内部 protocol phase/event 与 RNG/hazard 摘要满足完整 Markov sufficient-statistic contract。
 
 ```text
 ConstructionOperation
@@ -464,7 +483,11 @@ SeQUeNCe 负责全部 physical effects。executor 只把中立 operation 转成 
 在同一个 event-driven executor、route catalogue、seed protocol 和 action budget 下，分别去掉 DAG state、capacity context features、flow-time reward、dual constraint 和 potential shaping，测 throughput、latency、constraint violation、mask rejection 和 sample efficiency。capacity-safety ready-set mask remains mandatory in every policy variant; `no_capacity_context` removes only the learned capacity context features, so it is not a no-mask experiment. event-driven 与 atomic-slot 的比较单独作为环境语义对照，不与其他 ablation 混合解释。
 
 oracle 只用于小规模 deterministic nominal instances；随机 SeQUeNCe 结果不能被表述为 exact optimum。
-所有实验都记录 event trace、p95、peak memory、fidelity violation、expiration、mask rejection、executor rejection 和 stochastic physical failure。独立 evaluation seed 是主要统计单位；同一 evaluation seed 上的 training replicas 先求平均，再计算 CI。operation/attempt 派生的 common-random-number stream 只作为 paired variance-reduction 分析，并明确标注其策略间耦合。
+所有实验都记录 machine-readable event trace、p95、physical/reserved peak memory、physical memory-time exposure、fidelity violation、expiration、mask pruning、executor rejection、physical-backend rejection 和 stochastic physical failure。原始 count 是事件或检查次数，不直接解释为概率。派生率使用跨 evaluation-seed cluster 的 ratio-of-sums；分母为零的 cluster 对该率不提供信息并从该率估计中排除，置信区间使用 cluster influence/delta 近似。
+
+`expiration_event_density_per_physical_memory_unit_slot` 是每单位物理 memory-time exposure 的 expiration 事件密度，只用于同一物理配置下的资源暴露归一化比较，不能解释为内存的固有 hazard rate。`admission_mask_pruned_fraction` 和 `execution_mask_pruned_fraction` 分别度量 admission candidate checks 与 execution operation checks 的裁剪比例；两者阶段不同，不能彼此替代，也不能与没有学习动作 mask 的 fixed baselines 强行比较。
+
+独立 evaluation seed 是 primary CI 的 cluster；同一 evaluation seed 上的 supplied training replicas 先求平均。因此 primary CI 的 estimand 是“给定这组固定、已平均的 training-replica ensemble，在 held-out evaluation-seed 分布上的性能”，并不积分有限 training-seed uncertainty。`training_replica_aggregate` 仅单独报告这些 supplied replicas 的描述性离散度。operation/attempt 派生的 common-random-number stream 只作为 paired variance-reduction 分析，并明确标注其策略间耦合。
 
 ## 9. 审稿风险与必须补齐的证据
 
@@ -479,7 +502,7 @@ oracle 只用于小规模 deterministic nominal instances；随机 SeQUeNCe 结�
 
 修订后的文档已经消除了原审计中的理论过度声称和接口歧义。代码已经是可运行的 construction-aware CAAPPO reference 环境，但仍不能提前保证 CCFA 级别。论文贡献应谨慎写成：
 
-1. construction-aware batch routing 的问题与 SMDP 形式化；
+1. construction-aware batch routing 的问题，以及在 Assumption 1 下的 SMDP 形式化；
 2. 在固定候选 operation universe 和容量模型下的 resource-feasible ready-set 表示及其相对 soundness/completeness 证明；
 3. 在 SeQUeNCe 真实物理执行下，对 throughput、flow-time 和 fidelity constraints 的联合验证。
 
