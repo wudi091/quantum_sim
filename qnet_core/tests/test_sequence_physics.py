@@ -1,6 +1,6 @@
 import unittest
 
-from qnet_core.command_api import ResourceClaim
+from qnet_core.command_api import ResourceClaim, SwapAction
 from qnet_core.sequence_backend import SequenceBackend
 from qnet_core.spec import EpisodeSpec, PhysicalConfig
 
@@ -70,6 +70,49 @@ class SequencePhysicsTests(unittest.TestCase):
             1,
         )
         backend.cancel_generation(prepared)
+
+    def test_swapped_adjacent_pair_does_not_consume_elementary_link_capacity(self):
+        backend = SequenceBackend(EpisodeSpec(
+            seed=18,
+            nodes=(0, 1, 2),
+            edges=((0, 1), (1, 2), (0, 2)),
+            requests=(),
+            horizon=4,
+            physical=PhysicalConfig(
+                generation_probability=1.0,
+                swap_probability=1.0,
+                memory_capacity=1,
+                node_memory_capacity=3,
+                quantum_distance_m=1.0,
+            ),
+        ))
+        generated = backend.generate_claimed_pairs(
+            (ResourceClaim(0, 1, 0), ResourceClaim(1, 2, 0)),
+            "path",
+        )
+        left = generated[ResourceClaim(0, 1, 0)]
+        right = generated[ResourceClaim(1, 2, 0)]
+        assert left is not None and right is not None
+        backend.release_allocation("path")
+
+        prepared_swap = backend.begin_swap(
+            SwapAction("r0", 1, left, right),
+            "swap",
+        )
+        assert prepared_swap is not None
+        backend.run_prepared_protocols(swaps=(prepared_swap,))
+        swapped = backend.finish_swap(prepared_swap)
+        self.assertIsNotNone(swapped)
+        self.assertEqual(backend.resource(swapped).endpoints, (0, 2))
+        self.assertEqual(backend.edge_occupancy(0, 2), 0)
+
+        direct = backend.begin_generation(
+            (ResourceClaim(0, 2, 0),),
+            "direct",
+        )
+        self.assertEqual(direct[0].failure_cause, "")
+        self.assertIsNotNone(direct[0].context)
+        backend.cancel_generation(direct)
 
     def test_sequence_entities_and_timeline_expiration(self):
         from sequence.topology.node import BSMNode, QuantumRouter

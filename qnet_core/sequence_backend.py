@@ -828,7 +828,17 @@ class SequenceBackend:
     def _edge_occupancy(self, u: int, v: int) -> int:
         self._sync_pairs()
         edge = {u, v}
-        return sum(set(pair.endpoints) == edge for pair in self.pairs.values())
+        # ``memory_capacity`` and the planner's opaque ``link:u-v`` resource
+        # bound elementary EPR lanes on one physical topology edge.  A pair
+        # created by swapping is a long-range logical segment and consumes
+        # only its endpoint node memories, even when its endpoints happen to
+        # be adjacent in the physical topology.  Counting such a pair here
+        # would make the SeQUeNCe adapter stricter than the shared resource
+        # contract and can reject an otherwise feasible generation launch.
+        return sum(
+            pair.lane is not None and set(pair.endpoints) == edge
+            for pair in self.pairs.values()
+        )
 
     def _prepare_generation(
         self,
