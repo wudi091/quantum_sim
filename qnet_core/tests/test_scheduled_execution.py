@@ -17,6 +17,7 @@ from qnet_core.scheduled_execution import (
     ConstructionBatchSchedule,
     PersistentConstructionScheduler,
     ScheduledRequestPlan,
+    _in_flight_dependency_blocked_operation_ids,
     run_scheduled_construction_plan,
 )
 from qnet_core.spec import EpisodeSpec, PhysicalConfig
@@ -341,6 +342,178 @@ class ScheduledExecutionTests(unittest.TestCase):
         )
 
         self.assertEqual(scheduler._ready_due_operations(), (old,))
+
+    def test_inflight_ancestor_suppresses_duplicate_launch_overrun(self):
+        generation = ConstructionOperation(
+            "r0:gen",
+            "r0",
+            OperationKind.GEN,
+            output_segment_id="r0:elementary",
+            output_endpoints=(0, 1),
+        )
+        middle_swap = ConstructionOperation(
+            "r0:swap:middle",
+            "r0",
+            OperationKind.SWAP,
+            predecessors=(generation.op_id,),
+            input_segment_ids=(generation.output_segment_id,),
+            output_segment_id="r0:middle",
+            output_endpoints=(0, 2),
+        )
+        terminal_swap = ConstructionOperation(
+            "r0:swap:terminal",
+            "r0",
+            OperationKind.SWAP,
+            predecessors=(middle_swap.op_id,),
+            input_segment_ids=(middle_swap.output_segment_id,),
+            output_segment_id="r0:terminal",
+            output_endpoints=(0, 3),
+        )
+        operations = {
+            operation.op_id: operation
+            for operation in (generation, middle_swap, terminal_swap)
+        }
+
+        blocked = _in_flight_dependency_blocked_operation_ids(
+            {
+                middle_swap.op_id: middle_swap,
+                terminal_swap.op_id: terminal_swap,
+            },
+            operations,
+            {generation.op_id},
+        )
+
+        self.assertEqual(
+            blocked,
+            frozenset((middle_swap.op_id, terminal_swap.op_id)),
+        )
+
+    def test_unrelated_inflight_work_does_not_hide_launch_overrun(self):
+        running = ConstructionOperation(
+            "r0:gen",
+            "r0",
+            OperationKind.GEN,
+            output_segment_id="r0:segment",
+            output_endpoints=(0, 1),
+        )
+        due = ConstructionOperation(
+            "r1:gen",
+            "r1",
+            OperationKind.GEN,
+            output_segment_id="r1:segment",
+            output_endpoints=(2, 3),
+        )
+
+        blocked = _in_flight_dependency_blocked_operation_ids(
+            {due.op_id: due},
+            {running.op_id: running, due.op_id: due},
+            {running.op_id},
+        )
+
+        self.assertEqual(blocked, frozenset())
+
+    def test_inflight_predecessor_only_reports_completion_overrun(self):
+        spec = EpisodeSpec(
+            seed=1207,
+            nodes=(0, 1, 2),
+            edges=((0, 1), (1, 2)),
+            requests=(RequestSpec("r0", 0, 2, ttl=4),),
+            horizon=4,
+            physical=PhysicalConfig(
+                generation_probability=1.0,
+                swap_probability=1.0,
+                detector_efficiency=1.0,
+                bsm_success_probability=1.0,
+                classical_delay_ps=100_000,
+                quantum_distance_m=1.0,
+                slot_duration_ps=1_000,
+            ),
+        )
+        candidate = build_route_construction_catalogue(
+            spec.planning,
+            candidate_count=1,
+            construction_kinds=("balanced",),
+        )[0]
+        operation_slots = tuple(sorted(
+            (
+                operation.op_id,
+                0 if operation.kind == OperationKind.GEN else 1,
+            )
+            for operation in candidate.dag.operations
+        ))
+        plan = ScheduledRequestPlan(
+            request_id="r0",
+            candidate_id=candidate.candidate_id,
+            route_nodes=candidate.route_nodes,
+            construction_kind=candidate.construction_kind,
+            dag=candidate.dag,
+            terminal_segment_ids=candidate.all_terminal_segment_ids,
+            start_slot=0,
+            completion_slot=2,
+            operation_slots=operation_slots,
+        )
+        scheduler = PersistentConstructionScheduler(spec)
+        scheduler.submit((plan,))
+
+        update = scheduler.advance_to_slot(2)
+
+        codes = [violation.code for violation in update.violations]
+        self.assertIn("slot_completion_overrun", codes)
+        self.assertNotIn("slot_launch_overrun", codes)
+
+    def test_unrelated_inflight_operation_keeps_launch_overrun_hard(self):
+        spec = EpisodeSpec(
+            seed=1208,
+            nodes=(0, 1),
+            edges=((0, 1),),
+            requests=(
+                RequestSpec("r0", 0, 1, ttl=4),
+                RequestSpec("r1", 0, 1, ttl=4),
+            ),
+            horizon=4,
+            physical=PhysicalConfig(
+                generation_probability=1.0,
+                swap_probability=1.0,
+                detector_efficiency=1.0,
+                bsm_success_probability=1.0,
+                classical_delay_ps=100_000,
+                quantum_distance_m=1.0,
+                slot_duration_ps=1_000,
+            ),
+        )
+        candidates = build_route_construction_catalogue(
+            spec.planning,
+            candidate_count=1,
+            construction_kinds=("balanced",),
+        )
+        plans = []
+        operation_ids = {}
+        for candidate in candidates:
+            operation = candidate.dag.operations[0]
+            start_slot = 0 if candidate.request_id == "r0" else 1
+            operation_ids[candidate.request_id] = operation.op_id
+            plans.append(ScheduledRequestPlan(
+                request_id=candidate.request_id,
+                candidate_id=candidate.candidate_id,
+                route_nodes=candidate.route_nodes,
+                construction_kind=candidate.construction_kind,
+                dag=candidate.dag,
+                terminal_segment_ids=candidate.all_terminal_segment_ids,
+                start_slot=start_slot,
+                completion_slot=start_slot + 1,
+                operation_slots=((operation.op_id, start_slot),),
+            ))
+        scheduler = PersistentConstructionScheduler(spec)
+        scheduler.submit(tuple(sorted(plans, key=lambda plan: plan.request_id)))
+
+        update = scheduler.advance_to_slot(2)
+
+        launch_overruns = [
+            violation.operation_id
+            for violation in update.violations
+            if violation.code == "slot_launch_overrun"
+        ]
+        self.assertEqual(launch_overruns, [operation_ids["r1"]])
 
 
 if __name__ == "__main__":

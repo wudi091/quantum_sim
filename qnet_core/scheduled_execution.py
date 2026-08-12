@@ -188,6 +188,70 @@ class ScheduleViolation:
     detail: str = ""
 
 
+def _in_flight_dependency_blocked_operation_ids(
+    due_operations: Mapping[str, ConstructionOperation],
+    operation_by_id: Mapping[str, ConstructionOperation],
+    in_flight_operation_ids: set[str],
+) -> frozenset[str]:
+    """Return due operations delayed by an unfinished DAG ancestor.
+
+    A physical operation may cross a coarse planning-slot boundary.  Any
+    descendant whose nominal slot has also arrived is then unlaunchable because
+    its construction dependency is still executing, not because the scheduler
+    omitted ready work.  Classifying both descendants and the running ancestor
+    as launch/completion overruns double-counts that one physical delay.
+
+    Dependencies include explicit predecessor edges and implicit producer edges
+    induced by input segments.  The transitive walk is deliberate: several
+    nominal DAG levels can become due while one early SeQUeNCe operation remains
+    in flight.
+    """
+
+    if not due_operations or not in_flight_operation_ids:
+        return frozenset()
+    producer_by_segment = {
+        operation.output_segment_id: operation.op_id
+        for operation in operation_by_id.values()
+        if operation.output_segment_id is not None
+    }
+    dependencies_by_operation: dict[str, frozenset[str]] = {}
+    for operation_id, operation in operation_by_id.items():
+        dependencies = set(operation.predecessors)
+        dependencies.update(
+            producer_by_segment[segment_id]
+            for segment_id in operation.input_segment_ids
+            if segment_id in producer_by_segment
+        )
+        dependencies_by_operation[operation_id] = frozenset(dependencies)
+
+    memo: dict[str, bool] = {}
+
+    def has_in_flight_ancestor(operation_id: str, visiting: set[str]) -> bool:
+        cached = memo.get(operation_id)
+        if cached is not None:
+            return cached
+        if operation_id in visiting:
+            # ConstructionDAG validation rejects cycles.  Treat a defensive
+            # cycle as non-exempt so it cannot hide a real launch failure.
+            return False
+        visiting.add(operation_id)
+        dependencies = dependencies_by_operation.get(operation_id, frozenset())
+        blocked = bool(dependencies.intersection(in_flight_operation_ids)) or any(
+            has_in_flight_ancestor(predecessor, visiting)
+            for predecessor in dependencies
+            if predecessor in operation_by_id
+        )
+        visiting.remove(operation_id)
+        memo[operation_id] = blocked
+        return blocked
+
+    return frozenset(
+        operation_id
+        for operation_id in due_operations
+        if has_in_flight_ancestor(operation_id, set())
+    )
+
+
 @dataclass(frozen=True)
 class ScheduledConstructionEvaluation:
     metrics: Mapping[str, float]
@@ -813,28 +877,31 @@ class PersistentConstructionScheduler:
         while self.physical_time_ps < slot_end_ps:
             if not self._advance_once(slot_end_ps):
                 break
+        snapshot = self.executor.snapshot()
+        operation_by_id = {
+            operation.op_id: operation
+            for plan in self._active_plans.values()
+            for operation in plan.dag.operations
+        }
+        dependency_blocked = _in_flight_dependency_blocked_operation_ids(
+            self._due,
+            operation_by_id,
+            {item.operation_id for item in snapshot.in_flight},
+        )
         for operation in self._due.values():
             planned_slot = self._planned_slot_by_operation[operation.op_id]
-            if planned_slot <= slot:
+            if planned_slot <= slot and operation.op_id not in dependency_blocked:
                 self._add_violation(
                     "slot_launch_overrun",
                     planned_slot,
                     operation,
                     "operation was not launched before its slot boundary",
                 )
-        for in_flight in self.executor.snapshot().in_flight:
+        for in_flight in snapshot.in_flight:
             planned_slot = self._planned_slot_by_operation.get(in_flight.operation_id)
             if planned_slot is None or planned_slot > slot:
                 continue
-            operation = next(
-                (
-                    item
-                    for plan in self._active_plans.values()
-                    for item in plan.dag.operations
-                    if item.op_id == in_flight.operation_id
-                ),
-                None,
-            )
+            operation = operation_by_id.get(in_flight.operation_id)
             if operation is not None:
                 self._add_violation(
                     "slot_completion_overrun",
@@ -1205,9 +1272,23 @@ def run_scheduled_construction_plan(
                 if not advance_once(slot_end_ps):
                     break
 
+        snapshot = executor.snapshot() if not executor.terminated else None
+        dependency_blocked = _in_flight_dependency_blocked_operation_ids(
+            due,
+            operation_by_id,
+            (
+                set()
+                if snapshot is None
+                else {item.operation_id for item in snapshot.in_flight}
+            ),
+        )
         for operation in due.values():
             planned_slot = planned_slot_by_operation[operation.op_id]
-            if planned_slot <= slot and operation.op_id not in overdue_launch_recorded:
+            if (
+                planned_slot <= slot
+                and operation.op_id not in overdue_launch_recorded
+                and operation.op_id not in dependency_blocked
+            ):
                 overdue_launch_recorded.add(operation.op_id)
                 add_violation(
                     "slot_launch_overrun",
@@ -1215,8 +1296,8 @@ def run_scheduled_construction_plan(
                     operation,
                     "operation was not launched before its slot boundary",
                 )
-        if not executor.terminated:
-            for in_flight in executor.snapshot().in_flight:
+        if snapshot is not None:
+            for in_flight in snapshot.in_flight:
                 planned_slot = planned_slot_by_operation.get(in_flight.operation_id)
                 if (
                     planned_slot is not None
