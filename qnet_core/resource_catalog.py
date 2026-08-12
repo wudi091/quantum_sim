@@ -21,6 +21,12 @@ def build_resource_capacities(spec: EpisodeSpec) -> dict[str, int]:
         capacities[f"purify:{u}-{v}"] = 1
     for node in spec.nodes:
         capacities[f"bsm:{node}"] = 1
+        # SeQUeNCe swap protocols touch both outer endpoint memories as well
+        # as the middle-node BSM.  Two swaps sharing any of those physical
+        # nodes cannot execute concurrently, even when their BSM nodes differ.
+        # Exposing the same node mutex to planning prevents nominal same-slot
+        # schedules that the physical arbiter must later serialize.
+        capacities[f"swapnode:{node}"] = 1
         degree = sum(node in edge for edge in spec.edges)
         capacities[f"memory:{node}"] = (
             spec.physical.node_memory_capacity

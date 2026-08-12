@@ -129,7 +129,7 @@ class PhysicalValidationTests(unittest.TestCase):
             )),
         )
 
-    def test_sequence_serialization_stays_inside_the_coarse_swap_slot(self):
+    def test_planning_serializes_swaps_that_share_a_physical_node(self):
         episode, decoded = self._decoded()
 
         result = evaluate_decoded_physics(episode, decoded)
@@ -142,14 +142,23 @@ class PhysicalValidationTests(unittest.TestCase):
             for launch in result.launches
             if launch.planned_slot == 1 and ":swap:" in launch.operation_id
         ]
-        self.assertEqual(len(first_level_swaps), 2)
-        self.assertEqual(len({item.actual_time_ps for item in first_level_swaps}), 2)
-        self.assertTrue(all(
+        second_level_swaps = [
+            launch
+            for launch in result.launches
+            if launch.planned_slot == 2 and ":swap:" in launch.operation_id
+        ]
+        self.assertEqual(len(first_level_swaps), 1)
+        self.assertEqual(len(second_level_swaps), 1)
+        self.assertTrue(
             episode.physical.slot_duration_ps
-            <= item.actual_time_ps
+            <= first_level_swaps[0].actual_time_ps
             < 2 * episode.physical.slot_duration_ps
-            for item in first_level_swaps
-        ))
+        )
+        self.assertTrue(
+            2 * episode.physical.slot_duration_ps
+            <= second_level_swaps[0].actual_time_ps
+            < 3 * episode.physical.slot_duration_ps
+        )
 
     def test_repeated_physics_reports_retention_and_schedule_adherence(self):
         episode, decoded = self._decoded()

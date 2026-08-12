@@ -8,6 +8,7 @@ from qnet_core.construction_api import (
     ConstructionDAG,
     ConstructionOperation,
     OperationKind,
+    ResourceDemand,
 )
 from qnet_core.construction_catalog import (
     RouteConstructionCandidate,
@@ -25,6 +26,7 @@ def capacities(spec, *, memory=4):
         result[f"purify:{u}-{v}"] = 1
     for node in spec.nodes:
         result[f"bsm:{node}"] = 1
+        result[f"swapnode:{node}"] = 1
         result[f"memory:{node}"] = memory
     return result
 
@@ -39,7 +41,7 @@ class TimeExpansionTests(unittest.TestCase):
             horizon=horizon,
         )
 
-    def test_balanced_tree_finishes_before_left_deep_tree(self):
+    def test_shared_middle_node_serializes_balanced_tree(self):
         spec = self.path_spec()
         candidates = build_route_construction_catalogue(
             spec, candidate_count=1
@@ -48,14 +50,14 @@ class TimeExpansionTests(unittest.TestCase):
             candidate.construction_kind: build_nominal_schedule(candidate)
             for candidate in candidates
         }
-        self.assertEqual(schedules["balanced"].duration_slots, 3)
+        self.assertEqual(schedules["balanced"].duration_slots, 4)
         self.assertEqual(schedules["left_deep"].duration_slots, 4)
         balanced_swaps = {
             slot
             for op_id, slot in schedules["balanced"].operation_slots
             if ":swap:" in op_id
         }
-        self.assertEqual(balanced_swaps, {1, 2})
+        self.assertEqual(balanced_swaps, {1, 2, 3})
 
     def test_generation_holds_memory_until_the_swap_round(self):
         spec = PlanningSpec(
@@ -76,6 +78,9 @@ class TimeExpansionTests(unittest.TestCase):
         self.assertEqual(usage[("memory:1", 0)], 2)
         self.assertEqual(usage[("memory:1", 1)], 2)
         self.assertEqual(usage[("bsm:1", 1)], 1)
+        self.assertEqual(usage[("swapnode:0", 1)], 1)
+        self.assertEqual(usage[("swapnode:1", 1)], 1)
+        self.assertEqual(usage[("swapnode:2", 1)], 1)
 
     def test_disjoint_swap_nodes_use_independent_slot_resources(self):
         spec = PlanningSpec(
@@ -107,6 +112,8 @@ class TimeExpansionTests(unittest.TestCase):
         }
         self.assertEqual(first[("bsm:1", 1)], 1)
         self.assertEqual(second[("bsm:4", 1)], 1)
+        self.assertEqual(first[("swapnode:2", 1)], 1)
+        self.assertEqual(second[("swapnode:3", 1)], 1)
         self.assertNotIn(("bsm:4", 1), first)
         self.assertNotIn(("bsm:1", 1), second)
         self.assertFalse(any(
@@ -114,6 +121,38 @@ class TimeExpansionTests(unittest.TestCase):
             for schedule in schedules.values()
             for item in schedule.resource_usage
         ))
+
+    def test_swaps_sharing_an_outer_node_compete_for_one_slot_resource(self):
+        spec = PlanningSpec(
+            seed=21,
+            nodes=(0, 1, 2, 3, 4),
+            edges=((0, 1), (1, 2), (2, 3), (3, 4)),
+            requests=(
+                RequestSpec("r0", 0, 2, ttl=3),
+                RequestSpec("r1", 2, 4, ttl=3),
+            ),
+            horizon=3,
+        )
+        candidates = build_route_construction_catalogue(
+            spec,
+            candidate_count=1,
+            construction_kinds=("balanced",),
+        )
+        schedules = {
+            item.request_id: build_nominal_schedule(item)
+            for item in candidates
+        }
+        first = {
+            (item.resource_id, item.slot): item.amount
+            for item in schedules["r0"].resource_usage
+        }
+        second = {
+            (item.resource_id, item.slot): item.amount
+            for item in schedules["r1"].resource_usage
+        }
+
+        self.assertEqual(first[("swapnode:2", 1)], 1)
+        self.assertEqual(second[("swapnode:2", 1)], 1)
 
     def test_input_segments_create_dependencies_even_if_predecessors_are_omitted(self):
         operations = (
@@ -140,6 +179,12 @@ class TimeExpansionTests(unittest.TestCase):
                 input_segment_ids=("s0", "s1"),
                 output_segment_id="terminal",
                 output_endpoints=(0, 2),
+                resource_demand=ResourceDemand.from_mapping({
+                    "bsm:1": 1,
+                    "swapnode:0": 1,
+                    "swapnode:1": 1,
+                    "swapnode:2": 1,
+                }),
                 ordinal=2,
             ),
         )
@@ -169,7 +214,7 @@ class TimeExpansionTests(unittest.TestCase):
         for item in expanded.variables:
             starts.setdefault(item.construction_kind, []).append(item.start_slot)
             self.assertLessEqual(item.completion_slot, 6)
-        self.assertEqual(starts["balanced"], [2, 3])
+        self.assertEqual(starts["balanced"], [2])
         self.assertEqual(starts["left_deep"], [2])
 
     def test_optional_fidelity_estimates_filter_candidates(self):

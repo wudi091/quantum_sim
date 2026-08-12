@@ -497,6 +497,20 @@ class SequenceConstructionExecutor:
                     raise ValueError(
                         f"SWAP resource demand must reserve {expected_bsm}"
                     )
+                expected_swap_nodes = (
+                    *operation.output_endpoints,
+                    action.middle,
+                )
+                missing_swap_node = next((
+                    node
+                    for node in expected_swap_nodes
+                    if operation.resource_demand.get(f"swapnode:{node}") < 1
+                ), None)
+                if missing_swap_node is not None:
+                    raise ValueError(
+                        "SWAP resource demand must reserve every physical "
+                        f"node mutex; missing swapnode:{missing_swap_node}"
+                    )
             if operation.kind == OperationKind.PURIFY:
                 physical_ids = tuple(
                     self._physical_by_segment.get(segment_id)

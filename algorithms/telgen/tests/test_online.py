@@ -200,13 +200,27 @@ class OnlineTELGENTests(unittest.TestCase):
 
         overdue = tuple(controller.scheduler._due.values())
         self.assertEqual(len(overdue), 1)
-        self.assertEqual(dict(overdue[0].resource_demand.items()), {"bsm:1": 1})
+        self.assertEqual(
+            dict(overdue[0].resource_demand.items()),
+            {
+                "bsm:1": 1,
+                "swapnode:0": 1,
+                "swapnode:1": 1,
+                "swapnode:2": 1,
+            },
+        )
 
         reserved = controller._reserved_usage(14)
-        self.assertTrue(all(
-            reserved.get(("bsm:1", slot)) == 1
-            for slot in range(2, 14)
-        ))
+        for resource_id in (
+            "bsm:1",
+            "swapnode:0",
+            "swapnode:1",
+            "swapnode:2",
+        ):
+            self.assertTrue(all(
+                reserved.get((resource_id, slot)) == 1
+                for slot in range(2, 14)
+            ))
         _, decoded = controller._solve_decision(
             2,
             14,

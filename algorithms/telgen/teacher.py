@@ -375,7 +375,12 @@ class ConstructionAwareLPTeacher:
                     callback=callback,
                     options={
                         "presolve": False,
-                        "tol": self.tolerance,
+                        # SciPy's legacy IPM termination residual may land
+                        # slightly above the requested public feasibility
+                        # tolerance after row scaling.  Solve to a stricter
+                        # internal threshold so the returned trajectory obeys
+                        # the unscaled LP contract.
+                        "tol": self.tolerance * 0.25,
                         "maxiter": self.max_iterations,
                         "sparse": True,
                         "cholesky": False,
@@ -406,6 +411,12 @@ class ConstructionAwareLPTeacher:
             [_max_violation(lp, item) for item in primal_trajectory],
             dtype=float,
         )
+        if violation_trajectory[-1] > self.tolerance:
+            raise TeacherSolveError(
+                f"{lp.name} returned an infeasible primal: "
+                f"max violation {violation_trajectory[-1]:.3e} exceeds "
+                f"tolerance {self.tolerance:.3e}"
+            )
         return TeacherStageResult(
             stage_name=lp.name,
             solver_backend="trajectory_ipm",

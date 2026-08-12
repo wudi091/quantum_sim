@@ -105,13 +105,14 @@ class ConstructionContractTests(unittest.TestCase):
         self.assertEqual(executor.time, 0)
         self.assertEqual(executor.event_log, [])
 
-    def test_left_deep_and_balanced_same_path_have_distinct_event_traces(self):
+    def test_left_deep_and_balanced_remain_distinct_under_node_mutex(self):
         route = (0, 1, 2, 3, 4)
         capacities = {
             "link:0-1": 1, "link:1-2": 1, "link:2-3": 1, "link:3-4": 1,
             "genlane:0-1": 1, "genlane:1-2": 1,
             "genlane:2-3": 1, "genlane:3-4": 1,
             "bsm:1": 1, "bsm:2": 1, "bsm:3": 1,
+            **{f"swapnode:{node}": 1 for node in route},
             "memory:0": 2, "memory:1": 2, "memory:2": 2,
             "memory:3": 2, "memory:4": 2,
         }
@@ -119,7 +120,12 @@ class ConstructionContractTests(unittest.TestCase):
         def run(dag):
             executor = ConstructionDAGExecutor((dag,), capacities, seed=7, horizon_ps=30)
             while executor.ready_operations():
-                executor.launch(executor.ready_operations())
+                ready = executor.ready_operations()
+                selected = []
+                for operation in ready:
+                    if executor.oracle.can_add(selected, operation):
+                        selected.append(operation)
+                executor.launch(selected)
                 executor.advance_to_next_event()
             return executor
 
@@ -129,8 +135,11 @@ class ConstructionContractTests(unittest.TestCase):
         balanced_times = [event.physical_time_ps for event in balanced.event_log]
         self.assertEqual(left.event_log[-1].output_segment_id, "r:seg:left:3")
         self.assertEqual(balanced.event_log[-1].output_segment_id, "r:seg:balanced:2")
-        self.assertNotEqual(left_times, balanced_times)
-        self.assertGreater(left.event_log[-1].physical_time_ps, balanced.event_log[-1].physical_time_ps)
+        self.assertNotEqual(
+            [event.operation_id for event in left.event_log],
+            [event.operation_id for event in balanced.event_log],
+        )
+        self.assertEqual(left_times, balanced_times)
 
     def test_failed_branch_keeps_surviving_prefix_for_repair(self):
         generation = ConstructionOperation(

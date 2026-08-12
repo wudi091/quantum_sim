@@ -157,6 +157,29 @@ def _generation_operation(
     )
 
 
+def _swap_resource_demand(
+    left: int,
+    middle: int,
+    right: int,
+) -> ResourceDemand:
+    """Declare every physical-node mutex touched by one swap.
+
+    ``bsm`` identifies the middle-node measurement device.  The opaque
+    ``swapnode`` resources mirror SeQUeNCe's stricter protocol concurrency:
+    two swaps sharing either outer memory node or the middle BSM node cannot
+    execute concurrently.  Keeping both declarations in the neutral DTO lets
+    offline expansion, rolling reservations, and the physical executor use
+    one resource contract.
+    """
+
+    return ResourceDemand.from_mapping({
+        f"bsm:{middle}": 1,
+        f"swapnode:{left}": 1,
+        f"swapnode:{middle}": 1,
+        f"swapnode:{right}": 1,
+    })
+
+
 def swap_tree_path_dag(
     request_id: str,
     route_nodes: tuple[int, ...],
@@ -218,7 +241,11 @@ def swap_tree_path_dag(
             input_segment_ids=(left_segment, right_segment),
             output_segment_id=output,
             output_endpoints=(route_nodes[start], route_nodes[end]),
-            resource_demand=ResourceDemand.from_mapping({f"bsm:{middle}": 1}),
+            resource_demand=_swap_resource_demand(
+                route_nodes[start],
+                middle,
+                route_nodes[end],
+            ),
             output_resource_hold=ResourceDemand.from_mapping({
                 f"memory:{route_nodes[start]}": 1,
                 f"memory:{route_nodes[end]}": 1,
@@ -295,7 +322,11 @@ def left_deep_path_dag(
                 input_segment_ids=(previous_segment, right_segment),
                 output_segment_id=output,
                 output_endpoints=(route_nodes[0], route_nodes[index + 1]),
-                resource_demand=ResourceDemand.from_mapping({f"bsm:{middle}": 1}),
+                resource_demand=_swap_resource_demand(
+                    route_nodes[0],
+                    middle,
+                    route_nodes[index + 1],
+                ),
                 output_resource_hold=ResourceDemand.from_mapping({
                     f"memory:{route_nodes[0]}": 1,
                     f"memory:{route_nodes[index + 1]}": 1,
@@ -376,7 +407,11 @@ def balanced_path_dag(
                 input_segment_ids=(left_segment, right_segment),
                 output_segment_id=output,
                 output_endpoints=(left_endpoints[0], right_endpoints[1]),
-                resource_demand=ResourceDemand.from_mapping({f"bsm:{middle}": 1}),
+                resource_demand=_swap_resource_demand(
+                    left_endpoints[0],
+                    middle,
+                    right_endpoints[1],
+                ),
                 output_resource_hold=ResourceDemand.from_mapping({
                     f"memory:{left_endpoints[0]}": 1,
                     f"memory:{right_endpoints[1]}": 1,

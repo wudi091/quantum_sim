@@ -48,6 +48,7 @@ class SequenceConstructionExecutorTests(unittest.TestCase):
             "genlane:4-5": 1,
             "bsm:1": 1,
             "bsm:4": 1,
+            **{f"swapnode:{node}": 1 for node in spec.nodes},
             **{f"memory:{node}": 4 for node in spec.nodes},
         }
         executor = SequenceConstructionExecutor(
@@ -176,6 +177,7 @@ class SequenceConstructionExecutorTests(unittest.TestCase):
             "bsm:2": 1,
             "bsm:3": 1,
         }
+        capacities.update({f"swapnode:{node}": 1 for node in range(5)})
         capacities.update({f"memory:{node}": 4 for node in range(5)})
         return capacities
 
@@ -381,13 +383,26 @@ class SequenceConstructionExecutorTests(unittest.TestCase):
                         for resource, amount in operation.resource_demand.items()
                         if amount
                     },
-                    {"bsm:1", "bsm:4"},
+                    {
+                        "bsm:1",
+                        "bsm:4",
+                        "swapnode:0",
+                        "swapnode:1",
+                        "swapnode:2",
+                        "swapnode:3",
+                        "swapnode:4",
+                        "swapnode:5",
+                    },
                 )
                 executor.launch(swaps)
                 in_flight = executor.snapshot()
                 self.assertEqual(len(in_flight.in_flight), 2)
                 self.assertEqual(dict(in_flight.reservations)["bsm:1"], 1)
                 self.assertEqual(dict(in_flight.reservations)["bsm:4"], 1)
+                self.assertTrue(all(
+                    dict(in_flight.reservations)[f"swapnode:{node}"] == 1
+                    for node in range(6)
+                ))
 
                 swap_batch = executor.advance_to_next_event()
                 self.assertEqual(len(swap_batch.events), 2)
@@ -766,6 +781,34 @@ class SequenceConstructionExecutorTests(unittest.TestCase):
         executor.launch(tuple(operation for operation in executor.ready_operations()))
         executor.advance_to_next_event()
         with self.assertRaisesRegex(ValueError, "contains non-physical resources"):
+            executor.launch(executor.ready_operations())
+
+    def test_launch_rejects_missing_swap_node_mutex(self):
+        dag = left_deep_path_dag("r", (0, 1, 2))
+        swap = next(
+            operation
+            for operation in dag.operations
+            if operation.kind == OperationKind.SWAP
+        )
+        demand = swap.resource_demand.as_dict()
+        del demand["swapnode:0"]
+        forged = replace(
+            swap,
+            resource_demand=ResourceDemand.from_mapping(demand),
+        )
+        dag = ConstructionDAG(
+            "r",
+            tuple(
+                forged if operation.op_id == swap.op_id else operation
+                for operation in dag.operations
+            ),
+        )
+        executor = SequenceConstructionExecutor(
+            (dag,), self._backend(), self._capacities(), horizon_ps=200_000
+        )
+        executor.launch(executor.ready_operations())
+        executor.advance_to_next_event()
+        with self.assertRaisesRegex(ValueError, "missing swapnode:0"):
             executor.launch(executor.ready_operations())
 
     def test_swap_output_endpoints_must_match_physical_outer_nodes(self):

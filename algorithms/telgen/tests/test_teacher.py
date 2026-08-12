@@ -303,6 +303,7 @@ class TeacherTests(unittest.TestCase):
             "genlane:4-5": 1,
             **{f"memory:{node}": 4 for node in spec.nodes},
             **{f"bsm:{node}": 1 for node in spec.nodes},
+            **{f"swapnode:{node}": 1 for node in spec.nodes},
         }
         bases = build_route_construction_catalogue(
             spec,

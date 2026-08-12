@@ -231,6 +231,43 @@ def _add_usage(
     usage[key] = usage.get(key, 0) + int(amount)
 
 
+def _serialize_shared_swap_nodes(
+    ordered: Sequence[ConstructionOperation],
+    dependencies: Mapping[str, set[str]],
+) -> dict[str, int]:
+    """Schedule swaps so one physical node handles at most one per round."""
+
+    operation_slot: dict[str, int] = {}
+    swap_nodes_by_slot: dict[int, set[int]] = {}
+    for operation in ordered:
+        earliest = (
+            0
+            if not dependencies[operation.op_id]
+            else 1 + max(
+                operation_slot[item] for item in dependencies[operation.op_id]
+            )
+        )
+        if operation.kind != "SWAP":
+            operation_slot[operation.op_id] = earliest
+            continue
+        nodes = {
+            int(resource_id.removeprefix("swapnode:"))
+            for resource_id, amount in operation.resource_demand.items()
+            if amount > 0 and resource_id.startswith("swapnode:")
+        }
+        if not nodes:
+            raise ValueError(
+                f"SWAP operation does not declare physical node mutexes: "
+                f"{operation.op_id}"
+            )
+        slot = earliest
+        while nodes.intersection(swap_nodes_by_slot.get(slot, set())):
+            slot += 1
+        operation_slot[operation.op_id] = slot
+        swap_nodes_by_slot.setdefault(slot, set()).update(nodes)
+    return operation_slot
+
+
 def build_nominal_schedule(
     candidate: RouteConstructionCandidate,
 ) -> NominalConstructionSchedule:
@@ -245,16 +282,6 @@ def build_nominal_schedule(
     ordered, dependencies = _topological_operations(candidate.dag.operations)
     if not ordered:
         raise ValueError("construction candidate must contain operations")
-    operation_slot: dict[str, int] = {}
-    for operation in ordered:
-        operation_slot[operation.op_id] = (
-            0
-            if not dependencies[operation.op_id]
-            else 1 + max(
-                operation_slot[item] for item in dependencies[operation.op_id]
-            )
-        )
-
     producer_by_segment: dict[str, ConstructionOperation] = {}
     consumers_by_segment: dict[str, list[ConstructionOperation]] = {}
     for operation in ordered:
@@ -266,6 +293,11 @@ def build_nominal_schedule(
             producer_by_segment[operation.output_segment_id] = operation
         for segment_id in operation.input_segment_ids:
             consumers_by_segment.setdefault(segment_id, []).append(operation)
+
+    operation_slot = _serialize_shared_swap_nodes(
+        ordered,
+        dependencies,
+    )
 
     usage: dict[tuple[str, int], int] = {}
     for operation in ordered:
