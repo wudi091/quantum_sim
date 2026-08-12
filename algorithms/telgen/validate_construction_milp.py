@@ -461,10 +461,10 @@ def _markdown_summary(payload: Mapping[str, object]) -> str:
         f"- 配对随机化检验 p 值：{float(aggregate['completed_request_delta_randomization_p_value']):.6g}",
         f"- 胜/平/负：{aggregate['strict_win_count']}/{aggregate['tie_count']}/{aggregate['loss_count']}",
         f"- 使用多种交换树的实例比例：{100.0 * float(aggregate['mixed_construction_solution_rate']):.2f}%",
-        f"- 所有 MILP 均为零间隙精确解：{'是' if aggregate['all_milp_solutions_exact'] else '否'}",
+        f"- 所有 MILP 均为数值零间隙精确解（gap≤1e-12）：{'是' if aggregate['all_milp_solutions_exact'] else '否'}",
         f"- 构造感知名义规划优势验证通过：{'是' if aggregate['advantage_validated'] else '否'}",
         "",
-        "判定原则：只有全部 MILP 为零间隙解、置信区间下界大于 0、配对随机化检验 p<0.05、无负例且每个构造感知解确实混合使用不同交换树，才认为构造感知名义规划优势成立。",
+        "判定原则：只有全部 MILP 为数值零间隙解（gap≤1e-12）、置信区间下界大于 0、配对随机化检验 p<0.05、无负例且每个构造感知解确实混合使用不同交换树，才认为构造感知名义规划优势成立。",
         "本实验不执行 SeQUeNCe，因此名义可接纳数不等价于物理完成请求数；物理优势需要单独验证。",
         "",
     ))

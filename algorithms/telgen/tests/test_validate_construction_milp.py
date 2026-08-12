@@ -9,6 +9,7 @@ from algorithms.telgen.time_expansion import (
 )
 from algorithms.telgen.validate_construction_milp import (
     ConstructionMILPTrial,
+    _markdown_summary,
     aggregate_trials,
     compare_construction_policies,
 )
@@ -119,6 +120,43 @@ class ConstructionMILPValidationTests(unittest.TestCase):
                 {"a": 1, "b": 1},
                 fixed_policies=("tree_a",),
             )
+
+    def test_count_validation_rejects_non_unit_candidate_weights(self):
+        bases = _base_candidates()
+        weighted = replace(
+            _variable(bases["r0"], "tree_a", "a"),
+            expected_success_probability=0.8,
+        )
+        with self.assertRaisesRegex(ValueError, "unit candidate weights"):
+            compare_construction_policies(
+                (weighted,),
+                {"a": 1},
+                fixed_policies=("tree_a",),
+            )
+
+    def test_markdown_uses_configured_tree_count_and_nominal_wording(self):
+        payload = {
+            "validation_config": {"swap_tree_count": 2},
+            "aggregate": {
+                "trial_count": 1,
+                "construction_aware_mean_completed_requests": 2.0,
+                "best_fixed_mean_completed_requests": 1.0,
+                "mean_completed_request_delta": 1.0,
+                "relative_completed_request_gain": 1.0,
+                "completed_request_delta_bootstrap_95_ci": [1.0, 1.0],
+                "completed_request_delta_randomization_p_value": 0.01,
+                "strict_win_count": 1,
+                "tie_count": 0,
+                "loss_count": 0,
+                "mixed_construction_solution_rate": 1.0,
+                "all_milp_solutions_exact": True,
+                "advantage_validated": True,
+            },
+        }
+        markdown = _markdown_summary(payload)
+        self.assertIn("2 种固定交换树", markdown)
+        self.assertIn("名义可接纳数", markdown)
+        self.assertIn("不等价于物理完成请求数", markdown)
 
 
 if __name__ == "__main__":

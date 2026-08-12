@@ -84,3 +84,19 @@
 | 2026-08-11 03:46 | /experiment-bridge | results/telgen_online/online_telgen_results.csv | implementation | 最新在线请求级 CSV 结果 |
 | 2026-08-11 03:46 | /experiment-bridge | refine-logs/EXPERIMENT_RESULTS_20260811_034634.md | implementation | 在线 TELGEN 验证与独立审计记录 |
 | 2026-08-11 03:46 | /experiment-bridge | refine-logs/EXPERIMENT_RESULTS.md | implementation | 最新在线 TELGEN 实验结果副本 |
+| 2026-08-13 00:15 | /experiment-bridge | results/construction_milp_validation_recheck_sanity/construction_milp_validation_20260813_001245.json | implementation | seed 3101 构造感知 MILP 源码复跑 JSON |
+| 2026-08-13 00:15 | /experiment-bridge | results/construction_milp_validation_recheck_sanity/construction_milp_validation_20260813_001245.csv | implementation | seed 3101 构造感知 MILP 源码复跑 CSV |
+| 2026-08-13 00:15 | /experiment-bridge | results/construction_milp_validation_recheck_sanity/construction_milp_validation_20260813_001245.md | implementation | seed 3101 构造感知 MILP 源码复跑摘要 |
+| 2026-08-13 00:15 | /experiment-bridge | results/construction_milp_validation_recheck_sanity/construction_milp_validation.json | implementation | seed 3101 构造感知 MILP 最新 JSON |
+| 2026-08-13 00:15 | /experiment-bridge | results/construction_milp_validation_recheck_sanity/construction_milp_validation.csv | implementation | seed 3101 构造感知 MILP 最新 CSV |
+| 2026-08-13 00:15 | /experiment-bridge | results/construction_milp_validation_recheck_sanity/construction_milp_validation.md | implementation | seed 3101 构造感知 MILP 最新摘要 |
+| 2026-08-13 00:15 | /experiment-bridge | results/construction_milp_validation_recheck_formal/construction_milp_validation_20260813_001437.json | implementation | 100-seed 构造感知 MILP 完整复现 JSON |
+| 2026-08-13 00:15 | /experiment-bridge | results/construction_milp_validation_recheck_formal/construction_milp_validation_20260813_001437.csv | implementation | 100-seed 构造感知 MILP 完整复现 CSV |
+| 2026-08-13 00:15 | /experiment-bridge | results/construction_milp_validation_recheck_formal/construction_milp_validation_20260813_001437.md | implementation | 100-seed 构造感知 MILP 完整复现摘要 |
+| 2026-08-13 00:15 | /experiment-bridge | results/construction_milp_validation_recheck_formal/construction_milp_validation.json | implementation | 100-seed 构造感知 MILP 最新 JSON |
+| 2026-08-13 00:15 | /experiment-bridge | results/construction_milp_validation_recheck_formal/construction_milp_validation.csv | implementation | 100-seed 构造感知 MILP 最新 CSV |
+| 2026-08-13 00:15 | /experiment-bridge | results/construction_milp_validation_recheck_formal/construction_milp_validation.md | implementation | 100-seed 构造感知 MILP 最新摘要 |
+| 2026-08-13 00:15 | /experiment-bridge | refine-logs/EXPERIMENT_RESULTS_20260813_001540.md | implementation | 构造感知 MILP 名义规划优势、审计和复现结论 |
+| 2026-08-13 00:15 | /experiment-bridge | refine-logs/EXPERIMENT_RESULTS.md | implementation | 最新构造感知 MILP 验证结果副本 |
+| 2026-08-13 00:15 | /experiment-bridge | refine-logs/EXPERIMENT_TRACKER_20260813_001540.md | implementation | 构造感知验证、物理回放和 GNN 阶段追踪 |
+| 2026-08-13 00:15 | /experiment-bridge | refine-logs/EXPERIMENT_TRACKER.md | implementation | 最新构造感知实验追踪副本 |
