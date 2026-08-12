@@ -13,20 +13,22 @@ from .spec import EpisodeSpec, PhysicalConfig, RequestSpec
 @dataclass(frozen=True)
 class ScenarioConfig:
     request_count: int = 4
-    min_hops: int = 2
-    max_hops: int = 5
+    min_hops: int | None = 2
+    max_hops: int | None = 5
     ttl: int = 20
     horizon: int = 100
-    arrival_rate: float = 1.0
     physical: PhysicalConfig = PhysicalConfig()
     topology_nodes: int | None = None
     waxman_alpha: float = 0.05
     waxman_beta: float = 0.02
     topology_attempts: int = 128
+    waxman_add_mst: bool = True
+    endpoint_mode: str = "distance_stratified"
     demand_pairs: int = 1
     topology_mode: str = "waxman"
     parallel_corridors: int = 2
-    batch_mode: bool = False
+    arrival_batch_size: int | None = None
+    arrival_interval: int = 1
 
 
 def _add_euclidean_mst(graph: nx.Graph) -> None:
@@ -53,36 +55,52 @@ def _add_euclidean_mst(graph: nx.Graph) -> None:
         parent[improve] = current
 
 
-def _make_waxman_graph(config: ScenarioConfig, seed: int) -> tuple[nx.Graph, dict[int, dict[int, int]]]:
-    node_count = config.topology_nodes or max(4 * config.max_hops, 16)
-    if node_count <= config.max_hops:
+def _make_waxman_graph(
+    config: ScenarioConfig,
+    seed: int,
+) -> tuple[nx.Graph, dict[int, dict[int, int]]]:
+    configured_max_hops = config.max_hops or 1
+    node_count = config.topology_nodes or max(4 * configured_max_hops, 16)
+    if node_count < 2:
+        raise ValueError("Waxman topology needs at least two nodes")
+    if (
+        config.endpoint_mode == "distance_stratified"
+        and node_count <= configured_max_hops
+    ):
         raise ValueError("Waxman topology needs more nodes than max_hops")
     topology_rng = np.random.default_rng(np.random.SeedSequence([seed, 0x5741584D]))
     for _ in range(config.topology_attempts):
-        graph_seed = int(topology_rng.integers(0, np.iinfo(np.int32).max))
+        graph_seed = int(
+            topology_rng.integers(0, np.iinfo(np.int32).max)
+        )
         graph = nx.waxman_graph(
             node_count,
             beta=config.waxman_beta,
             alpha=config.waxman_alpha,
             seed=graph_seed,
         )
-        _add_euclidean_mst(graph)
+        if config.waxman_add_mst:
+            _add_euclidean_mst(graph)
+        if not nx.is_connected(graph):
+            continue
+        if config.endpoint_mode == "uniform_random":
+            return graph, {}
         distances = {
-            int(source): {int(target): int(distance) for target, distance in targets.items()}
+            int(source): {
+                int(target): int(distance)
+                for target, distance in targets.items()
+            }
             for source, targets in nx.all_pairs_shortest_path_length(
-                graph, cutoff=config.max_hops
+                graph, cutoff=configured_max_hops
             )
         }
-        diameter_reached = any(
-            distance >= config.max_hops
-            for targets in distances.values()
-            for distance in targets.values()
-        )
-        if diameter_reached:
+        pair_buckets = _candidate_pair_buckets(distances, config)
+        if all(pair_buckets[hop] for hop in set(_hop_targets(config))):
             return graph, distances
     raise RuntimeError(
-        "could not generate a connected Waxman topology with diameter "
-        f">= {config.max_hops} after {config.topology_attempts} attempts"
+        "could not generate a connected Waxman topology satisfying the "
+        f"endpoint contract with {node_count} nodes after "
+        f"{config.topology_attempts} attempts"
     )
 
 
@@ -91,7 +109,12 @@ def _make_parallel_corridor_graph(
 ) -> tuple[nx.Graph, dict[int, dict[int, int]]]:
     """Build equal-length disjoint corridors between source 0 and sink 1."""
 
-    if config.min_hops != config.max_hops or config.max_hops < 2:
+    if (
+        config.min_hops is None
+        or config.max_hops is None
+        or config.min_hops != config.max_hops
+        or config.max_hops < 2
+    ):
         raise ValueError(
             "parallel_corridors requires min_hops == max_hops >= 2"
         )
@@ -117,6 +140,8 @@ def _make_parallel_corridor_graph(
 
 
 def _hop_targets(config: ScenarioConfig) -> list[int]:
+    if config.min_hops is None or config.max_hops is None:
+        raise ValueError("distance-stratified endpoints require hop bounds")
     if config.request_count == 1:
         return [config.max_hops]
     span = config.max_hops - config.min_hops
@@ -126,19 +151,45 @@ def _hop_targets(config: ScenarioConfig) -> list[int]:
     ]
 
 
+def _candidate_pair_buckets(
+    distances: dict[int, dict[int, int]],
+    config: ScenarioConfig,
+) -> dict[int, list[tuple[int, int]]]:
+    buckets: dict[int, list[tuple[int, int]]] = {
+        hop: [] for hop in set(_hop_targets(config))
+    }
+    for source, targets in distances.items():
+        for destination, distance in targets.items():
+            if source >= destination or distance not in buckets:
+                continue
+            buckets[distance].append((source, destination))
+    return buckets
+
+
 def make_episode(config: ScenarioConfig, seed: int) -> EpisodeSpec:
-    if config.request_count < 1 or config.min_hops < 1 or config.max_hops < config.min_hops:
-        raise ValueError("invalid request or hop configuration")
-    if config.arrival_rate <= 0:
-        raise ValueError("arrival_rate must be positive")
-    if not 0 < config.waxman_alpha or not 0 < config.waxman_beta <= 1:
+    if config.request_count < 1:
+        raise ValueError("request_count must be positive")
+    if config.endpoint_mode == "distance_stratified" and (
+        config.min_hops is None
+        or config.max_hops is None
+        or config.min_hops < 1
+        or config.max_hops < config.min_hops
+    ):
+        raise ValueError("invalid hop configuration")
+    if not 0 < config.waxman_alpha <= 1 or not 0 < config.waxman_beta <= 1:
         raise ValueError("invalid Waxman alpha or beta")
     if config.topology_attempts < 1:
         raise ValueError("topology_attempts must be positive")
     if config.demand_pairs < 1:
         raise ValueError("demand_pairs must be positive")
+    if config.arrival_batch_size is not None and config.arrival_batch_size < 1:
+        raise ValueError("arrival_batch_size must be positive when set")
+    if config.arrival_interval < 1:
+        raise ValueError("arrival_interval must be positive")
     if config.topology_mode not in {"waxman", "parallel_corridors"}:
         raise ValueError(f"unknown topology_mode: {config.topology_mode}")
+    if config.endpoint_mode not in {"distance_stratified", "uniform_random"}:
+        raise ValueError(f"unknown endpoint_mode: {config.endpoint_mode}")
 
     if config.topology_mode == "parallel_corridors":
         graph, distances = _make_parallel_corridor_graph(config)
@@ -147,27 +198,32 @@ def make_episode(config: ScenarioConfig, seed: int) -> EpisodeSpec:
     nodes = tuple(sorted(int(node) for node in graph.nodes))
     edges = tuple(sorted((min(int(u), int(v)), max(int(u), int(v))) for u, v in graph.edges))
 
-    pair_buckets: dict[int, list[tuple[int, int]]] = {
-        hop: [] for hop in range(config.min_hops, config.max_hops + 1)
-    }
-    for source, targets in distances.items():
-        for destination, distance in targets.items():
-            if source < destination and distance in pair_buckets:
-                pair_buckets[distance].append((source, destination))
-    missing = [hop for hop, pairs in pair_buckets.items() if not pairs]
-    if missing:
-        raise RuntimeError(f"Waxman topology is missing shortest-path distances: {missing}")
-
     request_rng = np.random.default_rng(np.random.SeedSequence([seed, 0x52455153]))
-    hops = _hop_targets(config)
-    request_rng.shuffle(hops)
-    for pairs in pair_buckets.values():
-        request_rng.shuffle(pairs)
-    bucket_offsets = {hop: 0 for hop in pair_buckets}
     endpoints: list[tuple[int, int]] = []
-    if config.batch_mode:
-        endpoints = [(0, 1) for _ in hops]
+    if config.topology_mode == "parallel_corridors":
+        endpoints = [(0, 1) for _ in range(config.request_count)]
+    elif config.endpoint_mode == "uniform_random":
+        endpoints = [
+            tuple(int(node) for node in request_rng.choice(
+                nodes, size=2, replace=False
+            ))
+            for _ in range(config.request_count)
+        ]
     else:
+        pair_buckets = _candidate_pair_buckets(distances, config)
+        missing = [
+            hop for hop in set(_hop_targets(config))
+            if not pair_buckets[hop]
+        ]
+        if missing:
+            raise RuntimeError(
+                f"Waxman topology is missing shortest-path distances: {missing}"
+            )
+        hops = _hop_targets(config)
+        request_rng.shuffle(hops)
+        for pairs in pair_buckets.values():
+            request_rng.shuffle(pairs)
+        bucket_offsets = {hop: 0 for hop in pair_buckets}
         for hop in hops:
             pairs = pair_buckets[int(hop)]
             offset = bucket_offsets[int(hop)]
@@ -177,22 +233,35 @@ def make_episode(config: ScenarioConfig, seed: int) -> EpisodeSpec:
                 (left, right) if request_rng.random() < 0.5 else (right, left)
             )
 
-    # A homogeneous Poisson arrival process: exponential inter-arrival times,
-    # discretized into physical slots. Multiple requests may arrive together.
-    if config.batch_mode:
-        arrivals = np.zeros(config.request_count, dtype=int)
-    else:
-        inter_arrivals = request_rng.exponential(
-            1.0 / config.arrival_rate, config.request_count
+    arrivals = (
+        [0] * config.request_count
+        if config.arrival_batch_size is None
+        else [
+            (index // config.arrival_batch_size) * config.arrival_interval
+            for index in range(config.request_count)
+        ]
+    )
+    if arrivals[-1] > config.horizon:
+        raise ValueError(
+            "episode horizon cannot precede the final request arrival"
         )
-        arrivals = np.floor(np.cumsum(inter_arrivals)).astype(int)
+    if arrivals[-1] + config.ttl > config.horizon:
+        raise ValueError(
+            "episode horizon must cover the final request arrival's TTL"
+        )
     requests = tuple(
         RequestSpec(
             f"r{index}", endpoints[index][0], endpoints[index][1],
-            arrival=int(arrivals[index]), ttl=config.ttl,
+            arrival=arrivals[index], ttl=config.ttl,
             demand_pairs=config.demand_pairs,
         )
         for index in range(config.request_count)
     )
-    horizon = max(config.horizon, int(arrivals[-1]) + config.ttl)
-    return EpisodeSpec(seed, nodes, edges, requests, horizon, config.physical)
+    return EpisodeSpec(
+        seed,
+        nodes,
+        edges,
+        requests,
+        config.horizon,
+        config.physical,
+    )

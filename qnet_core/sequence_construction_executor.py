@@ -25,7 +25,12 @@ from .construction_api import (
 )
 from .construction_decoder import CapacityFeasibilityOracle
 from .construction_repair import generate_repair_options
-from .sequence_backend import PreparedGeneration, PreparedSwap, SequenceBackend
+from .sequence_backend import (
+    PreparedGeneration,
+    PreparedPurification,
+    PreparedSwap,
+    SequenceBackend,
+)
 from .sequence_protocol_arbiter import ProtocolRequest
 from .sequence_scheduler import SequenceConcurrencyScheduler
 
@@ -38,6 +43,7 @@ class _Pending:
     logical_completion_time_ps: int
     generation: PreparedGeneration | None = None
     swap: PreparedSwap | None = None
+    purification: PreparedPurification | None = None
 
 
 class SequenceConstructionExecutor:
@@ -55,8 +61,8 @@ class SequenceConstructionExecutor:
         # can be evaluated repeatedly and independently across environments.
         dag_list = tuple(dag.clone() for dag in dags)
         self.dags = {dag.request_id: dag for dag in dag_list}
-        if len(self.dags) != len(dag_list) or not dag_list:
-            raise ValueError("construction DAG request IDs must be unique and non-empty")
+        if len(self.dags) != len(dag_list):
+            raise ValueError("construction DAG request IDs must be unique")
         self.backend = backend
         self.capacities = {str(key): int(value) for key, value in capacities.items()}
         self.oracle = CapacityFeasibilityOracle(self.capacities)
@@ -117,6 +123,14 @@ class SequenceConstructionExecutor:
         request_threshold = self._request_required_fidelity.get(operation.request_id)
         if request_threshold is None or operation.output_endpoints is None:
             return operation.required_fidelity
+        if operation.output_segment_id is not None:
+            dag = self.dags.get(operation.request_id)
+            if dag is not None and any(
+                operation.output_segment_id in consumer.input_segment_ids
+                and consumer.kind != OperationKind.RELEASE
+                for consumer in dag.operations
+            ):
+                return operation.required_fidelity
         if frozenset(operation.output_endpoints) != self._request_endpoints.get(
             operation.request_id, frozenset()
         ):
@@ -177,6 +191,41 @@ class SequenceConstructionExecutor:
         self._operation_owners = operation_owners
         self._output_owners = output_owners
 
+    def register_dag(self, dag: ConstructionDAG) -> None:
+        """Register one pristine neutral DAG at a decision boundary."""
+
+        if self._terminated:
+            raise RuntimeError("executor is terminated")
+        if dag.request_id in self.dags:
+            raise ValueError(f"request DAG is already registered: {dag.request_id}")
+        cloned = dag.clone()
+        self.dags[cloned.request_id] = cloned
+        try:
+            self._refresh_global_registry()
+        except Exception:
+            self.dags.pop(cloned.request_id, None)
+            self._refresh_global_registry()
+            raise
+
+    def unregister_dag(self, request_id: str) -> None:
+        """Remove a quiescent DAG so the same request can be replanned."""
+
+        if request_id not in self.dags:
+            raise KeyError(request_id)
+        if any(
+            pending.operation.request_id == request_id
+            for pending in self._pending.values()
+        ):
+            raise RuntimeError("cannot unregister a request with in-flight operations")
+        self.release_request(request_id)
+        if any(
+            segment.request_id == request_id
+            for segment in self._segments.values()
+        ):
+            raise RuntimeError("cannot unregister a request with live segments")
+        self.dags.pop(request_id)
+        self._refresh_global_registry()
+
     def _available_segment_ids(self) -> set[str]:
         consumed = {
             segment_id
@@ -186,7 +235,11 @@ class SequenceConstructionExecutor:
         physically_owned = {
             segment_id
             for pending in self._pending.values()
-            if pending.operation.kind in {OperationKind.GEN, OperationKind.SWAP}
+            if pending.operation.kind in {
+                OperationKind.GEN,
+                OperationKind.PURIFY,
+                OperationKind.SWAP,
+            }
             for segment_id in pending.operation.input_segment_ids
         }
         # Never synchronize while a protocol owns its input pair.  Use the
@@ -283,12 +336,20 @@ class SequenceConstructionExecutor:
                    key=lambda segment: segment.segment_id)
         )
 
-    def ready_operations(self) -> tuple[ConstructionOperation, ...]:
+    def ready_operations(
+        self,
+        allowed_operation_ids: Iterable[str] | None = None,
+    ) -> tuple[ConstructionOperation, ...]:
         self._refresh_global_registry()
         if self._pending and not getattr(
             self.backend, "supports_inter_epoch_launch", False
         ):
             return ()
+        allowed = (
+            None
+            if allowed_operation_ids is None
+            else {str(operation_id) for operation_id in allowed_operation_ids}
+        )
         available = self._available_segment_ids()
         operations = tuple(sorted(
             (
@@ -296,6 +357,7 @@ class SequenceConstructionExecutor:
                 for dag in self.dags.values()
                 for operation in dag.operations
                 if operation.op_id in dag.ready_ids(available, set(self._pending))
+                and (allowed is None or operation.op_id in allowed)
             ),
             key=lambda operation: operation.canonical_key,
         ))
@@ -435,6 +497,39 @@ class SequenceConstructionExecutor:
                     raise ValueError(
                         f"SWAP resource demand must reserve {expected_bsm}"
                     )
+            if operation.kind == OperationKind.PURIFY:
+                physical_ids = tuple(
+                    self._physical_by_segment.get(segment_id)
+                    for segment_id in operation.input_segment_ids
+                )
+                if len(physical_ids) != 2 or any(
+                    pair_id is None for pair_id in physical_ids
+                ):
+                    raise ValueError(
+                        f"PURIFY input segment is not physical: {operation.op_id}"
+                    )
+                keep_id, measure_id = physical_ids
+                assert keep_id is not None and measure_id is not None
+                keep = self.backend.resource(keep_id)
+                measure = self.backend.resource(measure_id)
+                if keep is None or measure is None:
+                    raise ValueError("PURIFY input segment is no longer physical")
+                if keep.endpoints != measure.endpoints:
+                    raise ValueError("PURIFY inputs must have identical endpoints")
+                if set(operation.output_endpoints or ()) != set(keep.endpoints):
+                    raise ValueError(
+                        f"PURIFY output endpoints do not match inputs: {operation.op_id}"
+                    )
+                if not self.backend.can_begin_purification(keep_id, measure_id):
+                    raise ValueError(
+                        f"physical backend rejected purification: {operation.op_id}"
+                    )
+                left, right = keep.endpoints
+                expected_purify = f"purify:{min(left, right)}-{max(left, right)}"
+                if operation.resource_demand.get(expected_purify) < 1:
+                    raise ValueError(
+                        f"PURIFY resource demand must reserve {expected_purify}"
+                    )
             if operation.kind == OperationKind.GEN:
                 assert operation.output_endpoints is not None
                 left, right = operation.output_endpoints
@@ -516,7 +611,7 @@ class SequenceConstructionExecutor:
             raise ValueError(f"{operation.kind} requires output endpoints")
         left, right = operation.output_endpoints
         required = {f"memory:{left}": 1, f"memory:{right}": 1}
-        if operation.kind == OperationKind.GEN:
+        if operation.kind in {OperationKind.GEN, OperationKind.PURIFY}:
             edge = f"{min(left, right)}-{max(left, right)}"
             required[f"link:{edge}"] = 1
         actual = hold.as_dict()
@@ -622,10 +717,12 @@ class SequenceConstructionExecutor:
 
         prepared_generation_items: tuple[PreparedGeneration, ...] = ()
         prepared_generations: dict[ResourceClaim, PreparedGeneration] = {}
+        prepared_purifications: list[PreparedPurification] = []
         prepared_swaps: list[PreparedSwap] = []
         marked_started: list[ConstructionOperation] = []
         staged_pending: dict[str, _Pending] = {}
         prepared_swap_by_operation: dict[str, PreparedSwap] = {}
+        prepared_purification_by_operation: dict[str, PreparedPurification] = {}
         allocation_id = None
         try:
             # Commit only the neutral DAG start markers first.  If a caller
@@ -641,6 +738,29 @@ class SequenceConstructionExecutor:
                 for operation in operations
                 if operation.kind == OperationKind.SWAP
             }
+            purification_inputs = {
+                operation.op_id: tuple(
+                    self._physical_by_segment[segment_id]
+                    for segment_id in operation.input_segment_ids
+                )
+                for operation in operations
+                if operation.kind == OperationKind.PURIFY
+            }
+            for operation in sorted(operations, key=lambda item: item.canonical_key):
+                if operation.kind != OperationKind.PURIFY:
+                    continue
+                keep_pair_id, measure_pair_id = purification_inputs[operation.op_id]
+                purification = self.backend.begin_purification(
+                    keep_pair_id,
+                    measure_pair_id,
+                    attempt_ids[operation.op_id],
+                )
+                if purification is None:
+                    raise ConstructionLaunchRejected(
+                        f"physical backend rejected purification: {operation.op_id}"
+                    )
+                prepared_purifications.append(purification)
+                prepared_purification_by_operation[operation.op_id] = purification
             # Start SWAP protocols before GEN protocols.  SeQUeNCe's
             # timeline can otherwise process a newly scheduled generation
             # event before the already-prepared BSM handshake, even when the
@@ -674,6 +794,7 @@ class SequenceConstructionExecutor:
                 attempt_id = attempt_ids[operation.op_id]
                 generation = None
                 swap = None
+                purification = None
                 if operation.kind == OperationKind.GEN:
                     claim = generation_claims[operation.op_id]
                     generation = prepared_generations[claim]
@@ -681,15 +802,21 @@ class SequenceConstructionExecutor:
                 elif operation.kind == OperationKind.SWAP:
                     swap = prepared_swap_by_operation[operation.op_id]
                     duration = self.backend.swap_duration_ps
+                elif operation.kind == OperationKind.PURIFY:
+                    purification = prepared_purification_by_operation[
+                        operation.op_id
+                    ]
+                    duration = self.backend.purification_duration_ps
                 else:
                     duration = operation.duration_ps
                 staged_pending[operation.op_id] = _Pending(
-                    operation,
-                    attempt_id,
-                    now + max(operation.duration_ps, duration),
-                    now + operation.duration_ps,
-                    generation,
-                    swap,
+                    operation=operation,
+                    attempt_id=attempt_id,
+                    completion_time_ps=now + max(operation.duration_ps, duration),
+                    logical_completion_time_ps=now + operation.duration_ps,
+                    generation=generation,
+                    swap=swap,
+                    purification=purification,
                 )
 
         except Exception:
@@ -697,6 +824,8 @@ class SequenceConstructionExecutor:
                 self.dags[operation.request_id].rollback_started(operation.op_id)
             for prepared_swap in reversed(prepared_swaps):
                 self.backend.cancel_swap(prepared_swap)
+            for prepared_purification in reversed(prepared_purifications):
+                self.backend.cancel_purification(prepared_purification)
             self.backend.cancel_generation(prepared_generation_items)
             raise
 
@@ -805,6 +934,16 @@ class SequenceConstructionExecutor:
             for segment_id in consumed:
                 self._physical_by_segment.pop(segment_id, None)
                 self._segments.pop(segment_id, None)
+        elif operation.kind == OperationKind.PURIFY:
+            physical_pair_id = (
+                self.backend.finish_purification(pending.purification)
+                if pending.purification else None
+            )
+            success = physical_pair_id is not None
+            consumed = tuple(operation.input_segment_ids)
+            for segment_id in consumed:
+                self._physical_by_segment.pop(segment_id, None)
+                self._segments.pop(segment_id, None)
         elif operation.kind == OperationKind.RELEASE:
             for segment_id in operation.input_segment_ids:
                 physical_id = self._physical_by_segment.pop(segment_id, None)
@@ -895,8 +1034,12 @@ class SequenceConstructionExecutor:
                 terminal=False,
             )
         if not self._pending:
-            self._terminated = True
-            return ExecutionEventBatch(self.physical_time_ps, (), 0, terminal=True)
+            return ExecutionEventBatch(
+                self.physical_time_ps,
+                (),
+                0,
+                terminal=self.physical_time_ps >= self.horizon_ps,
+            )
         pending_all = tuple(self._pending.values())
         nominal_next_time = min(pending.completion_time_ps for pending in pending_all)
         boundaries = [nominal_next_time, self.horizon_ps]
@@ -916,11 +1059,16 @@ class SequenceConstructionExecutor:
                 if pending.generation is not None
             ),
             (pending.swap for pending in pending_all if pending.swap is not None),
+            (
+                pending.purification for pending in pending_all
+                if pending.purification is not None
+            ),
             deadline_ps=target_time,
         )
         physical_pending = tuple(
             pending for pending in pending_all
             if pending.swap is not None
+            or pending.purification is not None
             or (pending.generation is not None and pending.generation.context is not None)
         )
         def physical_complete(pending: _Pending) -> bool:
@@ -933,6 +1081,10 @@ class SequenceConstructionExecutor:
                 )
             if pending.swap is not None:
                 return self.backend.prepared_complete(swaps=(pending.swap,))
+            if pending.purification is not None:
+                return self.backend.prepared_complete(
+                    purifications=(pending.purification,)
+                )
             return True
 
         all_physical_complete = all(

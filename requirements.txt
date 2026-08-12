@@ -3,5 +3,4 @@ numpy
 networkx
 scipy
 tqdm
-torch
 pytest

@@ -1,65 +1,182 @@
 # Quantum Resource-Graph Routing
 
-This repository contains a shared SeQUeNCe-backed quantum-network routing
+This repository provides a shared SeQUeNCe-backed quantum-network routing
 environment and two planning-only baselines: Q-DDCA and Q-CAST.
 
-The simulator owns request generation, resource locking, TTL settlement,
-rewards, and metrics. SeQUeNCe owns the physical layer: `QuantumRouter` and
-`MemoryArray` entities, per-link `QuantumChannel` and `BSMNode` hardware,
-single-heralded entanglement generation, BDS entanglement swapping, detector
-and channel losses, physical time, and memory expiration events. A planner
-receives an immutable `PlanningSnapshot` and returns plan IDs. It cannot
-mutate the backend or advance physical time.
+The only active research plan is documented in
+[`TELGEN_CONSTRUCTION_AWARE_ROUTING_PLAN.md`](TELGEN_CONSTRUCTION_AWARE_ROUTING_PLAN.md):
+a generalizable construction-aware planner that jointly selects a path and an
+entanglement-construction plan. The planning-only LP teacher, hard decoder,
+rolling SeQUeNCe physical validation, and paired Q-CAST comparison are
+implemented; the learned GNN planner is not implemented yet.
 
-## Packages
+## Repository scope
 
-- `qnet_core`: scenario generation, shared routing environment, SeQUeNCe
-  backend, Gym-style wrapper, planner contracts, rewards, metrics, and
-  reproduction utilities.
-- `algorithms/qddca`: Q-DDCA planning adapter.
+- `qnet_core`: simulator-neutral planning contracts, scenario generation,
+  construction-plan execution, metrics, and the SeQUeNCe physical adapter.
+- `algorithms/qddca`: Q-DDCA planning adapter and reproduction utilities.
 - `algorithms/qcast`: Q-CAST planning adapter.
-- `QDDCA`: upstream Q-DDCA reference code based on SimQN, isolated from the
-  project test suite by a package-level discovery shim.
-- `QCAST`: upstream Kotlin/Maven Q-CAST reference simulator.
+- `QDDCA`: upstream Q-DDCA reference source.
+- `QCAST`: upstream Q-CAST reference source.
 
-The upstream `QDDCA` and `QCAST` directories are references. The runnable
-comparison environment is assembled by `qnet_core.runtime.make_sequence_env`.
+Q-DDCA and Q-CAST are retained as comparison baselines. They are not part of
+the proposed TELGEN method.
+
+## Layer boundary
+
+The planning layer receives immutable, simulator-neutral snapshots and returns
+plan identifiers or construction plans. It cannot mutate the backend or
+advance physical time.
+
+SeQUeNCe exclusively owns:
+
+- elementary entanglement generation;
+- quantum memories and expiration;
+- entanglement swapping;
+- fidelity and decoherence;
+- stochastic physical outcomes;
+- physical event time.
+
+```text
+requests + topology
+        |
+        v
+planning layer  --->  neutral plan interface  --->  SeQUeNCe physical layer
+        ^                                                |
+        +---------------- neutral results ---------------+
+```
+
+Optimization iterations and SeQUeNCe physical events are separate timelines.
 
 ## Environment
 
-SeQUeNCe 1.0 requires Python 3.12 or newer. Install dependencies with:
+SeQUeNCe 1.0 requires Python 3.12 or newer.
 
 ```bash
 pip install -r requirements.txt
-```
-
-Run the physical three-node smoke test:
-
-```bash
 python -m qnet_core.sequence_smoke
-```
-
-Run the construction-aware train/checkpoint/evaluate sanity workflow:
-
-```bash
-python -m algorithms.caappo.experiment run --quick
-```
-
-For interrupted runs, use the separate `train --resume` and `evaluate`
-commands documented in `algorithms/README.md`. Evaluation loads a frozen
-checkpoint and remains separate from the SeQUeNCe physical backend: the policy
-only issues neutral construction actions, while SeQUeNCe still owns physical
-generation, swapping, memories, fidelity, decoherence, and time.
-
-Run the shared-environment test suite:
-
-```bash
 python -m pytest -q
-# or only the core tests:
-python -m unittest discover -v qnet_core/tests
 ```
 
-Run a fair Q-DDCA/Q-CAST comparison on identical seeded episodes:
+Generate a small set of simultaneous-request LP teacher records:
+
+```bash
+python -m algorithms.telgen.generate_teacher_data \
+  --output results/telgen_teacher \
+  --samples 10 \
+  --requests 8 \
+  --min-hops 2 \
+  --max-hops 5 \
+  --ttl 12 \
+  --horizon 12 \
+  --paths 3
+```
+
+Each NPZ record contains both LP stages, their complete primal interior-point
+trajectories, constraint violations, topology/request provenance, and the
+same opaque resource-capacity catalogue used by the SeQUeNCe construction
+executor.
+
+Calibrate low, medium, and high static loads before large-scale generation:
+
+```bash
+python -m algorithms.telgen.calibrate_static_load \
+  --output results/telgen_load_calibration \
+  --samples 1 \
+  --seed-start 100
+```
+
+The default profiles use `8 requests / 12 slots`, `24 / 6`, and `40 / 5`.
+For each seed they share one topology and a nested request pool. The command
+writes self-contained NPZ records, `calibration.json`, and `calibration.csv`
+with completion, latency, fractionality, utilization, violation, and solver
+statistics.
+
+Audit the continuous relaxation against an exact small-instance binary MILP:
+
+```bash
+python -m algorithms.telgen.validate_discrete_gap \
+  --seed 100 \
+  --requests 8 \
+  --horizon 6 \
+  --paths 1
+```
+
+The MILP reuses exactly the same variables, lexicographic objectives, and
+resource--time constraints as the LP teacher. It is a validation oracle only,
+not a second teacher or a production planner.
+
+Decode continuous LP scores into one executable, capacity-feasible plan:
+
+```bash
+python -m algorithms.telgen.evaluate_hard_decoder \
+  --seed 100 \
+  --requests 8 \
+  --horizon 6 \
+  --paths 1
+```
+
+The decoder enforces one candidate per request and all resource--time
+capacities. It combines bounded beam search, deterministic multi-start greedy
+rounding, one-request augmentation, and pair exchange, then reports its gap to
+the small-instance MILP optimum.
+
+Run TELGEN on one periodic micro-batch episode:
+
+```bash
+python -m algorithms.telgen.run_online \
+  --output results/telgen_periodic
+```
+
+The default episode contains 100 requests. Ten requests arrive every four
+slots at `0, 4, ..., 36`; every request has TTL 16, so the episode drains
+through slot 52. At each boundary the planner sees all currently pending
+requests, may start new plans only in the next four slots, and may let an
+accepted construction complete after the next boundary. Already running plans
+remain fixed and expose their future resource reservations. Results are written
+as versioned JSON/CSV files plus fixed-name latest copies.
+
+Compare TELGEN against the Q-CAST expected-throughput path baseline on the
+exact same generated episodes and the same persistent SeQUeNCe execution
+contract:
+
+```bash
+python -m algorithms.telgen.compare_online \
+  --seeds 100
+```
+
+The primary benchmark uses a 64-node Waxman graph and the same periodic
+100-request protocol: ten new requests every four slots, TTL 16, and automatic
+drain to slot 52. Every request endpoint pair has shortest-path distance
+exactly four. The
+generator retries Waxman topology generation when that endpoint contract is
+unavailable and fails explicitly after the configured attempt limit; it does
+not silently relax the hop constraint. Yen supplies up to four real paths, and
+TELGEN builds up to five valid order-preserving swap trees per path. Q-CAST
+sees the same paths but always uses left-deep construction.
+
+Pass `--uniform-random-endpoints` to disable the fixed shortest-hop endpoint
+contract.
+
+Both methods use the identical `EpisodeSpec`, arrival schedule, pending-request
+queue, decision interval, topology, physical parameters, path limit, TTL, and
+metrics. Q-CAST is an adaptation to this common rolling environment: it does
+not use the TELGEN LP teacher or its hard decoder; only neutral construction
+plans are submitted to an independent persistent SeQUeNCe scheduler.
+
+Analyze multiple paired comparison reports with balanced per-scenario
+bootstrap confidence intervals and paired randomization tests:
+
+```bash
+python -m algorithms.telgen.analyze_online_benchmark \
+  results/telgen_qcast_waxman_fixed4_periodic/online_comparison.json \
+  --output results/telgen_qcast_waxman_fixed4_periodic
+```
+
+The current sanity result and the frozen 100-episode protocol are recorded in
+`refine-logs/EXPERIMENT_RESULTS.md` and `refine-logs/EXPERIMENT_PLAN.md`.
+
+Run the Q-DDCA/Q-CAST comparison on identical seeded episodes:
 
 ```bash
 python -m qnet_core.evaluate \
@@ -70,65 +187,16 @@ python -m qnet_core.evaluate \
   --ttl 64
 ```
 
-The two planners receive the same episode specification and physical random
-process. They differ only in the plans selected from the shared snapshot.
+Run the Q-DDCA reproduction utility:
 
-The legacy probability fields remain in `PhysicalConfig` as compact scenario
-controls. `generation_probability` is translated into endpoint memory
-efficiency, while `swap_probability`, channel attenuation, detector
-efficiency, BSM success, and memory coherence are passed to SeQUeNCe
-components and protocols. The backend never samples an EPR or edits a Bell
-state directly.
-
-## Runtime flow
-
-```text
-ScenarioConfig + seed
-        |
-        v
-make_episode() -> EpisodeSpec
-        |
-        v
-make_sequence_env() [composition root]
-        |
-        +--> EpisodeSpec.planning -> SharedRoutingEnv -> PhysicalBackend
-        |                                                    |
-        |                                                    v
-        +------------------------------------------> SequenceBackend -> SeQUeNCe
-        |
-        +--> PlanningSnapshot
-                 |
-                 +--> QDDCAPlanner.select()
-                 +--> QCASTPlanner.select()
-        |
-        v
-env.commit(plan_ids) -> metrics
+```bash
+python -m algorithms.qddca.reproduce --experiment exp1 --quick
 ```
 
-`qnet_core.runtime.make_sequence_gym_env` exposes the same environment through
-a masked, fixed-size observation/action interface for PPO-style controllers.
+## Current research boundary
 
-The dependency is one-way. Planning and Gym code call the simulator-neutral
-`PhysicalBackend` protocol and consume immutable `PhysicalResource` views.
-`SharedRoutingEnv` receives a physical-config-free `PlanningSpec`; only the
-composition root sees both the episode specification and concrete backend.
-The composition root carries `PhysicalConfig` into `SequenceBackend`; only the
-backend imports SeQUeNCe and interprets those physical parameters. No
-SeQUeNCe entity is exposed to candidate construction or routing algorithms.
-
-## Algorithm boundary
-
-Algorithms are planning-only. Shared execution and settlement remain in
-`qnet_core`; algorithm-specific code stays under its own package.
-
-- Q-DDCA keeps bounded retry history and optional rerouting state.
-- Q-CAST ranks candidates by expected throughput, memory cost, and remaining
-  hops.
-
-The stable public imports are:
-
-```python
-from algorithms import QCASTPlanner, QDDCAPlanner
-from qnet_core.planner_api import PlanningSnapshot
-from qnet_core.runtime import make_sequence_env
-```
+The repository already contains a simulator-neutral construction DAG, the LP
+teacher data pipeline, hard decoding, and rolling physical validation.
+These are foundations for the TELGEN plan, not an
+implemented learning method. No alternative learned planning scheme is
+retained in the current tree.

@@ -2,7 +2,126 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+from functools import lru_cache
+from typing import TypeAlias
+
 from .construction_api import ConstructionDAG, ConstructionOperation, OperationKind, ResourceDemand
+
+
+SwapTree: TypeAlias = int | tuple["SwapTree", "SwapTree"]
+
+
+@lru_cache(maxsize=None)
+def _swap_tree_metrics(tree: SwapTree) -> tuple[int, int, int]:
+    """Return ``(height, held_segment_rounds, imbalance)`` for one tree.
+
+    Elementary links are available in round zero.  Every internal node is a
+    swap one round after both children are ready.  ``held_segment_rounds`` is
+    the sum of the time for which child segments wait before their parent
+    swap consumes them; it is proportional to the memory--time footprint of
+    the construction.  The final imbalance term is only a deterministic
+    tie-breaker after latency and memory occupancy.
+    """
+
+    if isinstance(tree, int):
+        return 0, 0, 0
+    left, right = tree
+    left_height, left_hold, left_imbalance = _swap_tree_metrics(left)
+    right_height, right_hold, right_imbalance = _swap_tree_metrics(right)
+    height = 1 + max(left_height, right_height)
+    held_segment_rounds = (
+        left_hold
+        + right_hold
+        + height
+        - left_height
+        + height
+        - right_height
+    )
+    imbalance = (
+        left_imbalance
+        + right_imbalance
+        + abs(left_height - right_height)
+    )
+    return height, held_segment_rounds, imbalance
+
+
+def _swap_tree_signature(tree: SwapTree) -> tuple[int, ...]:
+    """Return a comparison-safe canonical preorder signature."""
+
+    if isinstance(tree, int):
+        return (0, tree)
+    left, right = tree
+    return (1, *_swap_tree_signature(left), 2, *_swap_tree_signature(right), 3)
+
+
+def _swap_tree_rank(tree: SwapTree) -> tuple[object, ...]:
+    height, held_segment_rounds, imbalance = _swap_tree_metrics(tree)
+    return (
+        height,
+        held_segment_rounds,
+        imbalance,
+        _swap_tree_signature(tree),
+    )
+
+
+@lru_cache(maxsize=None)
+def _best_ordered_swap_trees(
+    start: int,
+    end: int,
+    limit: int | None,
+) -> tuple[SwapTree, ...]:
+    """Interval top-k dynamic program for order-preserving swap trees."""
+
+    if end - start == 1:
+        return (start,)
+    candidates: list[SwapTree] = []
+    for split in range(start + 1, end):
+        left_trees = _best_ordered_swap_trees(start, split, limit)
+        right_trees = _best_ordered_swap_trees(split, end, limit)
+        candidates.extend(
+            (left, right)
+            for left in left_trees
+            for right in right_trees
+        )
+    ranked = sorted(candidates, key=_swap_tree_rank)
+    if limit is not None:
+        ranked = ranked[:limit]
+    return tuple(ranked)
+
+
+@lru_cache(maxsize=None)
+def ordered_swap_trees(
+    link_count: int,
+    limit: int | None = None,
+) -> tuple[SwapTree, ...]:
+    """Return the best order-preserving full binary trees for a path.
+
+    Leaves are elementary links numbered from left to right.  Internal nodes
+    are entanglement swaps.  Without ``limit`` the number of returned trees is
+    the Catalan number ``C_(link_count - 1)``.  With ``limit``, an interval
+    top-k dynamic program materializes only the strongest candidates.  Trees
+    are ranked by minimum completion depth, then minimum segment holding
+    time, then balance and a stable structural signature.
+    """
+
+    if link_count < 1:
+        raise ValueError("link_count must be positive")
+    if limit is not None and limit < 1:
+        raise ValueError("limit must be positive")
+    return _best_ordered_swap_trees(0, link_count, limit)
+
+
+def swap_tree_kinds(
+    link_count: int,
+    limit: int | None = None,
+) -> tuple[str, ...]:
+    """Return stable construction-kind names for all path swap trees."""
+
+    return tuple(
+        f"swap_tree_{index}"
+        for index in range(len(ordered_swap_trees(link_count, limit)))
+    )
 
 
 def _generation_operation(
@@ -36,6 +155,93 @@ def _generation_operation(
         duration_ps=1,
         ordinal=index,
     )
+
+
+def swap_tree_path_dag(
+    request_id: str,
+    route_nodes: tuple[int, ...],
+    tree_index: int,
+    *,
+    required_fidelity: float = 0.0,
+) -> ConstructionDAG:
+    """Build one indexed, order-preserving binary swap tree for a route."""
+
+    if len(route_nodes) < 2:
+        raise ValueError("route must contain at least one edge")
+    trees = ordered_swap_trees(len(route_nodes) - 1, tree_index + 1)
+    if not 0 <= tree_index < len(trees):
+        raise ValueError(
+            f"swap tree index {tree_index} is outside [0, {len(trees)})"
+        )
+
+    generations = [
+        _generation_operation(request_id, index, left, right)
+        for index, (left, right) in enumerate(
+            zip(route_nodes, route_nodes[1:])
+        )
+    ]
+    operations = list(generations)
+    merge_index = 0
+
+    def compile_tree(
+        tree: SwapTree,
+    ) -> tuple[str, str, int, int]:
+        nonlocal merge_index
+        if isinstance(tree, int):
+            generation = generations[tree]
+            assert generation.output_segment_id is not None
+            return (
+                generation.output_segment_id,
+                generation.op_id,
+                tree,
+                tree + 1,
+            )
+
+        left_tree, right_tree = tree
+        left_segment, left_operation, start, split = compile_tree(left_tree)
+        right_segment, right_operation, right_start, end = compile_tree(
+            right_tree
+        )
+        if split != right_start:
+            raise ValueError("swap tree leaves must form contiguous path intervals")
+
+        current_merge = merge_index
+        merge_index += 1
+        middle = route_nodes[split]
+        op_id = f"{request_id}:swap:tree:{tree_index}:{current_merge}"
+        output = f"{request_id}:seg:tree:{tree_index}:{current_merge}"
+        operations.append(ConstructionOperation(
+            op_id=op_id,
+            request_id=request_id,
+            kind=OperationKind.SWAP,
+            predecessors=(left_operation, right_operation),
+            input_segment_ids=(left_segment, right_segment),
+            output_segment_id=output,
+            output_endpoints=(route_nodes[start], route_nodes[end]),
+            resource_demand=ResourceDemand.from_mapping({f"bsm:{middle}": 1}),
+            output_resource_hold=ResourceDemand.from_mapping({
+                f"memory:{route_nodes[start]}": 1,
+                f"memory:{route_nodes[end]}": 1,
+            }),
+            required_fidelity=(
+                required_fidelity
+                if start == 0 and end == len(route_nodes) - 1
+                else 0.0
+            ),
+            retry_limit=1,
+            duration_ps=2,
+            ordinal=len(operations),
+        ))
+        return output, op_id, start, end
+
+    compile_tree(trees[tree_index])
+    if len(route_nodes) == 2:
+        generations[0] = replace(
+            generations[0],
+            required_fidelity=required_fidelity,
+        )
+        operations[0] = generations[0]
+    return ConstructionDAG(request_id, tuple(operations))
 
 
 def left_deep_path_dag(
@@ -190,3 +396,86 @@ def balanced_path_dag(
             index += 2
         level = next_level
     return ConstructionDAG(request_id, tuple(operations))
+
+
+def elementary_purification_dag(dag: ConstructionDAG) -> ConstructionDAG:
+    """Insert one BBPSSW round after every elementary-pair generation.
+
+    The returned graph remains simulator-neutral.  Each original ``GEN`` is
+    replaced by two sequential generations and one ``PURIFY`` operation.  The
+    purification output reuses the original segment ID, so the existing swap
+    tree does not need to know how the elementary pair was prepared.
+    """
+
+    original = dag.operations
+    completion_id = {
+        operation.op_id: (
+            f"{operation.op_id}:purify"
+            if operation.kind == OperationKind.GEN
+            else operation.op_id
+        )
+        for operation in original
+    }
+    operations: list[ConstructionOperation] = []
+    ordinal = 0
+    for operation in original:
+        predecessors = tuple(
+            completion_id[predecessor]
+            for predecessor in operation.predecessors
+        )
+        if operation.kind != OperationKind.GEN:
+            operations.append(replace(
+                operation,
+                predecessors=predecessors,
+                ordinal=ordinal,
+            ))
+            ordinal += 1
+            continue
+
+        if operation.output_segment_id is None or operation.output_endpoints is None:
+            raise ValueError("elementary purification requires complete GEN metadata")
+        left, right = operation.output_endpoints
+        edge = f"{min(left, right)}-{max(left, right)}"
+        keep_id = f"{operation.op_id}:purify:keep"
+        measure_id = f"{operation.op_id}:purify:measure"
+        purify_id = completion_id[operation.op_id]
+        keep_segment = f"{operation.output_segment_id}:purify:keep"
+        measure_segment = f"{operation.output_segment_id}:purify:measure"
+
+        keep = replace(
+            operation,
+            op_id=keep_id,
+            predecessors=predecessors,
+            output_segment_id=keep_segment,
+            required_fidelity=0.0,
+            ordinal=ordinal,
+        )
+        measure = replace(
+            operation,
+            op_id=measure_id,
+            predecessors=(keep_id,),
+            output_segment_id=measure_segment,
+            required_fidelity=0.0,
+            ordinal=ordinal + 1,
+        )
+        purify = ConstructionOperation(
+            op_id=purify_id,
+            request_id=operation.request_id,
+            kind=OperationKind.PURIFY,
+            predecessors=(keep_id, measure_id),
+            input_segment_ids=(keep_segment, measure_segment),
+            output_segment_id=operation.output_segment_id,
+            output_endpoints=operation.output_endpoints,
+            resource_demand=ResourceDemand.from_mapping({
+                f"purify:{edge}": 1,
+            }),
+            output_resource_hold=operation.output_resource_hold,
+            duration_ps=1,
+            required_fidelity=operation.required_fidelity,
+            retry_limit=operation.retry_limit,
+            ordinal=ordinal + 2,
+            dag_version=operation.dag_version,
+        )
+        operations.extend((keep, measure, purify))
+        ordinal += 3
+    return ConstructionDAG(dag.request_id, tuple(operations), version=dag.version)

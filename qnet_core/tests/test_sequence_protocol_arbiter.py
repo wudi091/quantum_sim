@@ -72,6 +72,51 @@ class SequenceProtocolArbiterTests(unittest.TestCase):
         ))
         self.assertTrue(swaps.feasible)
 
+    def test_enabled_arbiter_rejects_swaps_with_shared_physical_node(self):
+        arbiter = SequenceProtocolArbiter(
+            supports_inter_epoch_launch=True,
+            supports_mixed_operation_concurrency=False,
+            supports_concurrent_swaps=True,
+        )
+        result = arbiter.validate((
+            self._request("s0", OperationKind.SWAP, (0, 1, 2), ("a", "b")),
+            self._request("s1", OperationKind.SWAP, (2, 3, 4), ("c", "d")),
+        ))
+        self.assertFalse(result.feasible)
+        self.assertEqual(
+            result.reason,
+            "concurrent swaps have shared physical node",
+        )
+
+    def test_enabled_arbiter_rejects_same_middle_node(self):
+        arbiter = SequenceProtocolArbiter(
+            supports_inter_epoch_launch=True,
+            supports_mixed_operation_concurrency=False,
+            supports_concurrent_swaps=True,
+        )
+        result = arbiter.validate((
+            self._request("s0", OperationKind.SWAP, (0, 1, 2), ("a", "b")),
+            self._request("s1", OperationKind.SWAP, (3, 1, 4), ("c", "d")),
+        ))
+        self.assertFalse(result.feasible)
+        self.assertEqual(
+            result.reason,
+            "concurrent swaps have shared physical node",
+        )
+
+    def test_enabled_arbiter_rejects_shared_input_segment(self):
+        arbiter = SequenceProtocolArbiter(
+            supports_inter_epoch_launch=True,
+            supports_mixed_operation_concurrency=False,
+            supports_concurrent_swaps=True,
+        )
+        result = arbiter.validate((
+            self._request("s0", OperationKind.SWAP, (0, 1, 2), ("a", "b")),
+            self._request("s1", OperationKind.SWAP, (3, 4, 5), ("b", "c")),
+        ))
+        self.assertFalse(result.feasible)
+        self.assertEqual(result.reason, "input segment consumed twice")
+
     def test_input_pair_conflicts_are_rejected_independently_of_family(self):
         arbiter = self._conservative()
         result = arbiter.validate(

@@ -99,6 +99,33 @@ class SequenceConcurrencyScheduler:
             return SchedulerValidation(False, "operations are in flight")
         swaps = [operation for operation in operations if operation.kind == OperationKind.SWAP]
         generations = [operation for operation in operations if operation.kind == OperationKind.GEN]
+        purifications = [
+            operation for operation in operations
+            if operation.kind == OperationKind.PURIFY
+        ]
+        pending_physical = [
+            operation for operation in pending_operations
+            if operation.kind in {
+                OperationKind.GEN,
+                OperationKind.PURIFY,
+                OperationKind.SWAP,
+            }
+        ]
+        pending_purifications = [
+            operation for operation in pending_operations
+            if operation.kind == OperationKind.PURIFY
+        ]
+        incoming_physical = generations + purifications + swaps
+        if len(purifications) > 1:
+            return SchedulerValidation(False, "concurrent purifications are disabled")
+        if purifications and (
+            len(incoming_physical) > 1 or pending_physical
+        ):
+            return SchedulerValidation(
+                False, "purification cannot share a physical protocol epoch"
+            )
+        if pending_purifications and incoming_physical:
+            return SchedulerValidation(False, "purification is already in flight")
         pending_swaps = [
             operation
             for operation in pending_operations

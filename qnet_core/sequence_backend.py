@@ -68,6 +68,26 @@ class PreparedSwap:
     started_time_ps: int
 
 
+@dataclass(frozen=True)
+class PreparedPurification:
+    """Opaque handle for one two-pair BBPSSW attempt."""
+
+    attempt_id: str
+    keep_pair_id: str
+    measure_pair_id: str
+    left_protocol: object
+    right_protocol: object
+    kept_left_memory: object
+    kept_right_memory: object
+    measured_left_memory: object
+    measured_right_memory: object
+    kept_state: tuple[float, ...]
+    measured_state: tuple[float, ...]
+    kept_fidelities: tuple[float, float]
+    measured_fidelities: tuple[float, float]
+    started_time_ps: int
+
+
 class SequenceBackend:
     """Common physical state shared by all planners."""
 
@@ -77,9 +97,11 @@ class SequenceBackend:
     # Multiple protocol families still share SeQUeNCe's global timeline and
     # Bell-diagonal state manager.  In SeQUeNCe 1.0.0, starting GEN and SWAP
     # in the same launch can race even on disjoint links, so the adapter keeps
-    # same-epoch mixed-family packing conservative.  Inter-epoch launches are
-    # still supported when the resource scheduler proves them independent.
-    supports_concurrent_swaps = False
+    # same-epoch mixed-family packing conservative.  Independent SWAPs are
+    # safe once reserved input pairs are excluded from ordinary pair-index
+    # synchronization; the scheduler and protocol arbiter separately reject
+    # shared BSM nodes, input segments, memories, and physical node scopes.
+    supports_concurrent_swaps = True
     supports_mixed_operation_concurrency = False
     supports_inter_epoch_launch = True
 
@@ -100,6 +122,7 @@ class SequenceBackend:
         self.time = 0  # logical routing slots; SeQUeNCe uses ps internally
         self._counter = 0
         self.pairs: dict[str, ResourcePair] = {}
+        self._protocol_owned_pair_ids: set[str] = set()
         self._claim_results: dict[
             tuple[int, str, tuple[int, int], int], str | None
         ] = {}
@@ -143,6 +166,9 @@ class SequenceBackend:
                 EntanglementSwappingA,
                 EntanglementSwappingB,
             )
+            from sequence.entanglement_management.purification import (
+                BBPSSWProtocol,
+            )
             from sequence.kernel.timeline import Timeline
             from sequence.resource_management.memory_manager import MemoryInfo
             from sequence.topology.node import BSMNode, QuantumRouter
@@ -157,11 +183,13 @@ class SequenceBackend:
         EntanglementGenerationB.set_global_type("single_heralded")
         EntanglementSwappingA.set_formalism("bell_diagonal")
         EntanglementSwappingB.set_formalism("bell_diagonal")
+        BBPSSWProtocol.set_formalism("bell_diagonal")
 
         self._MemoryInfo = MemoryInfo
         self._EntanglementGenerationA = EntanglementGenerationA
         self._EntanglementSwappingA = EntanglementSwappingA
         self._EntanglementSwappingB = EntanglementSwappingB
+        self._BBPSSWProtocol = BBPSSWProtocol
         # SeQUeNCe 1.0.0 still draws protocol outcomes from Python's
         # process-global RNG.  Reset it before constructing the world so a
         # physical episode is reproducible and independent of the execution
@@ -411,6 +439,14 @@ class SequenceBackend:
         ]
         return max(1_000, 2 * max(delays, default=1) + 100)
 
+    def _purification_window_ps(self) -> int:
+        delays = [
+            channel.delay
+            for router in self.nodes.values()
+            for channel in router.cchannels.values()
+        ]
+        return max(1_000, 2 * max(delays, default=1) + 100)
+
     @property
     def generation_duration_ps(self) -> int:
         return self._generation_window_ps()
@@ -418,6 +454,10 @@ class SequenceBackend:
     @property
     def swap_duration_ps(self) -> int:
         return self._swap_window_ps()
+
+    @property
+    def purification_duration_ps(self) -> int:
+        return self._purification_window_ps()
 
     def advance_physical_to(self, target_ps: int, *, synchronize: bool = True) -> None:
         """Advance SeQUeNCe without changing the legacy logical slot clock."""
@@ -480,6 +520,15 @@ class SequenceBackend:
     def _sync_pairs(self) -> None:
         """Mirror SeQUeNCe memory state into the routing index."""
         for pair_id, pair in list(self.pairs.items()):
+            # An in-flight SWAP/PURIFY protocol owns its input pair.
+            # SeQUeNCe legitimately rewrites or resets those memories before
+            # the adapter finalizes the protocol.  Treating that transient
+            # state as expiration would discard the pair and, for BDS swaps,
+            # can remove a newly-created remote state belonging to another
+            # concurrently prepared swap.  The protocol finalizer is the only
+            # component allowed to settle reserved inputs.
+            if pair_id in self._protocol_owned_pair_ids:
+                continue
             if not self._is_entangled(pair.left_memory, pair.right, pair.right_memory):
                 self.discard_pair(pair_id)
                 continue
@@ -533,6 +582,8 @@ class SequenceBackend:
         pair = self.pairs.get(pair_id)
         if pair is None:
             return None
+        if pair_id in self._protocol_owned_pair_ids:
+            return self._resource_view(pair)
         if not (
             self._is_entangled(pair.left_memory, pair.right, pair.right_memory)
             and self._is_entangled(pair.right_memory, pair.left, pair.left_memory)
@@ -748,6 +799,10 @@ class SequenceBackend:
 
     def discard_pair(self, pair_id: str) -> PhysicalResource | None:
         """Remove a pair and release both SeQUeNCe memories."""
+        if pair_id in self._protocol_owned_pair_ids:
+            raise RuntimeError(
+                "cannot discard a pair owned by an in-flight physical protocol"
+            )
         pair = self.pairs.pop(pair_id, None)
         if pair is None:
             return None
@@ -983,24 +1038,30 @@ class SequenceBackend:
         self,
         generations: Iterable[PreparedGeneration] = (),
         swaps: Iterable[PreparedSwap] = (),
+        purifications: Iterable[PreparedPurification] = (),
         deadline_ps: int | None = None,
     ) -> None:
         """Run all supplied protocol instances until they terminate."""
 
         generation_list = tuple(generations)
         swap_list = tuple(swaps)
+        purification_list = tuple(purifications)
         protocols: list[object] = []
         for item in generation_list:
             if item.context is not None:
                 protocols.extend(item.context[-2:])
         for item in swap_list:
             protocols.extend((item.end_left_protocol, item.middle_protocol, item.end_right_protocol))
+        for item in purification_list:
+            protocols.extend((item.left_protocol, item.right_protocol))
         if protocols:
             windows = []
             if generation_list:
                 windows.append(self._generation_window_ps())
             if swap_list:
                 windows.append(self._swap_window_ps())
+            if purification_list:
+                windows.append(self._purification_window_ps())
             window = max(windows)
             if deadline_ps is not None:
                 window = min(window, max(0, int(deadline_ps) - self.physical_time_ps))
@@ -1010,6 +1071,7 @@ class SequenceBackend:
         self,
         generations: Iterable[PreparedGeneration] = (),
         swaps: Iterable[PreparedSwap] = (),
+        purifications: Iterable[PreparedPurification] = (),
     ) -> bool:
         """Report whether all supplied physical protocols have terminated."""
 
@@ -1019,6 +1081,8 @@ class SequenceBackend:
                 protocols.extend(item.context[-2:])
         for item in swaps:
             protocols.extend((item.end_left_protocol, item.middle_protocol, item.end_right_protocol))
+        for item in purifications:
+            protocols.extend((item.left_protocol, item.right_protocol))
         return all(protocol not in protocol.owner.protocols for protocol in protocols)
 
     def _generate_batch(
@@ -1133,6 +1197,233 @@ class SequenceBackend:
             if outcomes[pair_id] is not None
         )
 
+    def can_begin_purification(
+        self,
+        keep_pair_id: str,
+        measure_pair_id: str,
+    ) -> bool:
+        """Read-only preflight for a two-pair BBPSSW reservation."""
+
+        if keep_pair_id == measure_pair_id:
+            return False
+        self._sync_pairs()
+        keep = self.pairs.get(keep_pair_id)
+        measure = self.pairs.get(measure_pair_id)
+        if (
+            keep is None
+            or measure is None
+            or keep.endpoints != measure.endpoints
+            or keep.reserved_by is not None
+            or measure.reserved_by is not None
+            or min(keep.fidelity, measure.fidelity) <= 0.5
+        ):
+            return False
+        left, right = keep.endpoints
+        return (
+            self._is_entangled(keep.left_memory, right, keep.right_memory)
+            and self._is_entangled(keep.right_memory, left, keep.left_memory)
+            and self._is_entangled(measure.left_memory, right, measure.right_memory)
+            and self._is_entangled(measure.right_memory, left, measure.left_memory)
+        )
+
+    def begin_purification(
+        self,
+        keep_pair_id: str,
+        measure_pair_id: str,
+        attempt_id: str,
+    ) -> PreparedPurification | None:
+        """Start one native SeQUeNCe BBPSSW protocol pair."""
+
+        if not attempt_id:
+            raise ValueError("attempt_id must be non-empty")
+        if not self.can_begin_purification(keep_pair_id, measure_pair_id):
+            return None
+        keep = self.pairs.get(keep_pair_id)
+        measure = self.pairs.get(measure_pair_id)
+        assert keep is not None and measure is not None
+        left_node_id, right_node_id = keep.endpoints
+
+        quantum_manager = self.timeline.quantum_manager
+        kept_state = tuple(float(value) for value in quantum_manager.get(
+            keep.left_memory.qstate_key
+        ).state)
+        measured_state = tuple(float(value) for value in quantum_manager.get(
+            measure.left_memory.qstate_key
+        ).state)
+        keep.reserved_by = attempt_id
+        measure.reserved_by = attempt_id
+        self._protocol_owned_pair_ids.update((keep_pair_id, measure_pair_id))
+        protocols: list[object] = []
+        try:
+            left_node = self.nodes[left_node_id]
+            right_node = self.nodes[right_node_id]
+            left_node.set_seed(self._event_seed(
+                "purify", self.physical_time_ps, attempt_id, left_node_id
+            ))
+            right_node.set_seed(self._event_seed(
+                "purify", self.physical_time_ps, attempt_id, right_node_id
+            ))
+            suffix = f"purify-{self._counter}"
+            left_protocol = self._BBPSSWProtocol.create(
+                left_node,
+                f"{suffix}-l",
+                keep.left_memory,
+                measure.left_memory,
+                is_twirled=True,
+            )
+            right_protocol = self._BBPSSWProtocol.create(
+                right_node,
+                f"{suffix}-r",
+                keep.right_memory,
+                measure.right_memory,
+                is_twirled=True,
+            )
+            left_node.protocols.append(left_protocol)
+            protocols.append(left_protocol)
+            right_node.protocols.append(right_protocol)
+            protocols.append(right_protocol)
+            left_protocol.set_others(
+                right_protocol.name,
+                right_node.name,
+                [keep.right_memory.name, measure.right_memory.name],
+            )
+            right_protocol.set_others(
+                left_protocol.name,
+                left_node.name,
+                [keep.left_memory.name, measure.left_memory.name],
+            )
+            left_protocol.start()
+            right_protocol.start()
+            self._counter += 1
+            return PreparedPurification(
+                attempt_id=attempt_id,
+                keep_pair_id=keep_pair_id,
+                measure_pair_id=measure_pair_id,
+                left_protocol=left_protocol,
+                right_protocol=right_protocol,
+                kept_left_memory=keep.left_memory,
+                kept_right_memory=keep.right_memory,
+                measured_left_memory=measure.left_memory,
+                measured_right_memory=measure.right_memory,
+                kept_state=kept_state,
+                measured_state=measured_state,
+                kept_fidelities=(
+                    float(keep.left_memory.fidelity),
+                    float(keep.right_memory.fidelity),
+                ),
+                measured_fidelities=(
+                    float(measure.left_memory.fidelity),
+                    float(measure.right_memory.fidelity),
+                ),
+                started_time_ps=self.physical_time_ps,
+            )
+        except Exception:
+            for protocol in reversed(protocols):
+                self._cancel_protocol(protocol)
+            quantum_manager.set(
+                [keep.left_memory.qstate_key, keep.right_memory.qstate_key],
+                list(kept_state),
+            )
+            quantum_manager.set(
+                [measure.left_memory.qstate_key, measure.right_memory.qstate_key],
+                list(measured_state),
+            )
+            keep.reserved_by = None
+            measure.reserved_by = None
+            self._protocol_owned_pair_ids.difference_update(
+                (keep_pair_id, measure_pair_id)
+            )
+            raise
+
+    def cancel_purification(self, prepared: PreparedPurification) -> None:
+        """Roll back a purification handle before physical time advances."""
+
+        if self.physical_time_ps != prepared.started_time_ps:
+            raise RuntimeError("cannot cancel purification after physical time advanced")
+        for protocol in (prepared.left_protocol, prepared.right_protocol):
+            self._cancel_protocol(protocol)
+        quantum_manager = self.timeline.quantum_manager
+        quantum_manager.set(
+            [
+                prepared.kept_left_memory.qstate_key,
+                prepared.kept_right_memory.qstate_key,
+            ],
+            list(prepared.kept_state),
+        )
+        quantum_manager.set(
+            [
+                prepared.measured_left_memory.qstate_key,
+                prepared.measured_right_memory.qstate_key,
+            ],
+            list(prepared.measured_state),
+        )
+        prepared.kept_left_memory.fidelity = prepared.kept_fidelities[0]
+        prepared.kept_right_memory.fidelity = prepared.kept_fidelities[1]
+        prepared.measured_left_memory.fidelity = prepared.measured_fidelities[0]
+        prepared.measured_right_memory.fidelity = prepared.measured_fidelities[1]
+        for pair_id in (prepared.keep_pair_id, prepared.measure_pair_id):
+            pair = self.pairs.get(pair_id)
+            if pair is not None and pair.reserved_by == prepared.attempt_id:
+                pair.reserved_by = None
+        self._protocol_owned_pair_ids.difference_update(
+            (prepared.keep_pair_id, prepared.measure_pair_id)
+        )
+
+    def finish_purification(
+        self,
+        prepared: PreparedPurification,
+    ) -> str | None:
+        """Finalize BBPSSW, retaining only the kept pair on success."""
+
+        complete = self.prepared_complete(purifications=(prepared,))
+        if not complete:
+            for protocol in (prepared.left_protocol, prepared.right_protocol):
+                self._cancel_protocol(protocol)
+        keep = self.pairs.pop(prepared.keep_pair_id, None)
+        measure = self.pairs.pop(prepared.measure_pair_id, None)
+        self._protocol_owned_pair_ids.difference_update(
+            (prepared.keep_pair_id, prepared.measure_pair_id)
+        )
+        success = (
+            complete
+            and keep is not None
+            and measure is not None
+            and prepared.left_protocol.meas_res is not None
+            and prepared.left_protocol.meas_res
+            == prepared.right_protocol.meas_res
+            and self._is_entangled(
+                prepared.kept_left_memory,
+                keep.right,
+                prepared.kept_right_memory,
+            )
+            and self._is_entangled(
+                prepared.kept_right_memory,
+                keep.left,
+                prepared.kept_left_memory,
+            )
+        )
+        if not success:
+            for memory in (
+                prepared.kept_left_memory,
+                prepared.kept_right_memory,
+                prepared.measured_left_memory,
+                prepared.measured_right_memory,
+            ):
+                self._release_memory(memory)
+            return None
+
+        prepared.kept_left_memory.bds_decohere()
+        prepared.kept_right_memory.bds_decohere()
+        keep.fidelity = min(
+            prepared.kept_left_memory.get_bds_fidelity(),
+            prepared.kept_right_memory.get_bds_fidelity(),
+        )
+        keep.born = self.physical_time_ps
+        keep.reserved_by = None
+        self.pairs[keep.pair_id] = keep
+        # Successful BBPSSW has already returned both measured memories to RAW.
+        return keep.pair_id
+
     def begin_swap(
         self,
         action: SwapAction,
@@ -1172,6 +1463,7 @@ class SequenceBackend:
 
         left.reserved_by = attempt_id
         right.reserved_by = attempt_id
+        self._protocol_owned_pair_ids.update((left.pair_id, right.pair_id))
         protocols: list[object] = []
         try:
             middle_node.set_seed(self._event_seed(
@@ -1233,6 +1525,9 @@ class SequenceBackend:
                 left.reserved_by = None
             if right.reserved_by == attempt_id:
                 right.reserved_by = None
+            self._protocol_owned_pair_ids.difference_update(
+                (left.pair_id, right.pair_id)
+            )
             raise
 
     def cancel_swap(self, prepared: PreparedSwap) -> None:
@@ -1250,6 +1545,9 @@ class SequenceBackend:
             pair = self.pairs.get(pair_id)
             if pair is not None and pair.reserved_by == prepared.attempt_id:
                 pair.reserved_by = None
+        self._protocol_owned_pair_ids.difference_update(
+            (prepared.left_pair_id, prepared.right_pair_id)
+        )
 
     def can_begin_swap(self, action: SwapAction) -> bool:
         """Read-only preflight for an event-level swap reservation."""
@@ -1283,6 +1581,9 @@ class SequenceBackend:
 
         left = self.pairs.pop(prepared.left_pair_id, None)
         right = self.pairs.pop(prepared.right_pair_id, None)
+        self._protocol_owned_pair_ids.difference_update(
+            (prepared.left_pair_id, prepared.right_pair_id)
+        )
         success = bool(prepared.middle_protocol.is_success)
 
         if not success:

@@ -174,13 +174,16 @@ def execution_event_metrics(
     post_completion_validation_failure_count = 0
     generation_event_count = 0
     generation_protocol_attempt_count = 0
+    purification_protocol_attempt_count = 0
     swap_protocol_attempt_count = 0
     fidelity_check_count = 0
     generation_physical_failure_count = 0
+    purification_physical_failure_count = 0
     swap_physical_failure_count = 0
     for event in events:
         cause = event.failure_cause
         is_generation = event.event_kind == "gen"
+        is_purification = event.event_kind == "purify"
         is_swap = event.event_kind == "swap"
         backend_rejection = cause in PHYSICAL_BACKEND_REJECTION_CAUSES
         generation_event_count += int(is_generation)
@@ -188,8 +191,9 @@ def execution_event_metrics(
             is_generation and not backend_rejection
         )
         swap_protocol_attempt_count += int(is_swap)
+        purification_protocol_attempt_count += int(is_purification)
         fidelity_check_count += int(
-            (is_generation or is_swap)
+            (is_generation or is_purification or is_swap)
             and (event.success or cause == "fidelity_reject")
         )
         expiration_count += int(cause == "expiration")
@@ -202,6 +206,9 @@ def execution_event_metrics(
         swap_physical_failure_count += int(
             stochastic_failure and event.event_kind == "swap"
         )
+        purification_physical_failure_count += int(
+            stochastic_failure and event.event_kind == "purify"
+        )
         physical_backend_rejection_count += int(
             cause in PHYSICAL_BACKEND_REJECTION_CAUSES
         )
@@ -209,7 +216,9 @@ def execution_event_metrics(
             cause in POST_COMPLETION_VALIDATION_FAILURE_CAUSES
         )
     physical_protocol_attempt_count = (
-        generation_protocol_attempt_count + swap_protocol_attempt_count
+        generation_protocol_attempt_count
+        + purification_protocol_attempt_count
+        + swap_protocol_attempt_count
     )
     return {
         "expiration_count": float(expiration_count),
@@ -226,6 +235,9 @@ def execution_event_metrics(
             generation_protocol_attempt_count
         ),
         "swap_protocol_attempt_count": float(swap_protocol_attempt_count),
+        "purification_protocol_attempt_count": float(
+            purification_protocol_attempt_count
+        ),
         "physical_protocol_attempt_count": float(
             physical_protocol_attempt_count
         ),
@@ -235,5 +247,8 @@ def execution_event_metrics(
         ),
         "swap_physical_failure_count": float(
             swap_physical_failure_count
+        ),
+        "purification_physical_failure_count": float(
+            purification_physical_failure_count
         ),
     }

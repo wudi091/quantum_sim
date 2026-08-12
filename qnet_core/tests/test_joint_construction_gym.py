@@ -2,7 +2,6 @@ import unittest
 from dataclasses import replace
 from unittest.mock import patch
 
-from algorithms.caappo import ShortestPathLeftDeepPolicy
 from qnet_core.construction_api import (
     ConstructionDAG,
     ConstructionLaunchRejected,
@@ -12,10 +11,27 @@ from qnet_core.construction_api import (
     ResourceDemand,
 )
 from qnet_core.construction_catalog import RouteConstructionCandidate
-from qnet_core.construction_catalog import build_route_construction_catalogue
+from qnet_core.construction_catalog import (
+    build_route_construction_catalogue,
+    candidates_by_request,
+)
 from qnet_core.joint_construction_gym import JointConstructionBatchEnv, JointPhase
 from qnet_core.planning_spec import RequestSpec
 from qnet_core.spec import EpisodeSpec, PhysicalConfig
+
+
+def _select_left_deep(candidates):
+    return {
+        request_id: min(
+            values,
+            key=lambda candidate: (
+                candidate.hop_count,
+                candidate.construction_kind != "left_deep",
+                candidate.candidate_id,
+            ),
+        )
+        for request_id, values in candidates_by_request(candidates).items()
+    }
 
 
 class JointConstructionBatchEnvTests(unittest.TestCase):
@@ -40,9 +56,7 @@ class JointConstructionBatchEnvTests(unittest.TestCase):
         initial = env.reset()
         self.assertEqual(initial.phase, JointPhase.ADMISSION)
         self.assertIsNone(initial.observation)
-        chosen = {
-            "r0": ShortestPathLeftDeepPolicy().select(catalogue)["r0"]
-        }
+        chosen = {"r0": _select_left_deep(catalogue)["r0"]}
         admitted = env.admit(chosen)
         self.assertEqual(admitted.phase, JointPhase.EXECUTION)
         self.assertEqual(admitted.info["event_kind"], "admission")

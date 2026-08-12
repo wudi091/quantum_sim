@@ -18,7 +18,7 @@ from .construction_api import ConstructionOperation, LogicalSegment, OperationKi
 
 @dataclass(frozen=True)
 class ProtocolRequest:
-    """Neutral physical scope required by one GEN or SWAP operation."""
+    """Neutral physical scope required by one physical protocol operation."""
 
     operation_id: str
     kind: str
@@ -28,8 +28,12 @@ class ProtocolRequest:
     def __post_init__(self) -> None:
         if not self.operation_id:
             raise ValueError("protocol operation_id must be non-empty")
-        if self.kind not in {OperationKind.GEN, OperationKind.SWAP}:
-            raise ValueError("protocol requests only support GEN and SWAP")
+        if self.kind not in {
+            OperationKind.GEN,
+            OperationKind.PURIFY,
+            OperationKind.SWAP,
+        }:
+            raise ValueError("unsupported physical protocol request")
         if not self.physical_nodes:
             raise ValueError("protocol physical_nodes must be non-empty")
         if len(set(self.input_segment_ids)) != len(self.input_segment_ids):
@@ -43,7 +47,11 @@ class ProtocolRequest:
     ) -> "ProtocolRequest | None":
         """Build a request from a neutral operation and current segments."""
 
-        if operation.kind not in {OperationKind.GEN, OperationKind.SWAP}:
+        if operation.kind not in {
+            OperationKind.GEN,
+            OperationKind.PURIFY,
+            OperationKind.SWAP,
+        }:
             return None
         nodes = set(operation.output_endpoints or ())
         for segment_id in operation.input_segment_ids:
@@ -122,6 +130,14 @@ class SequenceProtocolArbiter:
         left: Sequence[ProtocolRequest],
         right: Sequence[ProtocolRequest],
     ) -> bool:
+        """Reject swaps sharing any physical node, not merely the BSM node.
+
+        The planning model separately gives each ``bsm:<middle>`` capacity
+        one.  This physical-scope check also protects endpoint memories and
+        classical-message handlers when two routes overlap away from their
+        middle nodes.
+        """
+
         swaps_left = [request for request in left if request.kind == OperationKind.SWAP]
         swaps_right = [request for request in right if request.kind == OperationKind.SWAP]
         for first_index, first in enumerate(swaps_left):
@@ -182,6 +198,28 @@ class SequenceProtocolArbiter:
             return ArbiterValidation(False, "input segment is already in flight")
         if active_requests and not self.supports_inter_epoch_launch:
             return ArbiterValidation(False, "operations are in flight")
+        incoming_purifications = [
+            request for request in incoming
+            if request.kind == OperationKind.PURIFY
+        ]
+        active_purifications = [
+            request for request in active_requests
+            if request.kind == OperationKind.PURIFY
+        ]
+        if len(incoming_purifications) > 1:
+            return ArbiterValidation(False, "concurrent purifications are disabled")
+        if incoming_purifications and (
+            len(incoming) > 1 or active_requests
+        ):
+            return ArbiterValidation(
+                False,
+                "purification cannot share a physical protocol epoch",
+            )
+        if active_purifications and incoming:
+            return ArbiterValidation(
+                False,
+                "purification is already in flight",
+            )
         if self._mixed(incoming, ()) and not self.supports_mixed_operation_concurrency:
             return ArbiterValidation(False, "mixed generation/swap launch is disabled")
         if self._mixed(active_requests, incoming) and not self.supports_mixed_operation_concurrency:

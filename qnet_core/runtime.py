@@ -8,6 +8,7 @@ from .scenario import ScenarioConfig, make_episode
 from .sequence_backend import SequenceBackend
 from .sequence_construction_executor import SequenceConstructionExecutor
 from .construction_api import ConstructionDAG
+from .resource_catalog import build_resource_capacities
 from .spec import EpisodeSpec
 
 
@@ -56,19 +57,7 @@ def make_sequence_construction_executor(
     """
 
     backend = SequenceBackend(spec)
-    capacities: dict[str, int] = {}
-    for raw_u, raw_v in spec.edges:
-        u, v = sorted((raw_u, raw_v))
-        capacities[f"link:{u}-{v}"] = spec.physical.memory_capacity
-        capacities[f"genlane:{u}-{v}"] = spec.physical.max_width
-    for node in spec.nodes:
-        capacities[f"bsm:{node}"] = 1
-        degree = sum(node in edge for edge in spec.edges)
-        capacities[f"memory:{node}"] = (
-            spec.physical.node_memory_capacity
-            if spec.physical.node_memory_capacity is not None
-            else max(1, degree * spec.physical.memory_capacity)
-        )
+    capacities = build_resource_capacities(spec)
     return SequenceConstructionExecutor(
         dags,
         backend,

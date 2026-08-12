@@ -503,6 +503,8 @@ class SharedRoutingEnv:
         self._prepare_slot()
         request_rows = []
         for state in self.requests.values():
+            if state.spec.arrival > self.time:
+                continue
             try:
                 shortest = nx.shortest_path(self.graph, state.frontier, state.spec.destination)
                 shortest_next_hop = shortest[1] if len(shortest) > 1 else state.frontier

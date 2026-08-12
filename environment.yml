@@ -10,5 +10,4 @@ dependencies:
       - networkx
       - scipy
       - tqdm
-      - torch
       - pytest

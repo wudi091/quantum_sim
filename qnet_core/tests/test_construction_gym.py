@@ -1,10 +1,26 @@
 import unittest
 
-from algorithms.caappo import ShortestPathLeftDeepPolicy
-from qnet_core.construction_catalog import build_route_construction_catalogue
+from qnet_core.construction_catalog import (
+    build_route_construction_catalogue,
+    candidates_by_request,
+)
 from qnet_core.construction_gym import ConstructionBatchEnv
 from qnet_core.planning_spec import RequestSpec
 from qnet_core.spec import EpisodeSpec, PhysicalConfig
+
+
+def _select_left_deep(candidates):
+    return {
+        request_id: min(
+            values,
+            key=lambda candidate: (
+                candidate.hop_count,
+                candidate.construction_kind != "left_deep",
+                candidate.candidate_id,
+            ),
+        )
+        for request_id, values in candidates_by_request(candidates).items()
+    }
 
 
 class ConstructionBatchEnvTests(unittest.TestCase):
@@ -24,7 +40,7 @@ class ConstructionBatchEnvTests(unittest.TestCase):
             ),
         )
         candidates = build_route_construction_catalogue(spec.planning, candidate_count=1)
-        selected = ShortestPathLeftDeepPolicy().select(candidates)
+        selected = _select_left_deep(candidates)
         env = ConstructionBatchEnv(spec, selected)
 
         initial = env.reset()
@@ -55,7 +71,7 @@ class ConstructionBatchEnvTests(unittest.TestCase):
             ),
         )
         candidates = build_route_construction_catalogue(spec.planning, candidate_count=1)
-        selected = ShortestPathLeftDeepPolicy().select(candidates)
+        selected = _select_left_deep(candidates)
         env = ConstructionBatchEnv(spec, selected)
         state = env.reset()
         self.assertEqual(len(state.ready_operations), 2)
@@ -110,7 +126,7 @@ class ConstructionBatchEnvTests(unittest.TestCase):
         candidates = build_route_construction_catalogue(
             spec.planning, candidate_count=1
         )
-        selected = ShortestPathLeftDeepPolicy().select(candidates)
+        selected = _select_left_deep(candidates)
         terminal = next(iter(selected.values())).dag.operations[-1]
         self.assertEqual(terminal.required_fidelity, 0.99)
         env = ConstructionBatchEnv(spec, selected)
@@ -149,7 +165,7 @@ class ConstructionBatchEnvTests(unittest.TestCase):
             spec.planning, candidate_count=1
         )
         env = ConstructionBatchEnv(
-            spec, ShortestPathLeftDeepPolicy().select(candidates)
+            spec, _select_left_deep(candidates)
         )
         env.reset()
 

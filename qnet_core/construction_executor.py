@@ -24,6 +24,7 @@ from .construction_api import (
     ResourceDemand,
 )
 from .construction_repair import generate_repair_options
+from .fidelity_estimation import werner_bbpssw_result
 from .construction_decoder import CapacityFeasibilityOracle
 
 
@@ -53,8 +54,8 @@ class ConstructionDAGExecutor:
         # applies the catalogue-isolation boundary used by experiments.
         dag_list = tuple(dags)
         self.dags = {dag.request_id: dag for dag in dag_list}
-        if len(self.dags) != len(dag_list) or len(self.dags) == 0:
-            raise ValueError("at least one construction DAG is required")
+        if len(self.dags) != len(dag_list):
+            raise ValueError("construction DAG request IDs must be unique")
         self.capacities = {str(key): int(value) for key, value in capacities.items()}
         self.oracle = CapacityFeasibilityOracle(self.capacities)
         segment_list = tuple(initial_segments)
@@ -128,6 +129,36 @@ class ConstructionDAGExecutor:
         self._operation_owners = operation_owners
         self._output_owners = output_owners
 
+    def register_dag(self, dag: ConstructionDAG) -> None:
+        if self._terminated:
+            raise RuntimeError("executor is terminated")
+        if dag.request_id in self.dags:
+            raise ValueError(f"request DAG is already registered: {dag.request_id}")
+        self.dags[dag.request_id] = dag.clone()
+        try:
+            self._refresh_global_registry()
+        except Exception:
+            self.dags.pop(dag.request_id, None)
+            self._refresh_global_registry()
+            raise
+
+    def unregister_dag(self, request_id: str) -> None:
+        if request_id not in self.dags:
+            raise KeyError(request_id)
+        if any(
+            pending.operation.request_id == request_id
+            for pending in self._in_flight.values()
+        ):
+            raise RuntimeError("cannot unregister a request with in-flight operations")
+        self.release_request(request_id)
+        if any(
+            segment.request_id == request_id
+            for segment in self.segments.values()
+        ):
+            raise RuntimeError("cannot unregister a request with live segments")
+        self.dags.pop(request_id)
+        self._refresh_global_registry()
+
     def _usage(self, extra: Iterable[ResourceDemand] = ()) -> dict[str, int]:
         usage: dict[str, int] = {}
         held = tuple(
@@ -174,14 +205,23 @@ class ConstructionDAGExecutor:
                    key=lambda segment: segment.segment_id)
         )
 
-    def ready_operations(self) -> tuple[ConstructionOperation, ...]:
+    def ready_operations(
+        self,
+        allowed_operation_ids: Iterable[str] | None = None,
+    ) -> tuple[ConstructionOperation, ...]:
         self._refresh_global_registry()
+        allowed = (
+            None
+            if allowed_operation_ids is None
+            else {str(operation_id) for operation_id in allowed_operation_ids}
+        )
         available = self._available_segments()
         operations = [
             operation
             for dag in self.dags.values()
             for operation in dag.operations
             if operation.op_id in dag.ready_ids(available)
+            and (allowed is None or operation.op_id in allowed)
         ]
         return tuple(sorted(operations, key=lambda operation: operation.canonical_key))
 
@@ -278,6 +318,17 @@ class ConstructionDAGExecutor:
                         raise ValueError(
                             f"SWAP output endpoints do not match logical outer endpoints: {operation.op_id}"
                         )
+            if operation.kind == OperationKind.PURIFY:
+                left = self.segments.get(operation.input_segment_ids[0])
+                right = self.segments.get(operation.input_segment_ids[1])
+                if left is None or right is None:
+                    raise ValueError("PURIFY input segment is not available")
+                if set(left.endpoints) != set(right.endpoints):
+                    raise ValueError("PURIFY inputs must have identical endpoints")
+                if set(operation.output_endpoints or ()) != set(left.endpoints):
+                    raise ValueError(
+                        f"PURIFY output endpoints do not match inputs: {operation.op_id}"
+                    )
         result = self.oracle.check(operations)
         if not result.feasible:
             raise ValueError(result.reason)
@@ -358,11 +409,21 @@ class ConstructionDAGExecutor:
         if success:
             consumed = tuple(operation.input_segment_ids)
             input_segments = [self.segments.pop(segment_id) for segment_id in consumed]
-            if operation.kind in {OperationKind.GEN, OperationKind.SWAP}:
+            if operation.kind in {
+                OperationKind.GEN,
+                OperationKind.PURIFY,
+                OperationKind.SWAP,
+            }:
                 if operation.output_segment_id is None or operation.output_endpoints is None:
                     raise RuntimeError(f"{operation.kind} operation lacks output metadata")
                 output_id = operation.output_segment_id
                 fidelity = min((segment.fidelity for segment in input_segments), default=1.0)
+                if operation.kind == OperationKind.PURIFY:
+                    _, fidelity = werner_bbpssw_result(
+                        input_segments[0].fidelity,
+                        input_segments[1].fidelity,
+                        1.0,
+                    )
                 output_fidelity = fidelity
                 if output_fidelity < operation.required_fidelity:
                     cause = "fidelity_reject"
@@ -449,8 +510,12 @@ class ConstructionDAGExecutor:
         if self._terminated:
             return ExecutionEventBatch(self.physical_time_ps, (), 0, terminal=True)
         if not self._heap:
-            self.terminate()
-            return ExecutionEventBatch(self.physical_time_ps, (), 0, terminal=True)
+            return ExecutionEventBatch(
+                self.physical_time_ps,
+                (),
+                0,
+                terminal=self.physical_time_ps >= self.horizon_ps,
+            )
         next_time = min(self._heap[0][0], self.horizon_ps)
         if boundary_ps is not None:
             boundary_ps = int(boundary_ps)

@@ -11,14 +11,104 @@ from qnet_core.construction_api import (
     ResourceDemand,
 )
 from qnet_core.construction_decoder import CapacityFeasibilityOracle
+from qnet_core.construction_catalog import build_route_construction_catalogue
 from qnet_core.construction_metrics import execution_event_metrics
 from qnet_core.construction_plans import balanced_path_dag, left_deep_path_dag
 from qnet_core.sequence_backend import PreparedGeneration, SequenceBackend
 from qnet_core.sequence_construction_executor import SequenceConstructionExecutor
-from qnet_core.spec import EpisodeSpec, PhysicalConfig
+from qnet_core.resource_catalog import build_resource_capacities
+from qnet_core.spec import EpisodeSpec, PhysicalConfig, RequestSpec
 
 
 class SequenceConstructionExecutorTests(unittest.TestCase):
+    @staticmethod
+    def _disjoint_swap_executor(seed: int = 109):
+        spec = EpisodeSpec(
+            seed=seed,
+            nodes=(0, 1, 2, 3, 4, 5),
+            edges=((0, 1), (1, 2), (3, 4), (4, 5)),
+            requests=(),
+            horizon=100,
+            physical=PhysicalConfig(
+                generation_probability=1.0,
+                swap_probability=1.0,
+                memory_capacity=2,
+                node_memory_capacity=4,
+                quantum_distance_m=1.0,
+            ),
+        )
+        capacities = {
+            "link:0-1": 1,
+            "link:1-2": 1,
+            "link:3-4": 1,
+            "link:4-5": 1,
+            "genlane:0-1": 1,
+            "genlane:1-2": 1,
+            "genlane:3-4": 1,
+            "genlane:4-5": 1,
+            "bsm:1": 1,
+            "bsm:4": 1,
+            **{f"memory:{node}": 4 for node in spec.nodes},
+        }
+        executor = SequenceConstructionExecutor(
+            (
+                left_deep_path_dag("r0", (0, 1, 2)),
+                left_deep_path_dag("r1", (3, 4, 5)),
+            ),
+            SequenceBackend(spec),
+            capacities,
+            horizon_ps=500_000,
+        )
+        return executor
+
+    def test_native_bbpssw_can_raise_a_one_hop_request_above_threshold(self):
+        spec = EpisodeSpec(
+            seed=1,
+            nodes=(0, 1),
+            edges=((0, 1),),
+            requests=(RequestSpec(
+                "r", 0, 1, required_fidelity=0.82
+            ),),
+            horizon=10,
+            physical=PhysicalConfig(
+                initial_fidelity=0.8,
+                swap_degradation=1.0,
+                generation_probability=1.0,
+                swap_probability=1.0,
+                memory_capacity=2,
+                node_memory_capacity=2,
+                memory_lifetime=1000,
+                quantum_distance_m=1.0,
+                slot_duration_ps=1_000_000,
+            ),
+        )
+        candidate = build_route_construction_catalogue(
+            spec.planning,
+            candidate_count=1,
+            construction_kinds=("balanced",),
+            purification_kinds=("elementary_once",),
+        )[0]
+        executor = SequenceConstructionExecutor(
+            (candidate.dag,),
+            SequenceBackend(spec),
+            build_resource_capacities(spec),
+        )
+        events = []
+        for _ in range(3):
+            executor.launch(executor.ready_operations())
+            events.extend(executor.advance_to_next_event().events)
+
+        terminal = {
+            segment.segment_id: segment
+            for segment in executor.available_segments()
+        }[candidate.terminal_segment_id]
+        self.assertEqual(
+            [event.event_kind for event in events],
+            ["gen", "gen", "purify"],
+        )
+        self.assertTrue(all(event.success for event in events))
+        self.assertGreaterEqual(terminal.fidelity, 0.82)
+
     def test_backend_preparation_rejection_is_not_stochastic_failure(self):
         backend = self._backend()
         dag = left_deep_path_dag("r", (0, 1))
@@ -269,6 +359,111 @@ class SequenceConstructionExecutorTests(unittest.TestCase):
         self.assertEqual(
             {resource.lane for resource in backend.resources()},
             {0, 1},
+        )
+
+    def test_disjoint_swap_nodes_execute_in_parallel_across_multiple_seeds(self):
+        for seed in range(109, 117):
+            with self.subTest(seed=seed):
+                executor = self._disjoint_swap_executor(seed)
+                executor.launch(executor.ready_operations())
+                generation_batch = executor.advance_to_next_event()
+                self.assertEqual(len(generation_batch.events), 4)
+                self.assertTrue(all(
+                    event.success for event in generation_batch.events
+                ))
+
+                swaps = executor.ready_operations()
+                self.assertEqual(len(swaps), 2)
+                self.assertEqual(
+                    {
+                        resource
+                        for operation in swaps
+                        for resource, amount in operation.resource_demand.items()
+                        if amount
+                    },
+                    {"bsm:1", "bsm:4"},
+                )
+                executor.launch(swaps)
+                in_flight = executor.snapshot()
+                self.assertEqual(len(in_flight.in_flight), 2)
+                self.assertEqual(dict(in_flight.reservations)["bsm:1"], 1)
+                self.assertEqual(dict(in_flight.reservations)["bsm:4"], 1)
+
+                swap_batch = executor.advance_to_next_event()
+                self.assertEqual(len(swap_batch.events), 2)
+                self.assertTrue(all(event.success for event in swap_batch.events))
+                self.assertEqual(len(executor.available_segments()), 2)
+
+    def test_same_middle_node_swap_pair_is_rejected(self):
+        segments = {
+            "a": LogicalSegment("a", "r0", 0, 1, 0),
+            "b": LogicalSegment("b", "r0", 1, 2, 0),
+            "c": LogicalSegment("c", "r1", 3, 1, 0),
+            "d": LogicalSegment("d", "r1", 1, 4, 0),
+        }
+        swaps = (
+            ConstructionOperation(
+                "s0", "r0", OperationKind.SWAP,
+                input_segment_ids=("a", "b"),
+                output_segment_id="o0",
+                output_endpoints=(0, 2),
+                resource_demand=ResourceDemand.from_mapping({"bsm:1": 1}),
+            ),
+            ConstructionOperation(
+                "s1", "r1", OperationKind.SWAP,
+                input_segment_ids=("c", "d"),
+                output_segment_id="o1",
+                output_endpoints=(3, 4),
+                resource_demand=ResourceDemand.from_mapping({"bsm:1": 1}),
+            ),
+        )
+        from qnet_core.sequence_scheduler import SequenceConcurrencyScheduler
+
+        scheduler = SequenceConcurrencyScheduler(
+            {"bsm:1": 1},
+            supports_concurrent_swaps=True,
+        )
+        result = scheduler.validate(swaps, segments=tuple(segments.values()))
+        self.assertFalse(result.feasible)
+        self.assertEqual(
+            result.reason,
+            "concurrent swaps have shared physical node",
+        )
+
+    def test_swaps_sharing_endpoint_node_are_rejected(self):
+        segments = (
+            LogicalSegment("a", "r0", 0, 1, 0),
+            LogicalSegment("b", "r0", 1, 2, 0),
+            LogicalSegment("c", "r1", 2, 3, 0),
+            LogicalSegment("d", "r1", 3, 4, 0),
+        )
+        swaps = (
+            ConstructionOperation(
+                "s0", "r0", OperationKind.SWAP,
+                input_segment_ids=("a", "b"),
+                output_segment_id="o0",
+                output_endpoints=(0, 2),
+                resource_demand=ResourceDemand.from_mapping({"bsm:1": 1}),
+            ),
+            ConstructionOperation(
+                "s1", "r1", OperationKind.SWAP,
+                input_segment_ids=("c", "d"),
+                output_segment_id="o1",
+                output_endpoints=(2, 4),
+                resource_demand=ResourceDemand.from_mapping({"bsm:3": 1}),
+            ),
+        )
+        from qnet_core.sequence_scheduler import SequenceConcurrencyScheduler
+
+        scheduler = SequenceConcurrencyScheduler(
+            {"bsm:1": 1, "bsm:3": 1},
+            supports_concurrent_swaps=True,
+        )
+        result = scheduler.validate(swaps, segments=segments)
+        self.assertFalse(result.feasible)
+        self.assertEqual(
+            result.reason,
+            "concurrent swaps have shared physical node",
         )
 
     def test_generation_batch_rolls_back_if_later_prepare_raises(self):
@@ -711,6 +906,24 @@ class SequenceConstructionExecutorTests(unittest.TestCase):
                 self._capacities(),
                 horizon_ps=200_000,
             )
+
+    def test_dynamic_dag_can_be_unregistered_and_reused(self):
+        executor = SequenceConstructionExecutor(
+            (),
+            self._backend(),
+            self._capacities(),
+            horizon_ps=200_000,
+        )
+        dag = left_deep_path_dag("r", (0, 1))
+        executor.register_dag(dag)
+        executor.launch(executor.ready_operations())
+        batch = executor.advance_to_next_event()
+        self.assertTrue(batch.events[0].success)
+        executor.release_request("r")
+        executor.unregister_dag("r")
+        self.assertNotIn("r", executor.dags)
+        executor.register_dag(dag)
+        self.assertIn("r", executor.dags)
 
 
 if __name__ == "__main__":

@@ -10,7 +10,13 @@ from typing import Sequence
 import networkx as nx
 
 from .construction_api import ConstructionDAG, ConstructionOperation, OperationKind
-from .construction_plans import balanced_path_dag, left_deep_path_dag
+from .construction_plans import (
+    balanced_path_dag,
+    elementary_purification_dag,
+    left_deep_path_dag,
+    swap_tree_kinds,
+    swap_tree_path_dag,
+)
 from .planning_spec import PlanningSpec, RequestSpec
 
 
@@ -23,6 +29,7 @@ class RouteConstructionCandidate:
     dag: ConstructionDAG
     terminal_segment_id: str
     terminal_segment_ids: tuple[str, ...] = ()
+    purification_kind: str = "none"
 
     @property
     def hop_count(self) -> int:
@@ -122,26 +129,45 @@ def _dag_for_kind(
     request: RequestSpec,
     route: tuple[int, ...],
     kind: str,
+    purification_kind: str = "none",
 ) -> ConstructionDAG:
     if kind == "left_deep":
-        return left_deep_path_dag(
+        dag = left_deep_path_dag(
             request.id,
             route,
             required_fidelity=request.required_fidelity,
         )
-    if kind == "balanced":
-        return balanced_path_dag(
+    elif kind == "balanced":
+        dag = balanced_path_dag(
             request.id,
             route,
             required_fidelity=request.required_fidelity,
         )
-    raise ValueError(f"unknown construction kind: {kind}")
+    elif kind.startswith("swap_tree_"):
+        index_token = kind.removeprefix("swap_tree_")
+        if not index_token.isdigit():
+            raise ValueError(f"unknown construction kind: {kind}")
+        dag = swap_tree_path_dag(
+            request.id,
+            route,
+            int(index_token),
+            required_fidelity=request.required_fidelity,
+        )
+    else:
+        raise ValueError(f"unknown construction kind: {kind}")
+    if purification_kind == "none":
+        return dag
+    if purification_kind == "elementary_once":
+        return elementary_purification_dag(dag)
+    raise ValueError(f"unknown purification kind: {purification_kind}")
 
 
 def build_route_construction_catalogue(
     spec: PlanningSpec,
     candidate_count: int | None = 3,
     construction_kinds: tuple[str, ...] = ("left_deep", "balanced"),
+    purification_kinds: tuple[str, ...] = ("none",),
+    swap_tree_count: int | None = None,
 ) -> tuple[RouteConstructionCandidate, ...]:
     """Enumerate a joint ``(path, construction)`` action space.
 
@@ -152,8 +178,19 @@ def build_route_construction_catalogue(
 
     if candidate_count is not None and candidate_count < 1:
         raise ValueError("candidate_count must be positive")
-    if not construction_kinds:
-        raise ValueError("at least one construction kind is required")
+    if not construction_kinds and swap_tree_count is None:
+        raise ValueError("at least one construction policy is required")
+    if swap_tree_count is not None and swap_tree_count < 1:
+        raise ValueError("swap_tree_count must be positive")
+    if not purification_kinds:
+        raise ValueError("at least one purification kind is required")
+    if len(set(purification_kinds)) != len(purification_kinds):
+        raise ValueError("purification kinds must be unique")
+    unknown_purification = set(purification_kinds) - {"none", "elementary_once"}
+    if unknown_purification:
+        raise ValueError(
+            f"unknown purification kind: {sorted(unknown_purification)[0]}"
+        )
     graph = nx.Graph()
     graph.add_nodes_from(spec.nodes)
     graph.add_edges_from(spec.edges)
@@ -175,24 +212,42 @@ def build_route_construction_catalogue(
         except (nx.NetworkXNoPath, nx.NodeNotFound):
             routes = []
         for route_index, route in enumerate(routes):
-            for kind in construction_kinds:
-                base_dag = _dag_for_kind(request, route, kind)
-                dag, terminal_ids = _repeat_demand_dag(
-                    base_dag,
-                    request.id,
-                    request.demand_pairs,
-                    request.source,
-                    request.destination,
-                )
-                candidates.append(RouteConstructionCandidate(
-                    candidate_id=f"{request.id}:path:{route_index}:{kind}",
-                    request_id=request.id,
-                    route_nodes=route,
-                    construction_kind=kind,
-                    dag=dag,
-                    terminal_segment_id=terminal_ids[-1],
-                    terminal_segment_ids=terminal_ids,
-                ))
+            route_kinds = tuple(dict.fromkeys((
+                *construction_kinds,
+                *(
+                    ()
+                    if swap_tree_count is None
+                    else swap_tree_kinds(len(route) - 1, swap_tree_count)
+                ),
+            )))
+            for kind in route_kinds:
+                for purification_kind in purification_kinds:
+                    base_dag = _dag_for_kind(
+                        request, route, kind, purification_kind
+                    )
+                    dag, terminal_ids = _repeat_demand_dag(
+                        base_dag,
+                        request.id,
+                        request.demand_pairs,
+                        request.source,
+                        request.destination,
+                    )
+                    suffix = (
+                        "" if purification_kind == "none"
+                        else f":purify:{purification_kind}"
+                    )
+                    candidates.append(RouteConstructionCandidate(
+                        candidate_id=(
+                            f"{request.id}:path:{route_index}:{kind}{suffix}"
+                        ),
+                        request_id=request.id,
+                        route_nodes=route,
+                        construction_kind=kind,
+                        dag=dag,
+                        terminal_segment_id=terminal_ids[-1],
+                        terminal_segment_ids=terminal_ids,
+                        purification_kind=purification_kind,
+                    ))
     return tuple(candidates)
 
 
@@ -203,6 +258,8 @@ def build_dynamic_repair_catalogue(
     excluded_routes: Sequence[tuple[int, ...]] = (),
     max_paths: int = 4,
     construction_kinds: tuple[str, ...] = ("left_deep", "balanced"),
+    purification_kinds: tuple[str, ...] = ("none",),
+    swap_tree_count: int | None = None,
 ) -> tuple[RouteConstructionCandidate, ...]:
     """Generate previously unseen route/construction candidates at repair time.
 
@@ -214,8 +271,14 @@ def build_dynamic_repair_catalogue(
     """
     if max_paths < 1:
         raise ValueError("max_paths must be positive")
-    if not construction_kinds:
-        raise ValueError("at least one construction kind is required")
+    if not construction_kinds and swap_tree_count is None:
+        raise ValueError("at least one construction policy is required")
+    if swap_tree_count is not None and swap_tree_count < 1:
+        raise ValueError("swap_tree_count must be positive")
+    if not purification_kinds:
+        raise ValueError("at least one purification kind is required")
+    if set(purification_kinds) - {"none", "elementary_once"}:
+        raise ValueError("unknown purification kind")
     requests = {request.id: request for request in spec.requests}
     if request_id not in requests:
         raise KeyError(request_id)
@@ -235,26 +298,42 @@ def build_dynamic_repair_catalogue(
             if route in excluded:
                 continue
             route_token = "-".join(str(node) for node in route)
-            for kind in construction_kinds:
-                base_dag = _dag_for_kind(request, route, kind)
-                dag, terminal_ids = _repeat_demand_dag(
-                    base_dag,
-                    request.id,
-                    request.demand_pairs,
-                    request.source,
-                    request.destination,
-                )
-                candidates.append(RouteConstructionCandidate(
-                    candidate_id=(
-                        f"{request.id}:dynamic:path:{route_token}:{kind}"
-                    ),
-                    request_id=request.id,
-                    route_nodes=route,
-                    construction_kind=kind,
-                    dag=dag,
-                    terminal_segment_id=terminal_ids[-1],
-                    terminal_segment_ids=terminal_ids,
-                ))
+            route_kinds = tuple(dict.fromkeys((
+                *construction_kinds,
+                *(
+                    ()
+                    if swap_tree_count is None
+                    else swap_tree_kinds(len(route) - 1, swap_tree_count)
+                ),
+            )))
+            for kind in route_kinds:
+                for purification_kind in purification_kinds:
+                    base_dag = _dag_for_kind(
+                        request, route, kind, purification_kind
+                    )
+                    dag, terminal_ids = _repeat_demand_dag(
+                        base_dag,
+                        request.id,
+                        request.demand_pairs,
+                        request.source,
+                        request.destination,
+                    )
+                    suffix = (
+                        "" if purification_kind == "none"
+                        else f":purify:{purification_kind}"
+                    )
+                    candidates.append(RouteConstructionCandidate(
+                        candidate_id=(
+                            f"{request.id}:dynamic:path:{route_token}:{kind}{suffix}"
+                        ),
+                        request_id=request.id,
+                        route_nodes=route,
+                        construction_kind=kind,
+                        dag=dag,
+                        terminal_segment_id=terminal_ids[-1],
+                        terminal_segment_ids=terminal_ids,
+                        purification_kind=purification_kind,
+                    ))
             new_route_count += 1
             if new_route_count >= max_paths:
                 break

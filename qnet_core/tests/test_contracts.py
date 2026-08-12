@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 import networkx as nx
 
@@ -15,7 +16,6 @@ class SharedContractTests(unittest.TestCase):
             max_hops=3,
             topology_mode="parallel_corridors",
             parallel_corridors=2,
-            batch_mode=True,
             ttl=8,
             horizon=8,
         )
@@ -33,14 +33,18 @@ class SharedContractTests(unittest.TestCase):
             [[0, 2, 3, 1], [0, 4, 5, 1]],
         )
 
-    def test_poisson_arrivals_are_seeded_and_horizon_covers_deadlines(self):
-        config = ScenarioConfig(request_count=20, ttl=7, horizon=7, arrival_rate=0.5)
+    def test_generated_batch_is_seeded_and_simultaneous(self):
+        config = ScenarioConfig(request_count=20, ttl=7, horizon=7)
         first = make_episode(config, 123)
         second = make_episode(config, 123)
         arrivals = [request.arrival for request in first.requests]
         self.assertEqual(arrivals, [request.arrival for request in second.requests])
-        self.assertEqual(arrivals, sorted(arrivals))
-        self.assertEqual(first.horizon, arrivals[-1] + config.ttl)
+        self.assertEqual(set(arrivals), {0})
+        self.assertEqual(first.horizon, config.horizon)
+        self.assertEqual(
+            {request.deadline for request in first.requests},
+            {config.ttl},
+        )
 
     def test_generated_requests_use_seeded_distributed_endpoints(self):
         config = ScenarioConfig(request_count=100, min_hops=2, max_hops=50)
@@ -68,6 +72,87 @@ class SharedContractTests(unittest.TestCase):
             request.source in first.nodes and request.destination in first.nodes
             for request in first.requests
         ))
+
+    def test_waxman_batch_has_simultaneous_arrivals_and_distributed_endpoints(self):
+        config = ScenarioConfig(
+            request_count=12,
+            min_hops=2,
+            max_hops=5,
+            topology_nodes=20,
+            ttl=8,
+            horizon=8,
+        )
+        episode = make_episode(config, 777)
+        self.assertEqual({request.arrival for request in episode.requests}, {0})
+        self.assertGreater(
+            len({
+                (request.source, request.destination)
+                for request in episode.requests
+            }),
+            1,
+        )
+        graph = nx.Graph(episode.edges)
+        expected_hops = sorted(
+            config.min_hops + round(
+                (config.max_hops - config.min_hops) * index
+                / (config.request_count - 1)
+            )
+            for index in range(config.request_count)
+        )
+        actual_hops = sorted(
+            nx.shortest_path_length(
+                graph, request.source, request.destination
+            )
+            for request in episode.requests
+        )
+        self.assertEqual(actual_hops, expected_hops)
+
+    def test_waxman_uniform_random_endpoints_only_require_connectivity(self):
+        config = ScenarioConfig(
+            request_count=200,
+            topology_nodes=32,
+            waxman_alpha=0.2,
+            waxman_beta=0.7,
+            waxman_add_mst=False,
+            endpoint_mode="uniform_random",
+            ttl=16,
+            horizon=24,
+        )
+        episode = make_episode(config, 3101)
+        self.assertEqual(len(episode.nodes), 32)
+        graph = nx.Graph(episode.edges)
+        self.assertTrue(nx.is_connected(graph))
+        self.assertGreater(graph.number_of_edges(), graph.number_of_nodes() - 1)
+        distances = []
+        for request in episode.requests:
+            self.assertNotEqual(request.source, request.destination)
+            distances.append(nx.shortest_path_length(
+                graph, request.source, request.destination
+            ))
+        self.assertGreater(len(set(distances)), 1)
+        self.assertGreater(len({
+            (request.source, request.destination)
+            for request in episode.requests
+        }), 1)
+
+    def test_waxman_uniform_random_mode_rejects_disconnected_topology(self):
+        config = ScenarioConfig(
+            request_count=1,
+            topology_nodes=32,
+            topology_attempts=2,
+            waxman_add_mst=False,
+            endpoint_mode="uniform_random",
+        )
+        disconnected = nx.Graph()
+        disconnected.add_nodes_from(range(32))
+        disconnected.add_edges_from((index, index + 1) for index in range(15))
+        with patch(
+            "qnet_core.scenario.nx.waxman_graph",
+            return_value=disconnected,
+        ) as generator:
+            with self.assertRaises(RuntimeError):
+                make_episode(config, 7)
+        self.assertEqual(generator.call_count, 2)
 
     def test_episode_spec_rejects_invalid_probability(self):
         with self.assertRaises(ValueError):

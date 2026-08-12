@@ -88,6 +88,7 @@ def generate_repair_options(
             producer = producers.get(segment_id)
             if producer is None or producer.kind not in {
                 OperationKind.GEN,
+                OperationKind.PURIFY,
                 OperationKind.SWAP,
             }:
                 raise ValueError(f"cannot rebuild missing segment: {segment_id}")
@@ -130,7 +131,7 @@ def generate_repair_options(
             return output_id
 
         try:
-            if dead.kind == OperationKind.SWAP:
+            if dead.kind in {OperationKind.PURIFY, OperationKind.SWAP}:
                 retry_inputs = tuple(rebuild(item) for item in dead.input_segment_ids)
             elif not set(dead.input_segment_ids).issubset(available):
                 continue

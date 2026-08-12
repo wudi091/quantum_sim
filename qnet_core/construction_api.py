@@ -15,6 +15,7 @@ class OperationKind:
     """Stable operation names shared by planners and physical adapters."""
 
     GEN = "GEN"
+    PURIFY = "PURIFY"
     SWAP = "SWAP"
     RELEASE = "RELEASE"
 
@@ -127,6 +128,7 @@ class ConstructionOperation:
             raise ValueError("op_id and request_id must be non-empty")
         if self.kind not in {
             OperationKind.GEN,
+            OperationKind.PURIFY,
             OperationKind.SWAP,
             OperationKind.RELEASE,
         }:
@@ -160,6 +162,11 @@ class ConstructionOperation:
                 raise ValueError("output segment endpoints must be distinct")
         if self.kind == OperationKind.GEN and self.output_segment_id is None:
             raise ValueError("GEN must declare an output segment")
+        if self.kind == OperationKind.PURIFY:
+            if len(self.input_segment_ids) != 2:
+                raise ValueError("PURIFY must consume exactly two input segments")
+            if self.output_segment_id is None:
+                raise ValueError("PURIFY must declare an output segment")
         if self.kind == OperationKind.SWAP and self.output_segment_id is None:
             raise ValueError("SWAP must declare an output segment")
         if self.kind == OperationKind.RELEASE and self.output_segment_id is not None:
@@ -196,6 +203,7 @@ class ConstructionRepairChoice:
     route_nodes: tuple[int, ...] = ()
     construction_kind: str = ""
     terminal_segment_ids: tuple[str, ...] = ()
+    purification_kind: str = "none"
 
     def __post_init__(self) -> None:
         if not self.choice_id or not self.request_id:
@@ -215,6 +223,8 @@ class ConstructionRepairChoice:
                 raise ValueError("reroute choice requires candidate and route metadata")
             if not self.construction_kind or not self.terminal_segment_ids:
                 raise ValueError("reroute choice requires construction and terminal metadata")
+            if not self.purification_kind:
+                raise ValueError("reroute choice requires purification metadata")
             produced = {
                 operation.output_segment_id
                 for operation in self.operations
@@ -328,7 +338,14 @@ class ConstructionExecutor(Protocol):
 
     def snapshot(self) -> ConstructionSnapshot: ...
 
-    def ready_operations(self) -> Sequence[ConstructionOperation]: ...
+    def register_dag(self, dag: ConstructionDAG) -> None: ...
+
+    def unregister_dag(self, request_id: str) -> None: ...
+
+    def ready_operations(
+        self,
+        allowed_operation_ids: Iterable[str] | None = None,
+    ) -> Sequence[ConstructionOperation]: ...
 
     def launch(self, feasible_set: Iterable[ConstructionOperation]) -> tuple[str, ...]: ...
 

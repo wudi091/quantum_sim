@@ -68,6 +68,24 @@ class SequenceEnvironmentTests(unittest.TestCase):
         self.assertEqual(left.resources, right.resources)
         self.assertEqual(left.candidates, right.candidates)
 
+    def test_snapshot_does_not_expose_future_requests(self):
+        spec = EpisodeSpec(
+            seed=14,
+            nodes=(0, 1),
+            edges=((0, 1),),
+            requests=(
+                RequestSpec("now", 0, 1, arrival=0, ttl=4),
+                RequestSpec("future", 0, 1, arrival=3, ttl=4),
+            ),
+            horizon=8,
+            physical=PhysicalConfig(quantum_distance_m=1.0),
+        )
+        snapshot = make_sequence_env(spec).snapshot()
+        self.assertEqual(
+            tuple(row["id"] for row in snapshot.requests),
+            ("now",),
+        )
+
     def test_partial_plan_reports_frontier_progress_without_completion(self):
         env = make_sequence_env(EpisodeSpec(
             seed=29,
@@ -312,7 +330,6 @@ class SequenceEnvironmentTests(unittest.TestCase):
             max_hops=3,
             scenario=ScenarioConfig(
                 request_count=1, min_hops=2, max_hops=2, ttl=4, horizon=6,
-                arrival_rate=100.0,
                 physical=PhysicalConfig(generation_probability=1.0, swap_probability=1.0),
             ),
             seed=19,
@@ -357,7 +374,6 @@ class SequenceEnvironmentTests(unittest.TestCase):
             max_hops=3,
             scenario=ScenarioConfig(
                 request_count=1, min_hops=3, max_hops=3, ttl=8, horizon=8,
-                arrival_rate=100.0,
                 physical=PhysicalConfig(generation_probability=1.0, swap_probability=1.0),
             ),
             seed=193,
@@ -405,7 +421,6 @@ class SequenceEnvironmentTests(unittest.TestCase):
             max_hops=3,
             scenario=ScenarioConfig(
                 request_count=1, min_hops=3, max_hops=3, ttl=8, horizon=8,
-                arrival_rate=100.0,
                 physical=PhysicalConfig(
                     generation_probability=1.0, swap_probability=1.0,
                 ),
@@ -437,7 +452,6 @@ class SequenceEnvironmentTests(unittest.TestCase):
             max_hops=2,
             scenario=ScenarioConfig(
                 request_count=1, min_hops=2, max_hops=2, ttl=8, horizon=8,
-                arrival_rate=100.0,
                 physical=PhysicalConfig(generation_probability=1.0, swap_probability=0.0),
             ),
             seed=47,
@@ -462,7 +476,6 @@ class SequenceEnvironmentTests(unittest.TestCase):
             max_hops=2,
             scenario=ScenarioConfig(
                 request_count=1, min_hops=2, max_hops=2, ttl=8, horizon=8,
-                arrival_rate=100.0,
                 physical=PhysicalConfig(
                     generation_probability=1.0, swap_probability=0.0,
                 ),
@@ -496,7 +509,6 @@ class SequenceEnvironmentTests(unittest.TestCase):
             max_hops=3,
             scenario=ScenarioConfig(
                 request_count=1, min_hops=3, max_hops=3, ttl=1, horizon=4,
-                arrival_rate=100.0,
                 physical=PhysicalConfig(generation_probability=1.0, swap_probability=1.0),
             ),
             seed=59,
@@ -637,7 +649,6 @@ class SequenceEnvironmentTests(unittest.TestCase):
             max_hops=2,
             scenario=ScenarioConfig(
                 request_count=1, min_hops=2, max_hops=2, ttl=8, horizon=8,
-                arrival_rate=100.0,
                 physical=PhysicalConfig(
                     generation_probability=1.0,
                     swap_probability=1.0,

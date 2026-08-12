@@ -18,6 +18,7 @@ from .construction_catalog import (
 )
 from .construction_gym import ConstructionBatchEnv
 from .construction_repair import rebase_route_repair_dag
+from .resource_catalog import build_resource_capacities
 from .spec import EpisodeSpec
 
 
@@ -88,7 +89,7 @@ class JointConstructionBatchEnv:
         self._repairable: set[str] = set()
         self._route_repair_counts: dict[str, int] = {}
         self._route_repair_plans: dict[
-            str, set[tuple[tuple[int, ...], str]]
+            str, set[tuple[tuple[int, ...], str, str]]
         ] = {}
         self._dynamic_candidates: dict[str, dict[str, RouteConstructionCandidate]] = {}
         self._admission_order: tuple[str, ...] = tuple(
@@ -98,20 +99,7 @@ class JointConstructionBatchEnv:
         self._admission_preview_usage: dict[str, int] = {}
 
     def _admission_capacities(self) -> dict[str, int]:
-        capacities: dict[str, int] = {}
-        for raw_u, raw_v in self.spec.edges:
-            u, v = sorted((raw_u, raw_v))
-            capacities[f"link:{u}-{v}"] = self.spec.physical.memory_capacity
-            capacities[f"genlane:{u}-{v}"] = self.spec.physical.max_width
-        for node in self.spec.nodes:
-            capacities[f"bsm:{node}"] = 1
-            degree = sum(node in edge for edge in self.spec.edges)
-            capacities[f"memory:{node}"] = (
-                self.spec.physical.node_memory_capacity
-                if self.spec.physical.node_memory_capacity is not None
-                else max(1, degree * self.spec.physical.memory_capacity)
-            )
-        return capacities
+        return build_resource_capacities(self.spec)
 
     @staticmethod
     def _candidate_footprint(candidate: RouteConstructionCandidate) -> dict[str, int]:
@@ -326,7 +314,11 @@ class JointConstructionBatchEnv:
             )
         self.selected[request_id] = candidate
         self._route_repair_plans.setdefault(request_id, set()).add(
-            (candidate.route_nodes, candidate.construction_kind)
+            (
+                candidate.route_nodes,
+                candidate.construction_kind,
+                candidate.purification_kind,
+            )
         )
         for resource, amount in self._candidate_footprint(candidate).items():
             self._admission_preview_usage[resource] = (
@@ -482,13 +474,21 @@ class JointConstructionBatchEnv:
         candidates = [
             candidate
             for candidate in self.legal_admission_candidates(request_id)
-            if (candidate.route_nodes, candidate.construction_kind)
+            if (
+                candidate.route_nodes,
+                candidate.construction_kind,
+                candidate.purification_kind,
+            )
             not in attempted_plans
         ]
         existing_dynamic = tuple(
             candidate
             for candidate in self._dynamic_candidates.get(request_id, {}).values()
-            if (candidate.route_nodes, candidate.construction_kind)
+            if (
+                candidate.route_nodes,
+                candidate.construction_kind,
+                candidate.purification_kind,
+            )
             not in attempted_plans
         )
         candidates.extend(existing_dynamic)
@@ -642,6 +642,7 @@ class JointConstructionBatchEnv:
                     route_nodes=candidate.route_nodes,
                     construction_kind=candidate.construction_kind,
                     terminal_segment_ids=terminal_ids,
+                    purification_kind=candidate.purification_kind,
                 ))
         return tuple(choices)
 
@@ -691,7 +692,11 @@ class JointConstructionBatchEnv:
             self.selected[request_id] = candidate
             self.core.selected_candidates[request_id] = candidate
             self._route_repair_plans.setdefault(request_id, set()).add(
-                (candidate.route_nodes, candidate.construction_kind)
+                (
+                    candidate.route_nodes,
+                    candidate.construction_kind,
+                    candidate.purification_kind,
+                )
             )
             self._route_repair_counts[request_id] = (
                 self._route_repair_counts.get(request_id, 0) + 1

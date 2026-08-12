@@ -80,8 +80,6 @@ def main() -> None:
         choices=("qddca", "qcast"),
         default=("qddca", "qcast"),
     )
-    parser.add_argument("--arrival-rate", type=float, default=1.0,
-                        help="Mean Poisson request arrivals per physical step")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     scenario = ScenarioConfig(
@@ -90,7 +88,6 @@ def main() -> None:
         max_hops=args.max_hops,
         ttl=args.ttl,
         horizon=args.ttl,
-        arrival_rate=args.arrival_rate,
         physical=PhysicalConfig(
             generation_probability=args.p_gen,
             swap_probability=args.p_swap,
