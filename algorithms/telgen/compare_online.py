@@ -221,7 +221,9 @@ def _method_payload(result: OnlineTELGENResult | OnlineQCASTResult) -> dict[str,
         "decisions": [asdict(item) for item in result.decisions],
         "attempts": [asdict(item) for item in result.attempts],
         "settlements": [asdict(item) for item in result.settlements],
+        "launches": [asdict(item) for item in result.launches],
         "violations": [asdict(item) for item in result.violations],
+        "events": [asdict(item) for item in result.event_trace],
     }
 
 
