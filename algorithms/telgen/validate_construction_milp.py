@@ -24,7 +24,7 @@ import numpy as np
 from qnet_core.construction_catalog import build_route_construction_catalogue
 from qnet_core.resource_catalog import build_resource_capacities
 from qnet_core.scenario import ScenarioConfig, make_episode
-from qnet_core.spec import PhysicalConfig
+from qnet_core.spec import EpisodeSpec, PhysicalConfig
 
 from .fidelity import candidate_fidelity_estimate_map
 from .milp_oracle import ConstructionAwareMILPOracle, DiscreteOracleSolution
@@ -72,6 +72,45 @@ class ConstructionMILPTrial:
     variable_count: int
     rejected_candidate_count: int
     comparison: ConstructionPolicyComparison
+
+
+@dataclass(frozen=True)
+class ConstructionMILPProblem:
+    """One neutral time-expanded packing problem before policy solving."""
+
+    episode: EpisodeSpec
+    resource_capacities: Mapping[str, int]
+    candidate_count: int
+    variables: tuple[TimeExpandedCandidate, ...]
+    rejected_candidate_count: int
+
+
+@dataclass(frozen=True)
+class ConstructionMILPInstance:
+    """One solved instance with the neutral objects needed for physical replay."""
+
+    problem: ConstructionMILPProblem
+    comparison: ConstructionPolicyComparison
+
+    @property
+    def episode(self) -> EpisodeSpec:
+        return self.problem.episode
+
+    @property
+    def resource_capacities(self) -> Mapping[str, int]:
+        return self.problem.resource_capacities
+
+    @property
+    def candidate_count(self) -> int:
+        return self.problem.candidate_count
+
+    @property
+    def variables(self) -> tuple[TimeExpandedCandidate, ...]:
+        return self.problem.variables
+
+    @property
+    def rejected_candidate_count(self) -> int:
+        return self.problem.rejected_candidate_count
 
 
 def _outcome(
@@ -221,15 +260,14 @@ def compare_construction_policies(
     )
 
 
-def run_trial(
+def build_construction_problem(
     seed: int,
     scenario: ScenarioConfig,
     *,
     path_candidate_count: int,
     swap_tree_count: int,
-    time_limit_seconds: float,
-) -> ConstructionMILPTrial:
-    """Generate one paired nominal-planning instance and solve all variants."""
+) -> ConstructionMILPProblem:
+    """Generate the shared neutral candidate set used by MILP experiments."""
 
     episode = make_episode(scenario, seed)
     capacities = build_resource_capacities(episode)
@@ -254,27 +292,76 @@ def run_trial(
             candidate.candidate_id: 1.0 for candidate in candidates
         },
     )
+    return ConstructionMILPProblem(
+        episode=episode,
+        resource_capacities=capacities,
+        candidate_count=len(candidates),
+        variables=expansion.variables,
+        rejected_candidate_count=len(expansion.rejections),
+    )
+
+
+def build_trial_instance(
+    seed: int,
+    scenario: ScenarioConfig,
+    *,
+    path_candidate_count: int,
+    swap_tree_count: int,
+    time_limit_seconds: float,
+) -> ConstructionMILPInstance:
+    """Generate and solve one instance while preserving replay inputs."""
+
+    problem = build_construction_problem(
+        seed,
+        scenario,
+        path_candidate_count=path_candidate_count,
+        swap_tree_count=swap_tree_count,
+    )
     fixed_policies = tuple(
         f"swap_tree_{index}" for index in range(swap_tree_count)
     )
     comparison = compare_construction_policies(
-        expansion.variables,
-        capacities,
+        problem.variables,
+        problem.resource_capacities,
         fixed_policies=fixed_policies,
         oracle=ConstructionAwareMILPOracle(
             time_limit_seconds=time_limit_seconds,
             mip_relative_gap=0.0,
         ),
     )
+    return ConstructionMILPInstance(
+        problem=problem,
+        comparison=comparison,
+    )
+
+
+def run_trial(
+    seed: int,
+    scenario: ScenarioConfig,
+    *,
+    path_candidate_count: int,
+    swap_tree_count: int,
+    time_limit_seconds: float,
+) -> ConstructionMILPTrial:
+    """Generate one paired nominal-planning instance and solve all variants."""
+
+    instance = build_trial_instance(
+        seed,
+        scenario,
+        path_candidate_count=path_candidate_count,
+        swap_tree_count=swap_tree_count,
+        time_limit_seconds=time_limit_seconds,
+    )
+    episode = instance.episode
     return ConstructionMILPTrial(
         seed=seed,
         node_count=len(episode.nodes),
         edge_count=len(episode.edges),
         request_count=len(episode.requests),
-        candidate_count=len(candidates),
-        variable_count=len(expansion.variables),
-        rejected_candidate_count=len(expansion.rejections),
-        comparison=comparison,
+        candidate_count=instance.candidate_count,
+        variable_count=len(instance.variables),
+        rejected_candidate_count=instance.rejected_candidate_count,
+        comparison=instance.comparison,
     )
 
 

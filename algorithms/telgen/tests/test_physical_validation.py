@@ -4,7 +4,9 @@ from algorithms.telgen import (
     HardConstraintDecoder,
     candidate_fidelity_estimate_map,
     compile_decoded_schedule,
+    compile_selected_schedule,
     evaluate_decoded_physics,
+    evaluate_selected_physics,
     expand_construction_candidates,
     solve_teacher_episode,
     validate_decoded_physics,
@@ -128,6 +130,38 @@ class PhysicalValidationTests(unittest.TestCase):
                 in selected.nominal_schedule.operation_slots
             )),
         )
+
+    def test_exact_selection_uses_the_same_neutral_physical_boundary(self):
+        episode, decoded = self._decoded()
+        capacities = build_resource_capacities(episode)
+
+        exact_schedule = compile_selected_schedule(
+            decoded.selected_variables,
+            (request.id for request in episode.requests),
+            capacities,
+            horizon_slots=episode.horizon,
+        )
+        decoded_schedule = compile_decoded_schedule(
+            decoded,
+            horizon_slots=episode.horizon,
+        )
+        self.assertEqual(exact_schedule, decoded_schedule)
+
+        exact_result = evaluate_selected_physics(
+            episode,
+            decoded.selected_variables,
+            capacities,
+            physical_seed=1301,
+        )
+        decoded_result = evaluate_decoded_physics(
+            episode,
+            decoded,
+            physical_seed=1301,
+        )
+        self.assertEqual(exact_result.metrics, decoded_result.metrics)
+        self.assertEqual(exact_result.settlements, decoded_result.settlements)
+        self.assertEqual(exact_result.event_trace, decoded_result.event_trace)
+        self.assertEqual(exact_result.violations, decoded_result.violations)
 
     def test_planning_serializes_swaps_that_share_a_physical_node(self):
         episode, decoded = self._decoded()

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from statistics import fmean
-from typing import Iterable
+from typing import Iterable, Mapping, Sequence
 
 from qnet_core.scheduled_execution import (
     ConstructionBatchSchedule,
@@ -14,7 +14,8 @@ from qnet_core.scheduled_execution import (
 )
 from qnet_core.spec import EpisodeSpec
 
-from .hard_decoder import HardDecoderSolution
+from .hard_decoder import HardDecoderSolution, validate_decoded_selection
+from .time_expansion import TimeExpandedCandidate
 
 
 @dataclass(frozen=True)
@@ -42,21 +43,18 @@ class PhysicalConsistencyReport:
     schedule_adherence_rate: float
 
 
-def compile_decoded_schedule(
-    decoded: HardDecoderSolution,
+def _compile_selected_schedule(
+    selected_variables: Sequence[TimeExpandedCandidate],
+    rejected_request_ids: Iterable[str],
     *,
     horizon_slots: int,
 ) -> ConstructionBatchSchedule:
-    """Translate hard-decoder output into the simulator-neutral schedule DTO."""
-
     if horizon_slots < 1:
         raise ValueError("horizon_slots must be positive")
-    if not decoded.feasibility.feasible:
-        raise ValueError("cannot compile an infeasible hard-decoder solution")
 
     requests = []
     for variable in sorted(
-        decoded.selected_variables,
+        selected_variables,
         key=lambda item: item.request_id,
     ):
         absolute_operation_slots = tuple(sorted(
@@ -83,7 +81,59 @@ def compile_decoded_schedule(
     return ConstructionBatchSchedule(
         horizon_slots=horizon_slots,
         requests=tuple(requests),
-        rejected_request_ids=decoded.rejected_request_ids,
+        rejected_request_ids=tuple(sorted(set(rejected_request_ids))),
+    )
+
+
+def compile_selected_schedule(
+    selected_variables: Sequence[TimeExpandedCandidate],
+    request_ids: Iterable[str],
+    resource_capacities: Mapping[str, int],
+    *,
+    horizon_slots: int,
+) -> ConstructionBatchSchedule:
+    """Compile one exact discrete selection into the neutral schedule DTO."""
+
+    selected = tuple(sorted(
+        selected_variables,
+        key=lambda item: item.variable_id,
+    ))
+    declared_requests = tuple(sorted(str(item) for item in request_ids))
+    if len(set(declared_requests)) != len(declared_requests):
+        raise ValueError("request_ids must be unique")
+    selected_requests = {variable.request_id for variable in selected}
+    unknown = sorted(selected_requests - set(declared_requests))
+    if unknown:
+        raise ValueError(f"selected variable belongs to unknown request: {unknown[0]}")
+    feasibility = validate_decoded_selection(
+        selected,
+        resource_capacities,
+    )
+    if not feasibility.feasible:
+        raise ValueError(
+            "cannot compile an infeasible discrete selection: "
+            f"{feasibility.violations[0]}"
+        )
+    return _compile_selected_schedule(
+        selected,
+        set(declared_requests) - selected_requests,
+        horizon_slots=horizon_slots,
+    )
+
+
+def compile_decoded_schedule(
+    decoded: HardDecoderSolution,
+    *,
+    horizon_slots: int,
+) -> ConstructionBatchSchedule:
+    """Translate hard-decoder output into the simulator-neutral schedule DTO."""
+
+    if not decoded.feasibility.feasible:
+        raise ValueError("cannot compile an infeasible hard-decoder solution")
+    return _compile_selected_schedule(
+        decoded.selected_variables,
+        decoded.rejected_request_ids,
+        horizon_slots=horizon_slots,
     )
 
 
@@ -96,6 +146,27 @@ def evaluate_decoded_physics(
     """Run one decoded schedule with an optional independent physical seed."""
 
     schedule = compile_decoded_schedule(decoded, horizon_slots=spec.horizon)
+    physical_spec = spec if physical_seed is None else replace(
+        spec, seed=int(physical_seed)
+    )
+    return run_scheduled_construction_plan(physical_spec, schedule)
+
+
+def evaluate_selected_physics(
+    spec: EpisodeSpec,
+    selected_variables: Sequence[TimeExpandedCandidate],
+    resource_capacities: Mapping[str, int],
+    *,
+    physical_seed: int | None = None,
+) -> ScheduledConstructionEvaluation:
+    """Run one exact MILP selection through the same SeQUeNCe boundary."""
+
+    schedule = compile_selected_schedule(
+        selected_variables,
+        (request.id for request in spec.requests),
+        resource_capacities,
+        horizon_slots=spec.horizon,
+    )
     physical_spec = spec if physical_seed is None else replace(
         spec, seed=int(physical_seed)
     )

@@ -288,13 +288,22 @@ class OnlineTELGENTests(unittest.TestCase):
             ),
         )
 
-        self.assertEqual(result.decisions[0].deferred_request_ids, ("b",))
-        self.assertIn("b", result.decisions[1].eligible_request_ids)
-        b_attempt = next(
+        # The two requests are exactly symmetric, so different SciPy versions
+        # may return either equivalent optimum.  The online contract is that
+        # exactly one request is deferred and reconsidered at the next
+        # boundary, not that a particular request ID wins the tie.
+        self.assertEqual(len(result.decisions[0].deferred_request_ids), 1)
+        deferred = result.decisions[0].deferred_request_ids[0]
+        self.assertIn(deferred, result.decisions[1].eligible_request_ids)
+        deferred_attempt = next(
             attempt for attempt in result.attempts
-            if attempt.request_id == "b"
+            if attempt.request_id == deferred
         )
-        self.assertEqual(b_attempt.decision_slot, 1)
+        self.assertEqual(deferred_attempt.decision_slot, 1)
+        self.assertEqual(
+            {attempt.request_id for attempt in result.attempts},
+            {"a", "b"},
+        )
 
     def test_every_new_plan_starts_inside_its_decision_period(self):
         spec = EpisodeSpec(

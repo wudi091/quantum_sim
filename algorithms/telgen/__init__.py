@@ -63,7 +63,9 @@ from .physical_validation import (
     PhysicalConsistencyReport,
     PhysicalValidationTrial,
     compile_decoded_schedule,
+    compile_selected_schedule,
     evaluate_decoded_physics,
+    evaluate_selected_physics,
     validate_decoded_physics,
 )
 from .fidelity import (
@@ -158,7 +160,9 @@ __all__ = [
     "compare_lp_and_milp",
     "compare_decoder_and_milp",
     "compile_decoded_schedule",
+    "compile_selected_schedule",
     "evaluate_decoded_physics",
+    "evaluate_selected_physics",
     "estimate_candidate_fidelity_bounds",
     "effective_generation_probability",
     "estimate_candidate_success_probabilities",

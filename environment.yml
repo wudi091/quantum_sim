@@ -2,12 +2,17 @@ name: quantum-sim
 channels:
   - conda-forge
 dependencies:
-  - python=3.12
-  - pip
+  - python=3.12.13
+  - pytorch=2.13.0
+  - numpy=2.5.2
+  - scipy=1.18.0
+  - networkx=3.6.1
+  - tqdm=4.70.0
+  - pytest=9.1.1
+  - matplotlib=3.11.1
+  - pyyaml=6.0.3
+  - python-dateutil=2.9.0.post0
+  - six=1.17.0
+  - pip=26.2.1
   - pip:
       - sequence==1.0.0
-      - numpy
-      - networkx
-      - scipy
-      - tqdm
-      - pytest
