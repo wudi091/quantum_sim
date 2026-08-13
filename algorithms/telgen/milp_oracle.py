@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 import json
+import math
 from pathlib import Path
 from typing import Mapping, Sequence
 
@@ -17,6 +18,13 @@ from .teacher import (
     build_stage_two_lp,
 )
 from .time_expansion import TimeExpandedCandidate, TimeExpansionResult
+
+
+# HiGHS can report an "Optimal" MILP with a residual relative gap on the
+# order of 1e-12 because its primal and dual objectives are floating-point
+# values.  Treat that solver-level numerical residue as zero while continuing
+# to reject materially suboptimal incumbents.
+NUMERICAL_ZERO_MIP_GAP_TOLERANCE = 1e-9
 
 
 @dataclass(frozen=True)
@@ -80,6 +88,31 @@ class LPDiscreteGapReport:
 
 class DiscreteOracleSolveError(RuntimeError):
     """Raised when the exact small-instance MILP does not reach optimality."""
+
+
+def has_numerically_zero_mip_gap(
+    mip_gap: float | None,
+    *,
+    tolerance: float = NUMERICAL_ZERO_MIP_GAP_TOLERANCE,
+) -> bool:
+    """Return whether a solver-reported MILP gap is numerical zero."""
+
+    if tolerance <= 0.0:
+        raise ValueError("tolerance must be positive")
+    if mip_gap is None:
+        return False
+    value = float(mip_gap)
+    return math.isfinite(value) and abs(value) <= tolerance
+
+
+def is_numerically_optimal_stage(stage: DiscreteStageResult) -> bool:
+    """Certify an optimal HiGHS stage up to floating-point gap tolerance."""
+
+    return (
+        stage.success
+        and stage.status == 0
+        and has_numerically_zero_mip_gap(stage.mip_gap)
+    )
 
 
 def _constraints_for(lp: LinearProgramStage) -> tuple[LinearConstraint, ...]:

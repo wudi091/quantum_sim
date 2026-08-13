@@ -268,6 +268,8 @@ def _sample_paths_from_manifest(path: Path) -> tuple[Path, ...]:
             for item in payload["samples"]
         )
     if kind == "online_milp_teacher_collection":
+        if payload.get("collection_complete", True) is not True:
+            raise ValueError("online MILP dataset collection is incomplete")
         paths: list[Path] = []
         for episode in payload["episodes"]:
             episode_manifest = resolved.parent / str(

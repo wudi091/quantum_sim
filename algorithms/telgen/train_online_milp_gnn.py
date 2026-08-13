@@ -30,6 +30,7 @@ from .online_milp_dataset import (
     load_online_milp_dataset,
     samples_for_episode_seeds,
 )
+from .milp_oracle import has_numerically_zero_mip_gap
 from .train_milp_imitation import _evaluate, _seed_everything
 
 
@@ -251,13 +252,14 @@ def main(argv: list[str] | None = None) -> int:
     if not train_samples or not validation_samples or not test_samples:
         raise RuntimeError("episode split produced an empty graph split")
     if any(
-        sample.stage_one_mip_gap is None
-        or sample.stage_two_mip_gap is None
-        or sample.stage_one_mip_gap > 1e-12
-        or sample.stage_two_mip_gap > 1e-12
+        not has_numerically_zero_mip_gap(sample.stage_one_mip_gap)
+        or not has_numerically_zero_mip_gap(sample.stage_two_mip_gap)
         for sample in loaded.samples
     ):
-        raise RuntimeError("dataset contains a non-zero-gap MILP label")
+        raise RuntimeError(
+            "dataset contains a MILP label without certified numerical "
+            "optimality"
+        )
 
     model = CandidateConstraintGNN(
         hidden_dim=args.hidden_dim,

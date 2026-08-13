@@ -3,14 +3,19 @@ from pathlib import Path
 import tempfile
 import unittest
 
+import numpy as np
+
 from algorithms.telgen import (
     ConstructionAwareLPTeacher,
     ConstructionAwareMILPOracle,
+    DiscreteStageResult,
     NominalConstructionSchedule,
     ResourceSlotUsage,
     TimeExpandedCandidate,
     compare_lp_and_milp,
     expand_construction_candidates,
+    has_numerically_zero_mip_gap,
+    is_numerically_optimal_stage,
     save_gap_report,
 )
 from qnet_core.construction_catalog import build_route_construction_catalogue
@@ -61,6 +66,28 @@ def manual_variable(base, resources):
 
 
 class MILPOracleTests(unittest.TestCase):
+    def test_numerical_gap_certification_accepts_only_optimal_roundoff(self):
+        self.assertTrue(has_numerically_zero_mip_gap(1.8577558830020406e-12))
+        self.assertFalse(has_numerically_zero_mip_gap(1e-6))
+        self.assertFalse(has_numerically_zero_mip_gap(None))
+        stage = DiscreteStageResult(
+            stage_name="test",
+            success=True,
+            status=0,
+            message="optimal",
+            primal=np.zeros(1, dtype=float),
+            objective_value=1.0,
+            mip_gap=1.8577558830020406e-12,
+            mip_node_count=0,
+            mip_dual_bound=1.0 + 3e-14,
+        )
+        self.assertTrue(is_numerically_optimal_stage(stage))
+        self.assertFalse(is_numerically_optimal_stage(
+            DiscreteStageResult(
+                **{**stage.__dict__, "status": 1, "message": "time limit"}
+            )
+        ))
+
     def test_triangle_set_packing_exposes_known_lp_integrality_gap(self):
         bases = three_request_bases()
         variables = (

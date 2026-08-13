@@ -21,6 +21,7 @@ readonly JOB_LOG="${STATE_DIR}/training.log"
 readonly STARTED_AT_FILE="${STATE_DIR}/started_at.txt"
 readonly FINISHED_AT_FILE="${STATE_DIR}/finished_at.txt"
 readonly EXIT_CODE_FILE="${STATE_DIR}/exit_code.txt"
+readonly RUN_ROOT_FILE="${STATE_DIR}/run_root.txt"
 readonly MANAGER_LOCK_FILE="${STATE_DIR}/manager.lock"
 readonly TRAIN_LOCK_FILE="${RESULT_BASE}/training.lock"
 
@@ -143,6 +144,29 @@ print("SeQUeNCe、MILP 和训练入口：OK")
     "${df_bin}" -h "${SCRIPT_DIR}"
 }
 
+validated_resume_run_root() {
+    local candidate=""
+    local line
+    if [[ -f "${RUN_ROOT_FILE}" ]]; then
+        IFS= read -r candidate < "${RUN_ROOT_FILE}" || candidate=""
+    elif [[ -f "${JOB_LOG}" ]]; then
+        while IFS= read -r line; do
+            if [[ "${line}" == "运行目录："* ]]; then
+                candidate="${line#运行目录：}"
+            fi
+        done < "${JOB_LOG}"
+    fi
+    [[ -n "${candidate}" && -d "${candidate}" ]] || return 1
+
+    local resolved
+    resolved="$(cd -- "${candidate}" && pwd -P)"
+    [[ "${resolved}" == "${RESULT_BASE}/"* ]] || return 1
+    [[ -d "${resolved}/teacher_data" ]] || return 1
+    [[ ! -f "${resolved}/online_evaluation/online_gnn_comparison.json" ]] \
+        || return 1
+    printf '%s\n' "${resolved}"
+}
+
 run_pipeline() {
     local run_id
     local run_root
@@ -151,15 +175,19 @@ run_pipeline() {
     local evaluation_dir
     local log_dir
 
-    run_id="$(date +%Y%m%d_%H%M%S)_pid$$"
-    run_root="${RESULT_BASE}/${run_id}"
+    run_root="$(validated_resume_run_root 2>/dev/null || true)"
+    if [[ -z "${run_root}" ]]; then
+        run_id="$(date +%Y%m%d_%H%M%S)_pid$$"
+        run_root="${RESULT_BASE}/${run_id}"
+        mkdir "${run_root}"
+    fi
     data_dir="${run_root}/teacher_data"
     model_dir="${run_root}/model"
     evaluation_dir="${run_root}/online_evaluation"
     log_dir="${run_root}/logs"
 
-    mkdir "${run_root}"
-    mkdir "${data_dir}" "${model_dir}" "${evaluation_dir}" "${log_dir}"
+    mkdir -p "${data_dir}" "${model_dir}" "${evaluation_dir}" "${log_dir}"
+    printf '%s\n' "${run_root}" > "${RUN_ROOT_FILE}"
     cd "${SCRIPT_DIR}"
 
     export PYTHONUNBUFFERED=1
@@ -186,8 +214,9 @@ print("SeQUeNCe：OK")
         --episodes "${TEACHER_EPISODES}" \
         --seed-start "${TEACHER_SEED_START}" \
         --time-limit-seconds "${MILP_TIME_LIMIT_SECONDS}" \
+        --resume \
         "${SCENARIO_ARGS[@]}" \
-        2>&1 | tee "${log_dir}/01_teacher_data.log"
+        2>&1 | tee -a "${log_dir}/01_teacher_data.log"
     test -f "${data_dir}/online_milp_dataset.json"
 
     echo "阶段 2/3：训练 GNN"

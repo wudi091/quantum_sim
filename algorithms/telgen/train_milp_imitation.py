@@ -30,6 +30,7 @@ from .milp_imitation import (
     greedy_decode_scores,
     imitation_loss,
 )
+from .milp_oracle import has_numerically_zero_mip_gap
 from .hard_decoder import validate_decoded_selection
 
 
@@ -343,13 +344,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     generation_seconds = perf_counter() - generation_started
     if any(
-        sample.stage_one_mip_gap is None
-        or sample.stage_two_mip_gap is None
-        or sample.stage_one_mip_gap > 1e-12
-        or sample.stage_two_mip_gap > 1e-12
+        not has_numerically_zero_mip_gap(sample.stage_one_mip_gap)
+        or not has_numerically_zero_mip_gap(sample.stage_two_mip_gap)
         for sample in samples
     ):
-        raise RuntimeError("training label MILP did not reach numerical zero gap")
+        raise RuntimeError(
+            "training label MILP did not reach certified numerical optimality"
+        )
 
     model = CandidateConstraintGNN(
         hidden_dim=args.hidden_dim,

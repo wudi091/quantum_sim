@@ -48,7 +48,11 @@ from .milp_imitation import (
     build_candidate_constraint_graph,
     graph_sample_from_solution,
 )
-from .milp_oracle import ConstructionAwareMILPOracle, DiscreteOracleSolution
+from .milp_oracle import (
+    ConstructionAwareMILPOracle,
+    DiscreteOracleSolution,
+    is_numerically_optimal_stage,
+)
 from .gnn_policy import OnlineGNNPolicy
 from .physical_validation import (
     compile_selected_schedule,
@@ -400,9 +404,13 @@ class OnlineTELGENController:
             reserved_usage=problem.reserved_usage_map,
         )
         for stage in (solution.stage_one, solution.stage_two):
-            if stage.mip_gap is None or stage.mip_gap > 1e-12:
+            if not is_numerically_optimal_stage(stage):
                 raise RuntimeError(
-                    f"{stage.stage_name} did not produce a zero-gap label"
+                    f"{stage.stage_name} did not reach certified numerical "
+                    f"optimality: status={stage.status}, gap={stage.mip_gap}, "
+                    f"objective={stage.objective_value}, "
+                    f"dual_bound={stage.mip_dual_bound}, "
+                    f"message={stage.message}"
                 )
         return solution, perf_counter() - started
 

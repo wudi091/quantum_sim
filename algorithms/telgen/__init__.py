@@ -40,7 +40,10 @@ from .milp_oracle import (
     DiscreteOracleSolveError,
     DiscreteStageResult,
     LPDiscreteGapReport,
+    NUMERICAL_ZERO_MIP_GAP_TOLERANCE,
     compare_lp_and_milp,
+    has_numerically_zero_mip_gap,
+    is_numerically_optimal_stage,
     save_gap_report,
 )
 from .hard_decoder import (
@@ -146,6 +149,7 @@ __all__ = [
     "HardConstraintDecoder",
     "HardDecoderSolution",
     "NominalConstructionSchedule",
+    "NUMERICAL_ZERO_MIP_GAP_TOLERANCE",
     "OnlineAttemptRecord",
     "OnlineDecisionRecord",
     "OnlineGNNDecision",
@@ -193,6 +197,7 @@ __all__ = [
     "estimate_candidate_success_probability",
     "generate_teacher_dataset",
     "generate_online_milp_dataset",
+    "has_numerically_zero_mip_gap",
     "generate_static_load_calibration",
     "save_teacher_batch_record",
     "save_gap_report",
@@ -211,6 +216,7 @@ __all__ = [
     "save_online_result",
     "load_online_milp_dataset",
     "load_online_milp_graph_sample",
+    "is_numerically_optimal_stage",
     "resolve_online_milp_dataset_manifest",
     "samples_for_episode_seeds",
 ]
