@@ -1,10 +1,28 @@
 import unittest
 
+import json
+from tempfile import TemporaryDirectory
+
+import numpy as np
+import torch
+
 from algorithms.telgen import (
     OnlineTELGENConfig,
     OnlineTELGENController,
+    generate_online_milp_dataset,
+    load_online_milp_dataset,
+    load_online_milp_graph_sample,
     run_online_telgen,
+    save_online_milp_dataset,
 )
+from algorithms.telgen.hard_decoder import validate_decoded_selection
+from algorithms.telgen.milp_imitation import CONSTRAINT_FEATURE_NAMES
+from algorithms.telgen.milp_imitation import (
+    GLOBAL_FEATURE_NAMES,
+    VARIABLE_FEATURE_NAMES,
+    CandidateConstraintGNN,
+)
+from algorithms.telgen.gnn_policy import OnlineGNNPolicy
 from qnet_core.planning_spec import RequestSpec
 from qnet_core.spec import EpisodeSpec, PhysicalConfig
 
@@ -22,6 +40,36 @@ def deterministic_physical(**overrides):
 
 
 class OnlineTELGENTests(unittest.TestCase):
+    @staticmethod
+    def milp_config(**overrides):
+        values = dict(
+            decision_interval=1,
+            path_candidate_count=1,
+            construction_kinds=("balanced",),
+            purification_kinds=("none",),
+            decision_backend="milp_teacher",
+            milp_time_limit_seconds=10.0,
+        )
+        values.update(overrides)
+        return OnlineTELGENConfig(**values)
+
+    @staticmethod
+    def _save_gnn_checkpoint(path, *, decode_threshold=0.0):
+        torch.manual_seed(7)
+        model = CandidateConstraintGNN(hidden_dim=8, layers=1)
+        torch.save({
+            "schema_version": 1,
+            "model_class": "CandidateConstraintGNN",
+            "model_config": {"hidden_dim": 8, "layers": 1},
+            "state_dict": model.state_dict(),
+            "decode_threshold": decode_threshold,
+            "feature_schema": {
+                "variable": list(VARIABLE_FEATURE_NAMES),
+                "constraint": list(CONSTRAINT_FEATURE_NAMES),
+                "global": list(GLOBAL_FEATURE_NAMES),
+            },
+        }, path)
+
     def test_default_controller_uses_periodic_decisions(self):
         spec = EpisodeSpec(
             seed=19,
@@ -334,6 +382,266 @@ class OnlineTELGENTests(unittest.TestCase):
                 attempt.planned_start_slot,
                 min(spec.horizon, attempt.decision_slot + interval),
             )
+
+    def test_milp_rollout_hides_future_requests_and_executes_its_label(self):
+        spec = EpisodeSpec(
+            seed=80,
+            nodes=(0, 1),
+            edges=((0, 1),),
+            requests=(
+                RequestSpec("now", 0, 1, arrival=0, ttl=6),
+                RequestSpec("future", 0, 1, arrival=2, ttl=4),
+            ),
+            horizon=6,
+            physical=deterministic_physical(),
+        )
+        result = run_online_telgen(spec, self.milp_config())
+
+        first = result.milp_samples[0]
+        self.assertEqual(first.eligible_request_ids, ("now",))
+        self.assertEqual(first.graph.request_ids, ("now",))
+        self.assertTrue(all(
+            variable.request_id == "now"
+            for variable in first.graph.variables
+        ))
+        self.assertNotIn("future", first.visible_request_ids)
+        selected = {
+            variable.variable_id
+            for variable, label in zip(
+                first.graph.variables, first.graph.labels
+            )
+            if label > 0.5
+        }
+        self.assertEqual(selected, set(first.selected_variable_ids))
+        attempts_at_first_boundary = {
+            attempt.variable_id
+            for attempt in result.attempts
+            if attempt.decision_slot == first.decision_slot
+        }
+        self.assertEqual(attempts_at_first_boundary, selected)
+
+    def test_milp_graph_encodes_running_reservations_as_residual_capacity(self):
+        spec = EpisodeSpec(
+            seed=81,
+            nodes=(0, 1, 2),
+            edges=((0, 1), (1, 2)),
+            requests=(
+                RequestSpec("old", 0, 2, arrival=0, ttl=8),
+                RequestSpec("new", 0, 2, arrival=1, ttl=7),
+            ),
+            horizon=8,
+            physical=deterministic_physical(
+                memory_capacity=2,
+                node_memory_capacity=4,
+            ),
+        )
+        result = run_online_telgen(spec, self.milp_config())
+        sample = next(
+            item for item in result.milp_samples
+            if item.decision_slot == 1
+        )
+        self.assertEqual(sample.running_request_ids, ("old",))
+        self.assertTrue(sample.reserved_usage)
+        self.assertEqual(sample.graph.reserved_usage, {
+            (resource_id, slot): amount
+            for resource_id, slot, amount in sample.reserved_usage
+        })
+        names = {name: index for index, name in enumerate(
+            CONSTRAINT_FEATURE_NAMES
+        )}
+        resource_rows = sample.graph.constraint_features[
+            :, names["is_resource_time"]
+        ] > 0.5
+        self.assertTrue(np.any(
+            sample.graph.constraint_features[
+                resource_rows, names["reserved_amount"]
+            ] > 0.0
+        ))
+        selected = tuple(
+            variable
+            for variable, label in zip(
+                sample.graph.variables, sample.graph.labels
+            )
+            if label > 0.5
+        )
+        self.assertTrue(validate_decoded_selection(
+            selected,
+            sample.graph.resource_capacities,
+            sample.graph.reserved_usage,
+        ).feasible)
+
+    def test_failed_request_reappears_as_retry_state(self):
+        spec = EpisodeSpec(
+            seed=2,
+            nodes=(0, 1),
+            edges=((0, 1),),
+            requests=(RequestSpec("r0", 0, 1, arrival=0, ttl=12),),
+            horizon=12,
+            physical=deterministic_physical(generation_probability=0.5),
+        )
+        result = run_online_telgen(
+            spec,
+            self.milp_config(decision_interval=2),
+        )
+        retry_sample = next(
+            sample for sample in result.milp_samples
+            if dict(sample.attempt_counts).get("r0") == 1
+        )
+        self.assertIn("r0", retry_sample.eligible_request_ids)
+        self.assertEqual(result.metrics["retry_count"], 1.0)
+
+    def test_saved_milp_dataset_contains_only_neutral_pre_action_data(self):
+        spec = EpisodeSpec(
+            seed=82,
+            nodes=(0, 1),
+            edges=((0, 1),),
+            requests=(RequestSpec("r0", 0, 1, arrival=0, ttl=4),),
+            horizon=4,
+            physical=deterministic_physical(),
+        )
+        result = run_online_telgen(spec, self.milp_config())
+        with TemporaryDirectory() as directory:
+            paths = save_online_milp_dataset(result, directory)
+            manifest = json.loads(paths.manifest_path.read_text(
+                encoding="utf-8"
+            ))
+            self.assertEqual(manifest["sample_count"], len(paths.sample_paths))
+            self.assertIn("runtime_versions", manifest)
+            self.assertIn("feature_schema", manifest)
+            latest_manifest = json.loads(
+                (paths.manifest_path.parent.parent / "manifest.json")
+                .read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                latest_manifest["version_directory"],
+                paths.manifest_path.parent.name,
+            )
+            self.assertNotIn("events", manifest)
+            with np.load(paths.sample_paths[0]) as payload:
+                context = json.loads(str(payload["context_json"].item()))
+                self.assertNotIn("events", context)
+                self.assertNotIn("settlements", context)
+                self.assertNotIn("sequence", json.dumps(context).lower())
+                self.assertTrue(np.array_equal(
+                    payload["labels"], result.milp_samples[0].graph.labels
+                ))
+            loaded_sample = load_online_milp_graph_sample(
+                paths.sample_paths[0]
+            )
+            expected_sample = result.milp_samples[0].graph
+            self.assertEqual(
+                tuple(item.variable_id for item in loaded_sample.variables),
+                tuple(item.variable_id for item in expected_sample.variables),
+            )
+            self.assertTrue(np.array_equal(
+                loaded_sample.variable_features,
+                expected_sample.variable_features,
+            ))
+            loaded_dataset = load_online_milp_dataset(directory)
+            self.assertEqual(
+                len(loaded_dataset.samples),
+                len(result.milp_samples),
+            )
+            self.assertEqual(loaded_dataset.episode_seeds, (82,))
+
+    def test_dataset_helper_runs_the_teacher_policy_rollout(self):
+        spec = EpisodeSpec(
+            seed=83,
+            nodes=(0, 1),
+            edges=((0, 1),),
+            requests=(RequestSpec("r0", 0, 1, arrival=0, ttl=3),),
+            horizon=3,
+            physical=deterministic_physical(),
+        )
+        with TemporaryDirectory() as directory:
+            result, paths = generate_online_milp_dataset(
+                spec,
+                directory,
+                self.milp_config(),
+            )
+            self.assertEqual(result.config.decision_backend, "milp_teacher")
+            self.assertTrue(paths.manifest_path.exists())
+            self.assertTrue(paths.manifest_path.parent.name.startswith(
+                "rollout_"
+            ))
+            self.assertEqual(len(paths.sample_paths), len(result.milp_samples))
+
+    def test_all_infeasible_boundary_is_recorded_as_skipped(self):
+        spec = EpisodeSpec(
+            seed=84,
+            nodes=(0, 1, 2),
+            edges=((0, 1), (1, 2)),
+            requests=(RequestSpec(
+                "tight",
+                0,
+                2,
+                arrival=0,
+                ttl=1,
+            ),),
+            horizon=2,
+            physical=deterministic_physical(node_memory_capacity=4),
+        )
+        result = run_online_telgen(spec, self.milp_config())
+        self.assertEqual(result.milp_samples, ())
+        self.assertEqual(
+            result.skipped_milp_boundaries[0].reason,
+            "no_feasible_time_expanded_variables",
+        )
+
+    def test_gnn_checkpoint_rollout_submits_only_feasible_plans(self):
+        spec = EpisodeSpec(
+            seed=85,
+            nodes=(0, 1, 2),
+            edges=((0, 1), (1, 2)),
+            requests=(
+                RequestSpec("r0", 0, 2, arrival=0, ttl=6),
+                RequestSpec("r1", 0, 2, arrival=0, ttl=6),
+            ),
+            horizon=6,
+            physical=deterministic_physical(
+                memory_capacity=2,
+                node_memory_capacity=4,
+            ),
+        )
+        with TemporaryDirectory() as directory:
+            checkpoint = f"{directory}/policy.pt"
+            self._save_gnn_checkpoint(checkpoint)
+            result = run_online_telgen(
+                spec,
+                OnlineTELGENConfig(
+                    decision_interval=2,
+                    path_candidate_count=1,
+                    construction_kinds=("balanced",),
+                    purification_kinds=("none",),
+                    decision_backend="gnn",
+                    gnn_checkpoint=checkpoint,
+                    gnn_device="cpu",
+                ),
+            )
+        self.assertEqual(result.config.decision_backend, "gnn")
+        self.assertTrue(result.decisions)
+        self.assertTrue(all(
+            item.decision_backend == "gnn" for item in result.decisions
+        ))
+        self.assertTrue(any(
+            item.decoder_search_strategy == "gnn_greedy_projection"
+            for item in result.decisions
+        ))
+        self.assertEqual(result.metrics["schedule_violation_count"], 0.0)
+
+    def test_gnn_policy_rejects_checkpoint_schema_mismatch(self):
+        with TemporaryDirectory() as directory:
+            checkpoint = f"{directory}/policy.pt"
+            self._save_gnn_checkpoint(checkpoint)
+            payload = torch.load(
+                checkpoint, map_location="cpu", weights_only=True
+            )
+            payload["feature_schema"]["global"] = ["wrong"]
+            torch.save(payload, checkpoint)
+            with self.assertRaisesRegex(ValueError, "feature schema"):
+                OnlineGNNPolicy.from_checkpoint(
+                    checkpoint, device="cpu"
+                )
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@ from algorithms.telgen.milp_imitation import (
     VARIABLE_FEATURE_NAMES,
     CandidateConstraintGNN,
     batch_graph_samples,
+    build_candidate_constraint_graph,
     graph_sample_from_solution,
     greedy_decode_scores,
     imitation_loss,
@@ -20,6 +21,10 @@ from algorithms.telgen.time_expansion import expand_construction_candidates
 from algorithms.telgen.train_milp_imitation import (
     _build_overfit_gate,
     _evaluate,
+)
+from algorithms.telgen.train_online_milp_gnn import (
+    _calibrate_decode_threshold,
+    _split_episode_seeds,
 )
 from qnet_core.construction_catalog import build_route_construction_catalogue
 from qnet_core.planning_spec import RequestSpec
@@ -159,6 +164,41 @@ class MILPImitationTests(unittest.TestCase):
             sample.variable_features[:, destination_index], 0.5
         ))
 
+    def test_unlabelled_online_graph_matches_teacher_graph_features(self):
+        sample = self.second_sample
+        episode = EpisodeSpec(
+            seed=72,
+            nodes=(0, 1, 2, 3),
+            edges=((0, 1), (0, 2), (1, 2), (2, 3)),
+            requests=(
+                RequestSpec("r0", 0, 3, ttl=4),
+                RequestSpec("r1", 1, 3, ttl=4),
+            ),
+            horizon=4,
+            physical=PhysicalConfig(
+                memory_capacity=1,
+                node_memory_capacity=3,
+                max_width=1,
+            ),
+        )
+        graph = build_candidate_constraint_graph(
+            sample.seed,
+            episode,
+            sample.variables,
+            sample.resource_capacities,
+        )
+        self.assertTrue(np.array_equal(
+            graph.variable_features, sample.variable_features
+        ))
+        self.assertTrue(np.array_equal(
+            graph.constraint_features, sample.constraint_features
+        ))
+        self.assertTrue(np.array_equal(
+            graph.global_features, sample.global_features
+        ))
+        batch = batch_graph_samples((graph,))
+        self.assertEqual(batch.labels.numel(), 0)
+
     def test_milp_labels_round_trip_through_feasible_projection(self):
         sample = self.sample
         decoded = greedy_decode_scores(
@@ -205,6 +245,32 @@ class MILPImitationTests(unittest.TestCase):
             for gradient in gradients
         ))
 
+    def test_graph_encodes_construction_family_and_expected_mass_weights(self):
+        sample = self.second_sample
+        left_index = VARIABLE_FEATURE_NAMES.index("construction_left_deep")
+        balanced_index = VARIABLE_FEATURE_NAMES.index(
+            "construction_balanced"
+        )
+        for variable, features in zip(
+            sample.variables, sample.variable_features
+        ):
+            self.assertEqual(
+                features[left_index],
+                float(variable.construction_kind == "left_deep"),
+            )
+            self.assertEqual(
+                features[balanced_index],
+                float(variable.construction_kind == "balanced"),
+            )
+        graph = batch_graph_samples((sample,))
+        self.assertTrue(torch.allclose(
+            graph.success_probabilities,
+            torch.tensor([
+                variable.expected_success_probability
+                for variable in sample.variables
+            ]),
+        ))
+
     def test_batched_graphs_match_independent_forward_passes(self):
         torch.manual_seed(17)
         model = CandidateConstraintGNN(hidden_dim=16, layers=2).eval()
@@ -235,16 +301,34 @@ class MILPImitationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "logits must be finite"):
             imitation_loss(invalid_logits, graph)
 
-    def test_non_unit_milp_weights_are_rejected(self):
+    def test_non_unit_milp_weights_are_supported_when_targets_match(self):
         weighted = replace(
             self.sample.variables[0],
             expected_success_probability=0.5,
         )
-        with self.assertRaisesRegex(ValueError, "unit weights"):
-            replace(
-                self.sample,
-                variables=(weighted, *self.sample.variables[1:]),
-            )
+        variables = (weighted, *self.sample.variables[1:])
+        selected = tuple(
+            variable
+            for variable, label in zip(variables, self.sample.labels)
+            if label > 0.5
+        )
+        updated = replace(
+            self.sample,
+            variables=variables,
+            optimal_expected_completed_request_mass=sum(
+                variable.expected_success_probability
+                for variable in selected
+            ),
+            optimal_total_completion_latency=sum(
+                variable.expected_success_probability
+                * variable.completion_latency
+                for variable in selected
+            ),
+        )
+        self.assertLess(
+            updated.optimal_expected_completed_request_mass,
+            self.sample.optimal_expected_completed_request_mass,
+        )
 
     def test_raw_and_projected_feasibility_are_reported_separately(self):
         class AllPositiveModel(torch.nn.Module):
@@ -293,9 +377,89 @@ class MILPImitationTests(unittest.TestCase):
                 report = validate_decoded_selection(
                     decoded.selected_variables,
                     sample.resource_capacities,
+                    sample.reserved_usage,
                 )
                 self.assertTrue(decoded.feasible)
                 self.assertTrue(report.feasible)
+
+    def test_episode_split_is_disjoint_and_deterministic(self):
+        seeds = tuple(range(10))
+        first = _split_episode_seeds(
+            seeds,
+            validation_fraction=0.2,
+            test_fraction=0.2,
+            random_seed=7,
+        )
+        second = _split_episode_seeds(
+            seeds,
+            validation_fraction=0.2,
+            test_fraction=0.2,
+            random_seed=7,
+        )
+        self.assertEqual(first, second)
+        train, validation, test = first
+        self.assertEqual(
+            set(train) | set(validation) | set(test), set(seeds)
+        )
+        self.assertFalse(set(train) & set(validation))
+        self.assertFalse(set(train) & set(test))
+        self.assertFalse(set(validation) & set(test))
+
+    def test_threshold_calibration_uses_validation_ranking(self):
+        class LabelRankingModel(torch.nn.Module):
+            def forward(self, graph):
+                return graph.labels * 4.0 - 2.0
+
+        threshold, rows = _calibrate_decode_threshold(
+            LabelRankingModel(),
+            (self.sample, self.second_sample),
+            device=torch.device("cpu"),
+            sample_batch_size=1,
+        )
+        self.assertGreaterEqual(threshold, 0.0)
+        self.assertLessEqual(threshold, 1.0)
+        best = max(
+            rows,
+            key=lambda item: (
+                item["mean_decoded_throughput_ratio"],
+                item["minimum_decoded_throughput_ratio"],
+                item["throughput_optimal_rate"],
+                -item[
+                    "mean_latency_relative_gap_when_throughput_optimal"
+                ],
+                -item["threshold"],
+            ),
+        )
+        self.assertEqual(threshold, best["threshold"])
+        self.assertEqual(best["mean_decoded_throughput_ratio"], 1.0)
+
+    def test_evaluation_loss_is_independent_of_graph_batching(self):
+        torch.manual_seed(19)
+        model = CandidateConstraintGNN(hidden_dim=16, layers=2).eval()
+        samples = (self.sample, self.second_sample)
+        individual = _evaluate(
+            model,
+            samples,
+            threshold=0.5,
+            device=torch.device("cpu"),
+            sample_batch_size=1,
+        )
+        combined = _evaluate(
+            model,
+            samples,
+            threshold=0.5,
+            device=torch.device("cpu"),
+            sample_batch_size=2,
+        )
+        for key in (
+            "loss",
+            "bce",
+            "constraint_penalty",
+            "expected_mass_penalty",
+        ):
+            self.assertAlmostEqual(
+                float(individual[key]), float(combined[key]), places=6
+            )
 
 
 if __name__ == "__main__":

@@ -44,103 +44,164 @@ def _evaluate(
     samples: Sequence[MILPGraphSample],
     *,
     threshold: float,
+    decode_threshold: float | None = None,
     device: torch.device,
+    sample_batch_size: int | None = None,
 ) -> dict[str, object]:
     model.eval()
-    graph = batch_graph_samples(samples, device=device)
-    with torch.no_grad():
-        logits = model(graph)
-        probabilities = torch.sigmoid(logits).cpu().numpy()
-        loss, parts = imitation_loss(logits, graph)
-    true = graph.labels.cpu().numpy()
-    predicted_binary = probabilities >= threshold
-    true_binary = true >= 0.5
-    tp = int(np.sum(predicted_binary & true_binary))
-    fp = int(np.sum(predicted_binary & ~true_binary))
-    fn = int(np.sum(~predicted_binary & true_binary))
-    tn = int(np.sum(~predicted_binary & ~true_binary))
+    if not samples:
+        raise ValueError("evaluation requires at least one sample")
+    batch_size = (
+        len(samples) if sample_batch_size is None else int(sample_batch_size)
+    )
+    if batch_size < 1:
+        raise ValueError("sample batch size must be positive")
+    tp = fp = fn = tn = 0
+    positive_prediction_count = 0
+    positive_label_count = 0
+    variable_count = 0
+    evaluated_sample_count = 0
+    weighted_parts: dict[str, float] = {}
     decoded = []
-    for sample, (start, end) in zip(samples, graph.variable_slices):
-        sample_probabilities = probabilities[start:end]
-        raw_selected = tuple(
-            variable
-            for variable, probability in zip(
-                sample.variables, sample_probabilities
+    resolved_decode_threshold = (
+        threshold if decode_threshold is None else float(decode_threshold)
+    )
+    if not 0.0 <= resolved_decode_threshold <= 1.0:
+        raise ValueError("decode threshold must lie in [0, 1]")
+    for batch_start in range(0, len(samples), batch_size):
+        batch_samples = samples[batch_start:batch_start + batch_size]
+        graph = batch_graph_samples(batch_samples, device=device)
+        with torch.no_grad():
+            logits = model(graph)
+            probabilities = torch.sigmoid(logits).cpu().numpy()
+            loss, parts = imitation_loss(logits, graph)
+        true = graph.labels.cpu().numpy()
+        predicted_binary = probabilities >= threshold
+        true_binary = true >= 0.5
+        tp += int(np.sum(predicted_binary & true_binary))
+        fp += int(np.sum(predicted_binary & ~true_binary))
+        fn += int(np.sum(~predicted_binary & true_binary))
+        tn += int(np.sum(~predicted_binary & ~true_binary))
+        positive_prediction_count += int(np.sum(predicted_binary))
+        positive_label_count += int(np.sum(true_binary))
+        batch_variable_count = len(true_binary)
+        variable_count += batch_variable_count
+        batch_sample_count = len(batch_samples)
+        evaluated_sample_count += batch_sample_count
+        weighted_parts["loss"] = weighted_parts.get("loss", 0.0) + (
+            float(loss.detach()) * batch_sample_count
+        )
+        for key, value in parts.items():
+            weighted_parts[key] = weighted_parts.get(key, 0.0) + (
+                float(value) * batch_sample_count
             )
-            if probability >= threshold
-        )
-        raw_feasibility = validate_decoded_selection(
-            raw_selected, sample.resource_capacities
-        )
-        result = greedy_decode_scores(
-            sample,
-            sample_probabilities,
-            threshold=threshold,
-        )
-        throughput_optimal = (
-            result.completed_request_count
-            == sample.optimal_completed_request_count
-        )
-        latency_gap = (
-            result.total_completion_latency
-            - sample.optimal_total_completion_latency
-            if throughput_optimal else None
-        )
-        latency_relative_gap = (
-            latency_gap / max(sample.optimal_total_completion_latency, 1.0)
-            if latency_gap is not None else None
-        )
-        decoded.append({
-            "seed": sample.seed,
-            "raw_threshold_selected_count": len(raw_selected),
-            "raw_threshold_feasible": raw_feasibility.feasible,
-            "raw_threshold_violation_count": len(
-                raw_feasibility.violations
-            ),
-            "post_projection_feasible": result.feasible,
-            "completed_request_count": result.completed_request_count,
-            "optimal_completed_request_count": (
-                sample.optimal_completed_request_count
-            ),
-            "throughput_ratio": (
-                result.completed_request_count
-                / sample.optimal_completed_request_count
-                if sample.optimal_completed_request_count else 1.0
-            ),
-            "throughput_optimal": throughput_optimal,
-            "total_completion_latency": result.total_completion_latency,
-            "optimal_total_completion_latency": (
-                sample.optimal_total_completion_latency
-            ),
-            "latency_gap_when_throughput_optimal": latency_gap,
-            "latency_relative_gap_when_throughput_optimal": (
-                latency_relative_gap
-            ),
-            "lexicographic_objective_optimal": bool(
-                throughput_optimal
-                and latency_gap is not None
-                and abs(latency_gap) <= 1e-7
-            ),
-            "exact_selected_set": set(result.selected_variable_ids) == {
-                variable.variable_id
-                for variable, label in zip(sample.variables, sample.labels)
-                if label > 0.5
-            },
-        })
+        for sample, (start, end) in zip(
+            batch_samples, graph.variable_slices
+        ):
+            sample_probabilities = probabilities[start:end]
+            raw_selected = tuple(
+                variable
+                for variable, probability in zip(
+                    sample.variables, sample_probabilities
+                )
+                if probability >= threshold
+            )
+            raw_feasibility = validate_decoded_selection(
+                raw_selected,
+                sample.resource_capacities,
+                sample.reserved_usage,
+            )
+            result = greedy_decode_scores(
+                sample,
+                sample_probabilities,
+                threshold=resolved_decode_threshold,
+            )
+            throughput_optimal = (
+                abs(
+                    result.expected_completed_request_mass
+                    - sample.optimal_expected_completed_request_mass
+                ) <= 1e-7
+            )
+            latency_gap = (
+                result.total_completion_latency
+                - sample.optimal_total_completion_latency
+                if throughput_optimal else None
+            )
+            latency_relative_gap = (
+                latency_gap
+                / max(sample.optimal_total_completion_latency, 1.0)
+                if latency_gap is not None else None
+            )
+            decoded.append({
+                "seed": sample.seed,
+                "raw_threshold_selected_count": len(raw_selected),
+                "raw_threshold_feasible": raw_feasibility.feasible,
+                "raw_threshold_violation_count": len(
+                    raw_feasibility.violations
+                ),
+                "post_projection_feasible": result.feasible,
+                "completed_request_count": result.completed_request_count,
+                "optimal_completed_request_count": (
+                    sample.optimal_completed_request_count
+                ),
+                "throughput_ratio": (
+                    result.expected_completed_request_mass
+                    / sample.optimal_expected_completed_request_mass
+                    if sample.optimal_expected_completed_request_mass
+                    else 1.0
+                ),
+                "expected_completed_request_mass": (
+                    result.expected_completed_request_mass
+                ),
+                "optimal_expected_completed_request_mass": (
+                    sample.optimal_expected_completed_request_mass
+                ),
+                "throughput_optimal": throughput_optimal,
+                "total_completion_latency": result.total_completion_latency,
+                "optimal_total_completion_latency": (
+                    sample.optimal_total_completion_latency
+                ),
+                "latency_gap_when_throughput_optimal": latency_gap,
+                "latency_relative_gap_when_throughput_optimal": (
+                    latency_relative_gap
+                ),
+                "lexicographic_objective_optimal": bool(
+                    throughput_optimal
+                    and latency_gap is not None
+                    and abs(latency_gap) <= 1e-7
+                ),
+                "exact_selected_set": set(result.selected_variable_ids) == {
+                    variable.variable_id
+                    for variable, label in zip(
+                        sample.variables, sample.labels
+                    )
+                    if label > 0.5
+                },
+            })
     comparable_latency_gaps = [
         item["latency_relative_gap_when_throughput_optimal"]
         for item in decoded
         if item["latency_relative_gap_when_throughput_optimal"] is not None
     ]
     return {
-        "loss": float(loss.detach()),
-        **parts,
+        **{
+            key: value / max(evaluated_sample_count, 1)
+            for key, value in weighted_parts.items()
+        },
+        "sample_count": len(samples),
+        "variable_count": variable_count,
+        "true_positive": tp,
+        "false_positive": fp,
+        "false_negative": fn,
+        "true_negative": tn,
         "accuracy": (tp + tn) / max(tp + fp + fn + tn, 1),
         "precision": tp / max(tp + fp, 1),
         "recall": tp / max(tp + fn, 1),
         "f1": 2 * tp / max(2 * tp + fp + fn, 1),
-        "positive_prediction_count": int(np.sum(predicted_binary)),
-        "positive_label_count": int(np.sum(true_binary)),
+        "positive_prediction_count": positive_prediction_count,
+        "positive_label_count": positive_label_count,
+        "classification_threshold": float(threshold),
+        "decode_threshold": resolved_decode_threshold,
         "mean_decoded_throughput_ratio": float(np.mean([
             item["throughput_ratio"] for item in decoded
         ])),

@@ -7,7 +7,12 @@ import argparse
 from qnet_core.scenario import ScenarioConfig, make_episode
 from qnet_core.spec import PhysicalConfig
 
-from .online import OnlineTELGENConfig, run_online_telgen, save_online_result
+from .online import (
+    OnlineTELGENConfig,
+    run_online_telgen,
+    save_online_milp_dataset,
+    save_online_result,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -25,6 +30,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--horizon", type=int)
     parser.add_argument("--nodes", type=int, default=64)
     parser.add_argument("--paths", type=int, default=4)
+    parser.add_argument("--construction-plans", type=int, default=5)
+    parser.add_argument(
+        "--decision-backend",
+        choices=("lp_decoder", "milp_teacher", "gnn"),
+        default="lp_decoder",
+    )
+    parser.add_argument("--gnn-checkpoint")
+    parser.add_argument(
+        "--gnn-device", choices=("auto", "cpu", "cuda"), default="auto"
+    )
+    parser.add_argument("--gnn-decode-threshold", type=float)
+    parser.add_argument("--milp-time-limit-seconds", type=float, default=60.0)
+    parser.add_argument(
+        "--save-milp-dataset",
+        action="store_true",
+        help="save one GNN graph/label sample per non-empty MILP boundary",
+    )
     parser.add_argument(
         "--topology-mode",
         choices=("waxman", "parallel_corridors"),
@@ -45,6 +67,12 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.requests_per_batch < 1 or args.decision_interval < 1:
         raise ValueError("batch size and decision interval must be positive")
+    if args.save_milp_dataset and args.decision_backend != "milp_teacher":
+        raise ValueError(
+            "--save-milp-dataset requires --decision-backend milp_teacher"
+        )
+    if args.decision_backend == "gnn" and not args.gnn_checkpoint:
+        raise ValueError("--decision-backend gnn requires --gnn-checkpoint")
     arrival_rounds = (
         args.requests + args.requests_per_batch - 1
     ) // args.requests_per_batch
@@ -77,12 +105,45 @@ def main(argv: list[str] | None = None) -> int:
     spec = make_episode(scenario, args.seed)
     result = run_online_telgen(
         spec,
-        OnlineTELGENConfig(
-            decision_interval=args.decision_interval,
-            path_candidate_count=args.paths,
+        (
+            OnlineTELGENConfig(
+                decision_interval=args.decision_interval,
+                path_candidate_count=args.paths,
+                construction_kinds=(),
+                swap_tree_count=args.construction_plans,
+                purification_kinds=("none",),
+                decision_backend="milp_teacher",
+                milp_time_limit_seconds=args.milp_time_limit_seconds,
+            )
+            if args.decision_backend == "milp_teacher"
+            else (
+                OnlineTELGENConfig(
+                    decision_interval=args.decision_interval,
+                    path_candidate_count=args.paths,
+                    construction_kinds=(),
+                    swap_tree_count=args.construction_plans,
+                    purification_kinds=("none",),
+                    decision_backend="gnn",
+                    gnn_checkpoint=args.gnn_checkpoint,
+                    gnn_device=args.gnn_device,
+                    gnn_decode_threshold=args.gnn_decode_threshold,
+                )
+                if args.decision_backend == "gnn"
+                else OnlineTELGENConfig(
+                    decision_interval=args.decision_interval,
+                    path_candidate_count=args.paths,
+                    decision_backend="lp_decoder",
+                )
+            )
         ),
     )
     paths = save_online_result(result, args.output)
+    dataset_paths = None
+    if args.save_milp_dataset:
+        dataset_paths = save_online_milp_dataset(
+            result,
+            f"{args.output}/milp_dataset_seed_{args.seed:08d}",
+        )
     print(
         f"completed={int(result.metrics['completed_requests'])}/"
         f"{int(result.metrics['request_count'])} "
@@ -91,6 +152,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     print(f"json: {paths.json_path}")
     print(f"csv: {paths.csv_path}")
+    if dataset_paths is not None:
+        print(f"milp manifest: {dataset_paths.manifest_path}")
     return 0
 
 

@@ -4,13 +4,19 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime
+from importlib.metadata import PackageNotFoundError, version as package_version
 import csv
 import json
+from os import replace as atomic_replace
 from pathlib import Path
 import shutil
 from statistics import fmean
+import sys
 from time import perf_counter
 from typing import Mapping
+
+import numpy as np
+import scipy
 
 from qnet_core.construction_api import ExecutionEvent
 from qnet_core.construction_metrics import (
@@ -27,9 +33,26 @@ from qnet_core.scheduled_execution import (
 )
 from qnet_core.spec import EpisodeSpec
 
-from .dataset import TeacherBatchRecord, solve_teacher_window
+from .dataset import (
+    PlanningBatchProblem,
+    TeacherBatchRecord,
+    build_planning_batch_problem,
+    solve_planning_batch_problem,
+)
 from .hard_decoder import HardConstraintDecoder, HardDecoderSolution
-from .physical_validation import compile_decoded_schedule
+from .milp_imitation import (
+    CONSTRAINT_FEATURE_NAMES,
+    GLOBAL_FEATURE_NAMES,
+    VARIABLE_FEATURE_NAMES,
+    MILPGraphSample,
+    build_candidate_constraint_graph,
+    graph_sample_from_solution,
+)
+from .milp_oracle import ConstructionAwareMILPOracle, DiscreteOracleSolution
+from .gnn_policy import OnlineGNNPolicy
+from .physical_validation import (
+    compile_selected_schedule,
+)
 from .teacher import ConstructionAwareLPTeacher
 from .time_expansion import TimeExpandedCandidate
 
@@ -43,7 +66,13 @@ class OnlineTELGENConfig:
     construction_kinds: tuple[str, ...] = ("left_deep", "balanced")
     swap_tree_count: int | None = None
     purification_kinds: tuple[str, ...] = ("none", "elementary_once")
+    decision_backend: str = "lp_decoder"
+    gnn_checkpoint: str | None = None
+    gnn_device: str = "auto"
+    gnn_decode_threshold: float | None = None
     teacher_solver_backend: str = "trajectory_ipm"
+    milp_time_limit_seconds: float = 60.0
+    milp_relative_gap: float = 0.0
 
     def __post_init__(self) -> None:
         if self.decision_interval < 1:
@@ -56,9 +85,34 @@ class OnlineTELGENConfig:
             raise ValueError("swap_tree_count must be positive")
         if not self.purification_kinds:
             raise ValueError("at least one purification kind is required")
+        if self.decision_backend not in {
+            "lp_decoder", "milp_teacher", "gnn"
+        }:
+            raise ValueError(
+                f"unknown online decision backend: {self.decision_backend}"
+            )
         if self.teacher_solver_backend not in {"trajectory_ipm", "highs_ipm"}:
             raise ValueError(
                 f"unknown teacher solver backend: {self.teacher_solver_backend}"
+            )
+        if self.milp_time_limit_seconds <= 0:
+            raise ValueError("milp_time_limit_seconds must be positive")
+        if self.milp_relative_gap < 0:
+            raise ValueError("milp_relative_gap cannot be negative")
+        if self.gnn_device not in {"auto", "cpu", "cuda"}:
+            raise ValueError(f"unknown GNN device: {self.gnn_device}")
+        if self.gnn_decode_threshold is not None and not (
+            0.0 <= self.gnn_decode_threshold <= 1.0
+        ):
+            raise ValueError("GNN decode threshold must lie in [0, 1]")
+        if self.decision_backend == "gnn" and not self.gnn_checkpoint:
+            raise ValueError("GNN decision backend requires a checkpoint")
+        if (
+            self.decision_backend == "milp_teacher"
+            and self.milp_relative_gap != 0.0
+        ):
+            raise ValueError(
+                "milp_teacher labels require an exact zero relative gap"
             )
 
 
@@ -86,6 +140,41 @@ class OnlineDecisionRecord:
     teacher_stage_two_iterations: int
     teacher_solve_seconds: float
     decision_seconds: float
+    decision_backend: str = "lp_decoder"
+    policy_inference_seconds: float = 0.0
+    policy_decode_threshold: float | None = None
+    teacher_stage_one_mip_gap: float | None = None
+    teacher_stage_two_mip_gap: float | None = None
+
+
+@dataclass(frozen=True)
+class OnlineMILPDecisionSample:
+    """One pre-action online state paired with its exact MILP decision."""
+
+    episode_seed: int
+    decision_index: int
+    decision_slot: int
+    window_end_slot: int
+    completion_end_slot: int
+    visible_request_ids: tuple[str, ...]
+    eligible_request_ids: tuple[str, ...]
+    running_request_ids: tuple[str, ...]
+    selected_variable_ids: tuple[str, ...]
+    reserved_usage: tuple[tuple[str, int, int], ...]
+    attempt_counts: tuple[tuple[str, int], ...]
+    graph: MILPGraphSample
+
+
+@dataclass(frozen=True)
+class OnlineMILPSkippedBoundary:
+    episode_seed: int
+    decision_index: int
+    decision_slot: int
+    window_end_slot: int
+    visible_request_ids: tuple[str, ...]
+    eligible_request_ids: tuple[str, ...]
+    running_request_ids: tuple[str, ...]
+    reason: str
 
 
 @dataclass(frozen=True)
@@ -119,6 +208,8 @@ class OnlineTELGENResult:
     violations: tuple[ScheduleViolation, ...]
     event_trace: tuple[ExecutionEvent, ...]
     metrics: Mapping[str, float]
+    milp_samples: tuple[OnlineMILPDecisionSample, ...] = ()
+    skipped_milp_boundaries: tuple[OnlineMILPSkippedBoundary, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -127,6 +218,12 @@ class OnlineResultPaths:
     csv_path: Path
     latest_json_path: Path
     latest_csv_path: Path
+
+
+@dataclass(frozen=True)
+class OnlineMILPDatasetPaths:
+    manifest_path: Path
+    sample_paths: tuple[Path, ...]
 
 
 class OnlineTELGENController:
@@ -139,6 +236,8 @@ class OnlineTELGENController:
         *,
         teacher: ConstructionAwareLPTeacher | None = None,
         decoder: HardConstraintDecoder | None = None,
+        milp_oracle: ConstructionAwareMILPOracle | None = None,
+        gnn_policy: OnlineGNNPolicy | None = None,
     ):
         self.spec = spec
         self.config = config or OnlineTELGENConfig()
@@ -148,6 +247,20 @@ class OnlineTELGENController:
         self.decoder = decoder or HardConstraintDecoder(
             random_seed=spec.seed
         )
+        self.milp_oracle = milp_oracle or ConstructionAwareMILPOracle(
+            time_limit_seconds=self.config.milp_time_limit_seconds,
+            mip_relative_gap=self.config.milp_relative_gap,
+        )
+        self.gnn_policy = gnn_policy
+        if self.config.decision_backend == "gnn":
+            if self.gnn_policy is None:
+                self.gnn_policy = OnlineGNNPolicy.from_checkpoint(
+                    self.config.gnn_checkpoint,
+                    device=self.config.gnn_device,
+                    decode_threshold=self.config.gnn_decode_threshold,
+                )
+        elif self.gnn_policy is not None:
+            raise ValueError("a GNN policy requires the GNN decision backend")
         self.capacities = build_resource_capacities(spec)
         self.scheduler = PersistentConstructionScheduler(spec)
         self.requests = {request.id: request for request in spec.requests}
@@ -157,6 +270,8 @@ class OnlineTELGENController:
         self._active_attempt_index: dict[str, int] = {}
         self._decisions: list[OnlineDecisionRecord] = []
         self._expired_times: dict[str, int] = {}
+        self._milp_samples: list[OnlineMILPDecisionSample] = []
+        self._skipped_milp_boundaries: list[OnlineMILPSkippedBoundary] = []
 
     def _visible_request_ids(self, slot: int) -> tuple[str, ...]:
         return tuple(sorted(
@@ -221,15 +336,15 @@ class OnlineTELGENController:
                 )
         return reserved
 
-    def _solve_decision(
+    def _build_decision_problem(
         self,
         slot: int,
         start_window_end_slot: int,
         eligible_request_ids: tuple[str, ...],
         reserved_usage: Mapping[tuple[str, int], int],
-    ) -> tuple[TeacherBatchRecord | None, HardDecoderSolution | None]:
+    ) -> PlanningBatchProblem | None:
         if not eligible_request_ids:
-            return None, None
+            return None
         eligible = set(eligible_request_ids)
         window_episode = replace(
             self.spec,
@@ -238,7 +353,7 @@ class OnlineTELGENController:
                 if request.id in eligible
             ),
         )
-        record = solve_teacher_window(
+        return build_planning_batch_problem(
             window_episode,
             window_start_slot=slot,
             window_end_slot=start_window_end_slot,
@@ -249,6 +364,18 @@ class OnlineTELGENController:
             construction_kinds=self.config.construction_kinds,
             swap_tree_count=self.config.swap_tree_count,
             purification_kinds=self.config.purification_kinds,
+        )
+
+    def _solve_lp_decision(
+        self,
+        problem: PlanningBatchProblem | None,
+        eligible_request_ids: tuple[str, ...],
+        reserved_usage: Mapping[tuple[str, int], int],
+    ) -> tuple[TeacherBatchRecord | None, HardDecoderSolution | None]:
+        if problem is None:
+            return None, None
+        record = solve_planning_batch_problem(
+            problem,
             teacher=self.teacher,
         )
         decoded = self.decoder.decode(
@@ -260,19 +387,101 @@ class OnlineTELGENController:
         )
         return record, decoded
 
+    def _solve_milp_decision(
+        self,
+        problem: PlanningBatchProblem | None,
+    ) -> tuple[DiscreteOracleSolution | None, float]:
+        if problem is None or not problem.expansion.variables:
+            return None, 0.0
+        started = perf_counter()
+        solution = self.milp_oracle.solve(
+            problem.expansion,
+            problem.capacities,
+            reserved_usage=problem.reserved_usage_map,
+        )
+        for stage in (solution.stage_one, solution.stage_two):
+            if stage.mip_gap is None or stage.mip_gap > 1e-12:
+                raise RuntimeError(
+                    f"{stage.stage_name} did not produce a zero-gap label"
+                )
+        return solution, perf_counter() - started
+
+    def _solve_gnn_decision(
+        self,
+        problem: PlanningBatchProblem | None,
+        *,
+        slot: int,
+        start_window_end_slot: int,
+        running_request_ids: tuple[str, ...],
+        attempt_counts: Mapping[str, int],
+    ):
+        if problem is None or not problem.expansion.variables:
+            return None
+        if self.gnn_policy is None:
+            raise RuntimeError("GNN decision backend has no loaded policy")
+        graph = build_candidate_constraint_graph(
+            self.spec.seed,
+            problem.episode,
+            problem.expansion.variables,
+            problem.capacities,
+            reserved_usage=problem.reserved_usage_map,
+            decision_slot=slot,
+            window_end_slot=start_window_end_slot,
+            running_request_ids=running_request_ids,
+            attempt_counts=attempt_counts,
+        )
+        return self.gnn_policy.decide(graph)
+
+    def _solve_decision(
+        self,
+        slot: int,
+        start_window_end_slot: int,
+        eligible_request_ids: tuple[str, ...],
+        reserved_usage: Mapping[tuple[str, int], int],
+    ) -> tuple[TeacherBatchRecord | None, HardDecoderSolution | None]:
+        """Backward-compatible LP/decoder entry used by existing tests."""
+
+        problem = self._build_decision_problem(
+            slot,
+            start_window_end_slot,
+            eligible_request_ids,
+            reserved_usage,
+        )
+        return self._solve_lp_decision(
+            problem,
+            eligible_request_ids,
+            reserved_usage,
+        )
+
     def _register_attempts(
         self,
         slot: int,
         decoded: HardDecoderSolution,
     ) -> None:
-        schedule = compile_decoded_schedule(
-            decoded,
+        self._register_selected_variables(
+            slot,
+            decoded.selected_variables,
+            decoded.request_ids,
+        )
+
+    def _register_selected_variables(
+        self,
+        slot: int,
+        selected_variables: tuple[TimeExpandedCandidate, ...],
+        eligible_request_ids: tuple[str, ...],
+    ) -> None:
+        schedule = compile_selected_schedule(
+            selected_variables,
+            eligible_request_ids,
+            self.capacities,
             horizon_slots=self.spec.horizon,
         )
         self.scheduler.submit(schedule.requests)
-        selected_by_request = decoded.selected_by_request
-        for request_id in sorted(selected_by_request):
-            variable = selected_by_request[request_id]
+        for variable in sorted(
+            selected_variables,
+            key=lambda item: item.request_id,
+        ):
+            request_id = variable.request_id
             self._running_variables[request_id] = variable
             attempt = self._attempt_counts.get(request_id, 0) + 1
             self._attempt_counts[request_id] = attempt
@@ -322,25 +531,129 @@ class OnlineTELGENController:
         if start_window_end <= slot:
             return
         reserved = self._reserved_usage(self.spec.horizon)
+        attempt_counts_before = dict(self._attempt_counts)
         started = perf_counter()
-        record, decoded = self._solve_decision(
+        problem = self._build_decision_problem(
             slot,
             start_window_end,
             eligible,
             reserved,
         )
+        record: TeacherBatchRecord | None = None
+        decoded: HardDecoderSolution | None = None
+        milp_solution: DiscreteOracleSolution | None = None
+        gnn_decision = None
+        milp_solve_seconds = 0.0
+        if self.config.decision_backend == "milp_teacher":
+            milp_solution, milp_solve_seconds = self._solve_milp_decision(
+                problem
+            )
+        elif self.config.decision_backend == "gnn":
+            gnn_decision = self._solve_gnn_decision(
+                problem,
+                slot=slot,
+                start_window_end_slot=start_window_end,
+                running_request_ids=running,
+                attempt_counts=attempt_counts_before,
+            )
+        else:
+            record, decoded = self._solve_lp_decision(
+                problem,
+                eligible,
+                reserved,
+            )
         selected_ids: tuple[str, ...] = ()
         decoded_count = 0
-        if decoded is not None:
-            self._register_attempts(slot, decoded)
+        expected_completed_mass = 0.0
+        selected_variables: tuple[TimeExpandedCandidate, ...] = ()
+        if milp_solution is not None:
+            selected_variables = milp_solution.selected_variables
             selected_ids = tuple(
-                variable.variable_id for variable in decoded.selected_variables
+                variable.variable_id for variable in selected_variables
+            )
+            decoded_count = milp_solution.completed_request_count
+            expected_completed_mass = (
+                milp_solution.expected_completed_request_mass
+            )
+            graph = graph_sample_from_solution(
+                self.spec.seed,
+                problem.episode,
+                milp_solution,
+                self.capacities,
+                reserved_usage=reserved,
+                decision_slot=slot,
+                window_end_slot=start_window_end,
+                running_request_ids=running,
+                attempt_counts=attempt_counts_before,
+            )
+            self._milp_samples.append(OnlineMILPDecisionSample(
+                episode_seed=self.spec.seed,
+                decision_index=len(self._decisions),
+                decision_slot=slot,
+                window_end_slot=start_window_end,
+                completion_end_slot=self.spec.horizon,
+                visible_request_ids=visible,
+                eligible_request_ids=eligible,
+                running_request_ids=running,
+                selected_variable_ids=selected_ids,
+                reserved_usage=tuple(sorted(
+                    (resource_id, resource_slot, amount)
+                    for (resource_id, resource_slot), amount
+                    in reserved.items()
+                )),
+                attempt_counts=tuple(sorted(
+                    (request_id, attempt_counts_before.get(request_id, 0))
+                    for request_id in eligible
+                )),
+                graph=graph,
+            ))
+            self._register_selected_variables(
+                slot,
+                selected_variables,
+                eligible,
+            )
+        elif gnn_decision is not None:
+            selected_variables = gnn_decision.decoded.selected_variables
+            selected_ids = gnn_decision.decoded.selected_variable_ids
+            decoded_count = gnn_decision.decoded.completed_request_count
+            expected_completed_mass = (
+                gnn_decision.decoded.expected_completed_request_mass
+            )
+            self._register_selected_variables(
+                slot,
+                selected_variables,
+                eligible,
+            )
+        elif decoded is not None:
+            self._register_attempts(slot, decoded)
+            selected_variables = decoded.selected_variables
+            selected_ids = tuple(
+                variable.variable_id for variable in selected_variables
             )
             decoded_count = decoded.completed_request_count
+            expected_completed_mass = decoded.expected_completed_request_mass
+        elif self.config.decision_backend == "milp_teacher":
+            reason = (
+                "no_eligible_requests"
+                if problem is None
+                else "no_feasible_time_expanded_variables"
+            )
+            self._skipped_milp_boundaries.append(
+                OnlineMILPSkippedBoundary(
+                    episode_seed=self.spec.seed,
+                    decision_index=len(self._decisions),
+                    decision_slot=slot,
+                    window_end_slot=start_window_end,
+                    visible_request_ids=visible,
+                    eligible_request_ids=eligible,
+                    running_request_ids=running,
+                    reason=reason,
+                )
+            )
         decision_seconds = perf_counter() - started
-        selected_requests = (
-            set() if decoded is None else set(decoded.selected_by_request)
-        )
+        selected_requests = {
+            variable.request_id for variable in selected_variables
+        }
         self._decisions.append(OnlineDecisionRecord(
             decision_slot=slot,
             window_end_slot=start_window_end,
@@ -353,30 +666,58 @@ class OnlineTELGENController:
                 request_id for request_id in eligible
                 if request_id not in selected_requests
             ),
-            candidate_count=0 if record is None else len(record.candidates),
-            variable_count=0 if record is None else len(record.expansion.variables),
+            candidate_count=(
+                0 if problem is None else len(problem.candidates)
+            ),
+            variable_count=(
+                0 if problem is None else len(problem.expansion.variables)
+            ),
             candidate_rejection_count=(
-                0 if record is None else len(record.expansion.rejections)
+                0 if problem is None else len(problem.expansion.rejections)
             ),
             reserved_resource_slot_count=len(reserved),
             teacher_completed_mass=(
-                0.0 if record is None else record.solution.completed_request_mass
+                milp_solution.expected_completed_request_mass
+                if milp_solution is not None
+                else (
+                    expected_completed_mass
+                    if gnn_decision is not None
+                    else (
+                        0.0
+                        if record is None
+                        else record.solution.completed_request_mass
+                    )
+                )
             ),
             decoded_request_count=decoded_count,
             decoded_expected_completed_mass=(
-                0.0
-                if decoded is None
-                else decoded.expected_completed_request_mass
+                expected_completed_mass
             ),
             decoder_search_strategy=(
-                "none" if decoded is None else decoded.search_strategy
+                "milp_exact"
+                if milp_solution is not None
+                else (
+                    "gnn_greedy_projection"
+                    if gnn_decision is not None
+                    else ("none" if decoded is None else decoded.search_strategy)
+                )
             ),
             decoder_support_variable_count=(
-                0 if decoded is None else decoded.support_variable_count
+                gnn_decision.support_variable_count
+                if gnn_decision is not None
+                else (0 if decoded is None else decoded.support_variable_count)
             ),
             teacher_total_completion_latency=(
-                0.0 if record is None
-                else record.solution.total_completion_latency
+                milp_solution.total_completion_latency
+                if milp_solution is not None
+                else (
+                    gnn_decision.decoded.total_completion_latency
+                    if gnn_decision is not None
+                    else (
+                        0.0 if record is None
+                        else record.solution.total_completion_latency
+                    )
+                )
             ),
             teacher_stage_one_iterations=(
                 0 if record is None else record.solution.stage_one.iterations
@@ -385,9 +726,32 @@ class OnlineTELGENController:
                 0 if record is None else record.solution.stage_two.iterations
             ),
             teacher_solve_seconds=(
-                0.0 if record is None else record.solve_seconds
+                milp_solve_seconds
+                if milp_solution is not None
+                else (0.0 if record is None else record.solve_seconds)
             ),
             decision_seconds=decision_seconds,
+            decision_backend=self.config.decision_backend,
+            policy_inference_seconds=(
+                0.0
+                if gnn_decision is None
+                else gnn_decision.inference_seconds
+            ),
+            policy_decode_threshold=(
+                None
+                if gnn_decision is None
+                else gnn_decision.decode_threshold
+            ),
+            teacher_stage_one_mip_gap=(
+                None
+                if milp_solution is None
+                else milp_solution.stage_one.mip_gap
+            ),
+            teacher_stage_two_mip_gap=(
+                None
+                if milp_solution is None
+                else milp_solution.stage_two.mip_gap
+            ),
         ))
 
     def _settlements(self) -> tuple[RequestSettlement, ...]:
@@ -485,6 +849,14 @@ class OnlineTELGENController:
             "mean_teacher_solve_seconds": (
                 0.0 if not teacher_times else fmean(teacher_times)
             ),
+            "mean_policy_inference_seconds": (
+                0.0
+                if not self._decisions
+                else fmean(
+                    getattr(item, "policy_inference_seconds", 0.0)
+                    for item in self._decisions
+                )
+            ),
             "mean_teacher_stage_one_iterations": (
                 0.0
                 if not stage_one_iterations
@@ -541,6 +913,10 @@ class OnlineTELGENController:
             violations=self.scheduler.violations,
             event_trace=self.scheduler.event_trace,
             metrics=self._metrics(settlements),
+            milp_samples=tuple(self._milp_samples),
+            skipped_milp_boundaries=tuple(
+                self._skipped_milp_boundaries
+            ),
         )
 
     @property
@@ -554,18 +930,22 @@ def run_online_telgen(
     *,
     teacher: ConstructionAwareLPTeacher | None = None,
     decoder: HardConstraintDecoder | None = None,
+    milp_oracle: ConstructionAwareMILPOracle | None = None,
+    gnn_policy: OnlineGNNPolicy | None = None,
 ) -> OnlineTELGENResult:
     return OnlineTELGENController(
         spec,
         config,
         teacher=teacher,
         decoder=decoder,
+        milp_oracle=milp_oracle,
+        gnn_policy=gnn_policy,
     ).run()
 
 
 def _json_payload(result: OnlineTELGENResult) -> dict[str, object]:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "episode_seed": result.episode_seed,
         "horizon_slots": result.horizon_slots,
         "episode": asdict(result.episode),
@@ -577,7 +957,269 @@ def _json_payload(result: OnlineTELGENResult) -> dict[str, object]:
         "launches": [asdict(item) for item in result.launches],
         "violations": [asdict(item) for item in result.violations],
         "events": [asdict(item) for item in result.event_trace],
+        "milp_training_samples": [
+            {
+                "decision_index": item.decision_index,
+                "decision_slot": item.decision_slot,
+                "variable_count": len(item.graph.variables),
+                "positive_label_count": int(np.sum(item.graph.labels)),
+            }
+            for item in result.milp_samples
+        ],
+        "skipped_milp_boundaries": [
+            asdict(item) for item in result.skipped_milp_boundaries
+        ],
     }
+
+
+def _operation_payload(variable: TimeExpandedCandidate) -> list[dict[str, object]]:
+    return [
+        {
+            "op_id": operation.op_id,
+            "kind": operation.kind,
+            "predecessors": list(operation.predecessors),
+            "input_segment_ids": list(operation.input_segment_ids),
+            "output_segment_id": operation.output_segment_id,
+            "output_endpoints": operation.output_endpoints,
+            "resource_demand": dict(operation.resource_demand.items()),
+            "output_resource_hold": dict(
+                operation.output_resource_hold.items()
+            ),
+            "duration_ps": operation.duration_ps,
+            "success_probability": operation.success_probability,
+            "required_fidelity": operation.required_fidelity,
+            "retry_limit": operation.retry_limit,
+            "retry_root_id": operation.retry_root_id,
+            "retry_attempt": operation.retry_attempt,
+            "ordinal": operation.ordinal,
+            "dag_version": operation.dag_version,
+        }
+        for operation in variable.base_candidate.dag.operations
+    ]
+
+
+def _variable_payload(variable: TimeExpandedCandidate) -> dict[str, object]:
+    return {
+        "variable_id": variable.variable_id,
+        "candidate_id": variable.candidate_id,
+        "request_id": variable.request_id,
+        "route_nodes": list(variable.route_nodes),
+        "construction_kind": variable.construction_kind,
+        "purification_kind": variable.purification_kind,
+        "dag_version": variable.base_candidate.dag.version,
+        "terminal_segment_ids": list(
+            variable.base_candidate.all_terminal_segment_ids
+        ),
+        "start_slot": variable.start_slot,
+        "completion_slot": variable.completion_slot,
+        "completion_latency": variable.completion_latency,
+        "duration_slots": variable.duration_slots,
+        "expected_fidelity": variable.expected_fidelity,
+        "expected_success_probability": (
+            variable.expected_success_probability
+        ),
+        "operation_slots": list(
+            variable.nominal_schedule.operation_slots
+        ),
+        "resource_usage": [asdict(item) for item in variable.resource_usage],
+        "operations": _operation_payload(variable),
+    }
+
+
+def save_online_milp_dataset(
+    result: OnlineTELGENResult,
+    output_directory: str | Path,
+) -> OnlineMILPDatasetPaths:
+    """Persist each online pre-action graph and one episode manifest."""
+
+    if result.config.decision_backend != "milp_teacher":
+        raise ValueError("online MILP dataset requires milp_teacher rollout")
+    output = Path(output_directory)
+    output.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    version_directory = output / f"rollout_{timestamp}"
+    collision_index = 1
+    while version_directory.exists():
+        collision_index += 1
+        version_directory = output / (
+            f"rollout_{timestamp}_{collision_index}"
+        )
+    version_directory.mkdir(parents=True)
+    sample_paths: list[Path] = []
+    entries = []
+    for sample in result.milp_samples:
+        graph = sample.graph
+        file_name = (
+            f"milp_state_seed_{sample.episode_seed:08d}_"
+            f"decision_{sample.decision_index:04d}.npz"
+        )
+        target = version_directory / file_name
+        context = {
+            "schema_version": 1,
+            "sample_kind": "online_milp_decision",
+            "episode_seed": sample.episode_seed,
+            "decision_index": sample.decision_index,
+            "decision_slot": sample.decision_slot,
+            "window_end_slot": sample.window_end_slot,
+            "completion_end_slot": sample.completion_end_slot,
+            "visible_request_ids": list(sample.visible_request_ids),
+            "eligible_request_ids": list(sample.eligible_request_ids),
+            "running_request_ids": list(sample.running_request_ids),
+            "selected_variable_ids": list(sample.selected_variable_ids),
+            "attempt_counts": dict(sample.attempt_counts),
+            "reserved_usage": [
+                {
+                    "resource_id": resource_id,
+                    "slot": slot,
+                    "amount": amount,
+                }
+                for resource_id, slot, amount in sample.reserved_usage
+            ],
+            "request_state": [
+                {
+                    "id": request.id,
+                    "source": request.source,
+                    "destination": request.destination,
+                    "arrival": request.arrival,
+                    "ttl": request.ttl,
+                    "deadline": request.deadline,
+                    "demand_pairs": request.demand_pairs,
+                    "required_fidelity": request.required_fidelity,
+                    "max_storage_slots": request.max_storage_slots,
+                    "age": sample.decision_slot - request.arrival,
+                    "remaining_ttl": (
+                        result.horizon_slots - sample.decision_slot
+                        if request.deadline is None
+                        else request.deadline - sample.decision_slot
+                    ),
+                    "attempt_count": dict(sample.attempt_counts).get(
+                        request.id, 0
+                    ),
+                }
+                for request in result.episode.requests
+                if request.id in set(graph.request_ids)
+            ],
+            "variables": [_variable_payload(item) for item in graph.variables],
+            "resource_capacities": dict(graph.resource_capacities),
+            "optimal_completed_request_count": (
+                graph.optimal_completed_request_count
+            ),
+            "optimal_expected_completed_request_mass": (
+                graph.optimal_expected_completed_request_mass
+            ),
+            "optimal_total_completion_latency": (
+                graph.optimal_total_completion_latency
+            ),
+            "stage_one_mip_gap": graph.stage_one_mip_gap,
+            "stage_two_mip_gap": graph.stage_two_mip_gap,
+        }
+        np.savez_compressed(
+            target,
+            variable_features=graph.variable_features,
+            constraint_features=graph.constraint_features,
+            global_features=graph.global_features,
+            edge_variable_indices=graph.edge_variable_indices,
+            edge_constraint_indices=graph.edge_constraint_indices,
+            edge_features=graph.edge_features,
+            constraint_rhs=graph.constraint_rhs,
+            labels=graph.labels,
+            variable_feature_names=np.asarray(VARIABLE_FEATURE_NAMES),
+            constraint_feature_names=np.asarray(CONSTRAINT_FEATURE_NAMES),
+            global_feature_names=np.asarray(GLOBAL_FEATURE_NAMES),
+            variable_ids=np.asarray(
+                [item.variable_id for item in graph.variables]
+            ),
+            context_json=np.asarray(json.dumps(
+                context, ensure_ascii=False, sort_keys=True
+            )),
+        )
+        sample_paths.append(target)
+        entries.append({
+            "file": file_name,
+            "decision_index": sample.decision_index,
+            "decision_slot": sample.decision_slot,
+            "visible_request_count": len(sample.visible_request_ids),
+            "eligible_request_count": len(sample.eligible_request_ids),
+            "running_request_count": len(sample.running_request_ids),
+            "variable_count": len(graph.variables),
+            "constraint_count": len(graph.constraint_rhs),
+            "positive_label_count": int(np.sum(graph.labels)),
+        })
+    try:
+        sequence_version = package_version("sequence")
+    except PackageNotFoundError:
+        sequence_version = "unknown"
+    manifest = {
+        "schema_version": 2,
+        "dataset_kind": "online_milp_teacher_rollout",
+        "episode_seed": result.episode_seed,
+        "config": asdict(result.config),
+        "planning_environment": {
+            "seed": result.episode.seed,
+            "nodes": list(result.episode.nodes),
+            "edges": [list(edge) for edge in result.episode.edges],
+            "horizon": result.episode.horizon,
+            "physical": asdict(result.episode.physical),
+        },
+        "sample_count": len(entries),
+        "feature_schema": {
+            "version": 2,
+            "variable": list(VARIABLE_FEATURE_NAMES),
+            "constraint": list(CONSTRAINT_FEATURE_NAMES),
+            "global": list(GLOBAL_FEATURE_NAMES),
+            "edge": ["coefficient", "coefficient_over_rhs"],
+            "label": "exact_two_stage_milp_binary_primal",
+        },
+        "runtime_versions": {
+            "python": sys.version.split()[0],
+            "numpy": np.__version__,
+            "scipy": scipy.__version__,
+            "milp_solver": "scipy.optimize.milp/HiGHS",
+            "sequence": sequence_version,
+        },
+        "samples": entries,
+        "skipped_boundaries": [
+            asdict(item) for item in result.skipped_milp_boundaries
+        ],
+    }
+    manifest_path = version_directory / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    latest_manifest = output / "manifest.json"
+    latest_payload = dict(manifest)
+    latest_payload["version_directory"] = version_directory.name
+    latest_temporary = output / ".manifest.json.tmp"
+    latest_temporary.write_text(
+        json.dumps(latest_payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    atomic_replace(latest_temporary, latest_manifest)
+    return OnlineMILPDatasetPaths(
+        manifest_path=manifest_path,
+        sample_paths=tuple(sample_paths),
+    )
+
+
+def generate_online_milp_dataset(
+    spec: EpisodeSpec,
+    output_directory: str | Path,
+    config: OnlineTELGENConfig | None = None,
+    *,
+    milp_oracle: ConstructionAwareMILPOracle | None = None,
+) -> tuple[OnlineTELGENResult, OnlineMILPDatasetPaths]:
+    """Run an exact teacher rollout and persist its online GNN samples."""
+
+    resolved = config or OnlineTELGENConfig(decision_backend="milp_teacher")
+    if resolved.decision_backend != "milp_teacher":
+        raise ValueError("dataset generation requires milp_teacher backend")
+    result = run_online_telgen(
+        spec,
+        resolved,
+        milp_oracle=milp_oracle,
+    )
+    return result, save_online_milp_dataset(result, output_directory)
 
 
 def save_online_result(

@@ -100,3 +100,11 @@
 | 2026-08-13 00:15 | /experiment-bridge | refine-logs/EXPERIMENT_RESULTS.md | implementation | 最新构造感知 MILP 验证结果副本 |
 | 2026-08-13 00:15 | /experiment-bridge | refine-logs/EXPERIMENT_TRACKER_20260813_001540.md | implementation | 构造感知验证、物理回放和 GNN 阶段追踪 |
 | 2026-08-13 00:15 | /experiment-bridge | refine-logs/EXPERIMENT_TRACKER.md | implementation | 最新构造感知实验追踪副本 |
+| 2026-08-13 12:11 | /experiment-bridge | results/online_milp_gnn_first_batch/train_loss_fixed/online_milp_gnn_20260813_121136.json | implementation | audited online MILP-GNN training report |
+| 2026-08-13 12:11 | /experiment-bridge | results/online_milp_gnn_first_batch/train_loss_fixed/online_milp_gnn_20260813_121136.pt | implementation | audited online MILP-GNN checkpoint |
+| 2026-08-13 12:11 | /experiment-bridge | results/online_milp_gnn_first_batch/train_loss_fixed/online_milp_gnn.json | implementation | latest audited training report |
+| 2026-08-13 12:11 | /experiment-bridge | results/online_milp_gnn_first_batch/train_loss_fixed/online_milp_gnn.pt | implementation | latest audited checkpoint |
+| 2026-08-13 12:12 | /experiment-bridge | results/online_milp_gnn_first_batch/paired_online_5seeds_loss_fixed/online_gnn_comparison_20260813_121227.json | implementation | five-seed online GNN/MILP/Q-CAST comparison |
+| 2026-08-13 12:12 | /experiment-bridge | results/online_milp_gnn_first_batch/paired_online_5seeds_loss_fixed/online_gnn_comparison.json | implementation | latest five-seed online comparison |
+| 2026-08-13 12:32 | /experiment-bridge | results/online_milp_gnn_first_batch/paired_online_post_audit_sanity/online_gnn_comparison_20260813_123253.json | implementation | post-audit online GNN/Q-CAST sanity comparison |
+| 2026-08-13 12:32 | /experiment-bridge | results/online_milp_gnn_first_batch/paired_online_post_audit_sanity/online_gnn_comparison.json | implementation | latest post-audit sanity comparison |
