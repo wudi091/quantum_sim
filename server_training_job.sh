@@ -5,7 +5,7 @@ set -Eeuo pipefail
 # 单文件固定训练任务：check | start | status | log | stop
 
 readonly PYTHON_BIN="/data/anaconda3/envs/reliq/bin/python"
-readonly BASH_BIN="/usr/bin/bash"
+readonly BASH_BIN="/bin/bash"
 readonly FLOCK_BIN="/usr/bin/flock"
 readonly NOHUP_BIN="/usr/bin/nohup"
 readonly SETSID_BIN="/usr/bin/setsid"
