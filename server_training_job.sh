@@ -134,7 +134,13 @@ print(f"gpu={torch.cuda.get_device_name(0)}")
 print(f"scipy={scipy.__version__}")
 print("SeQUeNCe、MILP 和训练入口：OK")
 '
-    /usr/bin/df -h "${SCRIPT_DIR}"
+    local df_bin
+    df_bin="$(command -v df || true)"
+    if [[ -z "${df_bin}" || ! -x "${df_bin}" ]]; then
+        echo "缺少可执行文件：df" >&2
+        return 1
+    fi
+    "${df_bin}" -h "${SCRIPT_DIR}"
 }
 
 run_pipeline() {
