@@ -244,10 +244,15 @@ start_job() {
     fi
     rm -f -- "${PID_FILE}"
 
-    if ! "${FLOCK_BIN}" -n "${TRAIN_LOCK_FILE}" /usr/bin/true; then
+    local probe_lock_fd
+    exec {probe_lock_fd}>"${TRAIN_LOCK_FILE}"
+    if ! "${FLOCK_BIN}" -n "${probe_lock_fd}"; then
+        exec {probe_lock_fd}>&-
         echo "训练锁已被占用，已有训练正在运行。"
         return 0
     fi
+    "${FLOCK_BIN}" -u "${probe_lock_fd}"
+    exec {probe_lock_fd}>&-
 
     check_environment
     rm -f -- "${FINISHED_AT_FILE}" "${EXIT_CODE_FILE}"
