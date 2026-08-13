@@ -84,6 +84,14 @@ class MILPOracleTests(unittest.TestCase):
         self.assertTrue(is_numerically_optimal_stage(stage))
         self.assertFalse(is_numerically_optimal_stage(
             DiscreteStageResult(
+                **{
+                    **stage.__dict__,
+                    "mip_dual_bound": stage.objective_value + 1e-4,
+                }
+            )
+        ))
+        self.assertFalse(is_numerically_optimal_stage(
+            DiscreteStageResult(
                 **{**stage.__dict__, "status": 1, "message": "time limit"}
             )
         ))

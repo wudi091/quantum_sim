@@ -25,6 +25,9 @@ from .time_expansion import TimeExpandedCandidate, TimeExpansionResult
 # values.  Treat that solver-level numerical residue as zero while continuing
 # to reject materially suboptimal incumbents.
 NUMERICAL_ZERO_MIP_GAP_TOLERANCE = 1e-9
+DEFAULT_MILP_INTEGRALITY_TOLERANCE = 1e-6
+NUMERICAL_OBJECTIVE_ABSOLUTE_TOLERANCE = 1e-8
+NUMERICAL_OBJECTIVE_RELATIVE_TOLERANCE = 1e-9
 
 
 @dataclass(frozen=True)
@@ -112,6 +115,14 @@ def is_numerically_optimal_stage(stage: DiscreteStageResult) -> bool:
         stage.success
         and stage.status == 0
         and has_numerically_zero_mip_gap(stage.mip_gap)
+        and stage.mip_dual_bound is not None
+        and math.isfinite(float(stage.mip_dual_bound))
+        and math.isclose(
+            stage.objective_value,
+            float(stage.mip_dual_bound),
+            rel_tol=NUMERICAL_OBJECTIVE_RELATIVE_TOLERANCE,
+            abs_tol=NUMERICAL_OBJECTIVE_ABSOLUTE_TOLERANCE,
+        )
     )
 
 
@@ -149,16 +160,20 @@ class ConstructionAwareMILPOracle:
         *,
         time_limit_seconds: float = 60.0,
         mip_relative_gap: float = 0.0,
+        integrality_tolerance: float = DEFAULT_MILP_INTEGRALITY_TOLERANCE,
         feasibility_tolerance: float = 1e-7,
     ):
         if time_limit_seconds <= 0:
             raise ValueError("time_limit_seconds must be positive")
         if mip_relative_gap < 0:
             raise ValueError("mip_relative_gap cannot be negative")
+        if integrality_tolerance <= 0:
+            raise ValueError("integrality_tolerance must be positive")
         if feasibility_tolerance <= 0:
             raise ValueError("feasibility_tolerance must be positive")
         self.time_limit_seconds = float(time_limit_seconds)
         self.mip_relative_gap = float(mip_relative_gap)
+        self.integrality_tolerance = float(integrality_tolerance)
         self.feasibility_tolerance = float(feasibility_tolerance)
 
     @staticmethod
@@ -201,9 +216,14 @@ class ConstructionAwareMILPOracle:
             )
         raw_primal = np.asarray(result.x, dtype=float)
         primal = np.rint(raw_primal)
-        if np.max(np.abs(raw_primal - primal)) > self.feasibility_tolerance:
+        max_integrality_deviation = float(
+            np.max(np.abs(raw_primal - primal))
+        )
+        if max_integrality_deviation > self.integrality_tolerance:
             raise DiscreteOracleSolveError(
-                f"{lp.name} returned a non-integral incumbent"
+                f"{lp.name} returned a non-integral incumbent: "
+                f"max_deviation={max_integrality_deviation}, "
+                f"tolerance={self.integrality_tolerance}"
             )
         violation = _max_violation(lp, primal)
         if violation > self.feasibility_tolerance:
