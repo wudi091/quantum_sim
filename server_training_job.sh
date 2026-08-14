@@ -15,8 +15,8 @@ readonly GIT_BIN="/usr/bin/git"
 
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly SELF="${SCRIPT_DIR}/server_training_job.sh"
-readonly RESULT_BASE="${SCRIPT_DIR}/results/server_generalization_v1"
-readonly STATE_DIR="${RESULT_BASE}/job_state"
+readonly RESULT_BASE="${SCRIPT_DIR}/results/server_generalization_v2"
+readonly STATE_DIR="${SCRIPT_DIR}/results/server_training_state"
 readonly PID_FILE="${STATE_DIR}/training.pid"
 readonly JOB_LOG="${STATE_DIR}/training.log"
 readonly PHASE_FILE="${STATE_DIR}/phase.txt"
@@ -25,21 +25,38 @@ readonly FINISHED_AT_FILE="${STATE_DIR}/finished_at.txt"
 readonly EXIT_CODE_FILE="${STATE_DIR}/exit_code.txt"
 readonly RUN_ROOT_FILE="${STATE_DIR}/run_root.txt"
 readonly MANAGER_LOCK_FILE="${STATE_DIR}/manager.lock"
-readonly TRAIN_LOCK_FILE="${RESULT_BASE}/training.lock"
+readonly TRAIN_LOCK_FILE="${SCRIPT_DIR}/results/server_training.lock"
 
 readonly MILP_TIME_LIMIT_SECONDS=300
-readonly TRAIN_EPISODES_PER_GROUP=3
-readonly VALIDATION_EPISODES=2
-readonly TEST_EPISODES_PER_GROUP=2
-readonly ONLINE_TEST_EPISODES=20
+readonly TRAIN_EPISODES_PER_GROUP=150
+readonly VALIDATION_EPISODES=25
+readonly TEST_EPISODES_PER_GROUP=25
+readonly ONLINE_TEST_EPISODES=100
 
 declare -ar TRAINING_SEEDS=(20260821 20260822 20260823)
-declare -ar VALIDATION_SEEDS=(22000 22001)
-declare -ar TEST_SEEDS=(23000 23001 23100 23101)
+declare -ar VALIDATION_SEEDS=(
+    220000 220001 220002 220003 220004
+    220005 220006 220007 220008 220009
+    220010 220011 220012 220013 220014
+    220015 220016 220017 220018 220019
+    220020 220021 220022 220023 220024
+)
+declare -ar TEST_SEEDS=(
+    230000 230001 230002 230003 230004
+    230005 230006 230007 230008 230009
+    230010 230011 230012 230013 230014
+    230015 230016 230017 230018 230019
+    230020 230021 230022 230023 230024
+    231000 231001 231002 231003 231004
+    231005 231006 231007 231008 231009
+    231010 231011 231012 231013 231014
+    231015 231016 231017 231018 231019
+    231020 231021 231022 231023 231024
+)
 
 declare -ar LABEL_SCENARIO_ARGS=(
-    --requests 20
-    --requests-per-batch 5
+    --requests 40
+    --requests-per-batch 10
     --decision-interval 4
     --ttl 16
     --min-hops 4
@@ -342,33 +359,33 @@ print("SeQUeNCe：OK")
     set_phase "阶段 1/5：生成多拓扑精确 MILP 标签"
     generate_collection \
         "${collections_dir}" "${log_dir}" train_waxman_64 \
-        "${TRAIN_EPISODES_PER_GROUP}" 21000 64 waxman \
+        "${TRAIN_EPISODES_PER_GROUP}" 210000 64 waxman \
         --waxman-alpha 0.15 --waxman-beta 0.45
     generate_collection \
         "${collections_dir}" "${log_dir}" train_waxman_96 \
-        "${TRAIN_EPISODES_PER_GROUP}" 21100 96 waxman \
+        "${TRAIN_EPISODES_PER_GROUP}" 211000 96 waxman \
         --waxman-alpha 0.20 --waxman-beta 0.40
     generate_collection \
         "${collections_dir}" "${log_dir}" train_waxman_128 \
-        "${TRAIN_EPISODES_PER_GROUP}" 21200 128 waxman \
+        "${TRAIN_EPISODES_PER_GROUP}" 212000 128 waxman \
         --waxman-alpha 0.10 --waxman-beta 0.55
     generate_collection \
         "${collections_dir}" "${log_dir}" validation_waxman_160 \
-        "${VALIDATION_EPISODES}" 22000 160 waxman \
+        "${VALIDATION_EPISODES}" 220000 160 waxman \
         --waxman-alpha 0.18 --waxman-beta 0.50
     generate_collection \
         "${collections_dir}" "${log_dir}" test_waxman_192 \
-        "${TEST_EPISODES_PER_GROUP}" 23000 192 waxman \
+        "${TEST_EPISODES_PER_GROUP}" 230000 192 waxman \
         --waxman-alpha 0.12 --waxman-beta 0.60
     generate_collection \
         "${collections_dir}" "${log_dir}" test_barabasi_128 \
-        "${TEST_EPISODES_PER_GROUP}" 23100 128 barabasi_albert \
+        "${TEST_EPISODES_PER_GROUP}" 231000 128 barabasi_albert \
         --barabasi-attachment 2
 
     set_phase "阶段 2/5：合并固定训练、验证与测试划分"
     "${PYTHON_BIN}" -m algorithms.telgen.combine_online_milp_datasets \
         --output "${suite_dir}" \
-        --profile generalization_v1 \
+        --profile generalization_v2 \
         --input train_waxman_64 train \
             "${collections_dir}/train_waxman_64" \
         --input train_waxman_96 train \
