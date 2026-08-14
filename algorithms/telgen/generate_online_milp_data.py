@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime
 from importlib.metadata import PackageNotFoundError, version as package_version
 import json
@@ -24,6 +24,7 @@ from .online import (
     generate_online_milp_dataset,
     save_online_result,
 )
+from .milp_oracle import DiscreteOracleSolveError
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -68,6 +69,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--paths", type=int, default=4)
     parser.add_argument("--construction-plans", type=int, default=5)
     parser.add_argument("--time-limit-seconds", type=float, default=300.0)
+    parser.add_argument("--time-limit-retries", type=int, default=0)
+    parser.add_argument("--time-limit-multiplier", type=float, default=3.0)
     parser.add_argument("--generation-probability", type=float, default=0.8)
     parser.add_argument("--swap-probability", type=float, default=0.9)
     parser.add_argument("--memory-capacity", type=int, default=2)
@@ -125,10 +128,34 @@ def _teacher_config_payload(config: OnlineTELGENConfig) -> dict[str, object]:
         "swap_tree_count",
         "purification_kinds",
         "decision_backend",
-        "milp_time_limit_seconds",
         "milp_relative_gap",
     )
     return {key: payload[key] for key in keys}
+
+
+def _time_limit_schedule(
+    initial_seconds: float,
+    retries: int,
+    multiplier: float,
+) -> tuple[float, ...]:
+    """Return deterministic per-episode exact-MILP retry budgets."""
+
+    if initial_seconds <= 0.0:
+        raise ValueError("time limit must be positive")
+    if retries < 0:
+        raise ValueError("time limit retries cannot be negative")
+    if retries and multiplier <= 1.0:
+        raise ValueError("time limit multiplier must exceed one")
+    return tuple(
+        float(initial_seconds) * float(multiplier) ** attempt
+        for attempt in range(retries + 1)
+    )
+
+
+def _is_time_limit_failure(error: BaseException) -> bool:
+    return isinstance(error, DiscreteOracleSolveError) and (
+        "time limit reached" in str(error).lower()
+    )
 
 
 def _load_completed_episode_entry(
@@ -194,10 +221,17 @@ def _load_completed_episode_entry(
     metrics = rollout_payload.get("metrics", {})
     entry_path = episode_directory / "episode_entry.json"
     elapsed_seconds = None
+    solver_attempts = 1
+    solved_time_limit = float(saved_config["milp_time_limit_seconds"])
     if entry_path.is_file():
         saved_entry = json.loads(entry_path.read_text(encoding="utf-8"))
         if int(saved_entry.get("seed", -1)) == seed:
             elapsed_seconds = saved_entry.get("elapsed_seconds")
+            solver_attempts = int(saved_entry.get("solver_attempts", 1))
+            solved_time_limit = float(saved_entry.get(
+                "milp_time_limit_seconds",
+                solved_time_limit,
+            ))
     return {
         "seed": seed,
         "manifest": dataset_pointer.relative_to(output).as_posix(),
@@ -209,6 +243,8 @@ def _load_completed_episode_entry(
         "request_count": float(metrics["request_count"]),
         "mean_decision_seconds": float(metrics["mean_decision_seconds"]),
         "elapsed_seconds": elapsed_seconds,
+        "solver_attempts": solver_attempts,
+        "milp_time_limit_seconds": solved_time_limit,
         "rollout_json": rollout_pointer.relative_to(output).as_posix(),
         "resumed": True,
     }
@@ -232,6 +268,11 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError("episodes must be positive")
     if args.requests_per_batch < 1 or args.decision_interval < 1:
         raise ValueError("batch size and decision interval must be positive")
+    time_limits = _time_limit_schedule(
+        args.time_limit_seconds,
+        args.time_limit_retries,
+        args.time_limit_multiplier,
+    )
     arrival_rounds = (
         args.requests + args.requests_per_batch - 1
     ) // args.requests_per_batch
@@ -350,11 +391,41 @@ def main(argv: list[str] | None = None) -> int:
             continue
         episode_started = perf_counter()
         episode_directory = args.output / f"episode_{seed:08d}"
-        result, dataset_paths = generate_online_milp_dataset(
-            episode,
-            episode_directory / "dataset",
-            config,
-        )
+        result = None
+        dataset_paths = None
+        episode_config = config
+        solver_attempts = 0
+        for attempt_index, time_limit_seconds in enumerate(
+            time_limits,
+            start=1,
+        ):
+            solver_attempts = attempt_index
+            episode_config = replace(
+                config,
+                milp_time_limit_seconds=time_limit_seconds,
+            )
+            try:
+                result, dataset_paths = generate_online_milp_dataset(
+                    episode,
+                    episode_directory / "dataset",
+                    episode_config,
+                )
+                break
+            except DiscreteOracleSolveError as error:
+                if (
+                    not _is_time_limit_failure(error)
+                    or attempt_index == len(time_limits)
+                ):
+                    raise
+                print(
+                    f"episode={index + 1}/{args.episodes} seed={seed} "
+                    f"timeout={time_limit_seconds:.3f}s "
+                    f"retry={attempt_index}/{len(time_limits) - 1} "
+                    f"next_limit={time_limits[attempt_index]:.3f}s",
+                    flush=True,
+                )
+        if result is None or dataset_paths is None:
+            raise RuntimeError("MILP retry loop ended without a result")
         result_paths = save_online_result(result, episode_directory / "rollout")
         relative_manifest = dataset_paths.manifest_path.relative_to(args.output)
         entry = {
@@ -366,6 +437,10 @@ def main(argv: list[str] | None = None) -> int:
             "request_count": result.metrics["request_count"],
             "mean_decision_seconds": result.metrics["mean_decision_seconds"],
             "elapsed_seconds": perf_counter() - episode_started,
+            "solver_attempts": solver_attempts,
+            "milp_time_limit_seconds": (
+                episode_config.milp_time_limit_seconds
+            ),
             "rollout_json": result_paths.json_path.relative_to(
                 args.output
             ).as_posix(),

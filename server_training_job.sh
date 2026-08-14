@@ -27,7 +27,9 @@ readonly RUN_ROOT_FILE="${STATE_DIR}/run_root.txt"
 readonly MANAGER_LOCK_FILE="${STATE_DIR}/manager.lock"
 readonly TRAIN_LOCK_FILE="${SCRIPT_DIR}/results/server_training.lock"
 
-readonly MILP_TIME_LIMIT_SECONDS=300
+readonly MILP_TIME_LIMIT_SECONDS=900
+readonly MILP_TIME_LIMIT_RETRIES=1
+readonly MILP_TIME_LIMIT_MULTIPLIER=3
 readonly TRAIN_EPISODES_PER_GROUP=150
 readonly VALIDATION_EPISODES=25
 readonly TEST_EPISODES_PER_GROUP=25
@@ -230,6 +232,8 @@ generate_collection() {
         --nodes "${nodes}" \
         --topology-mode "${topology_mode}" \
         --time-limit-seconds "${MILP_TIME_LIMIT_SECONDS}" \
+        --time-limit-retries "${MILP_TIME_LIMIT_RETRIES}" \
+        --time-limit-multiplier "${MILP_TIME_LIMIT_MULTIPLIER}" \
         --resume \
         "${LABEL_SCENARIO_ARGS[@]}" \
         "$@" \
