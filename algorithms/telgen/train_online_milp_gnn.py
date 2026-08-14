@@ -11,6 +11,7 @@ import random
 import shutil
 import sys
 from time import perf_counter
+from typing import Sequence
 
 import networkx as nx
 import numpy as np
@@ -18,14 +19,16 @@ import scipy
 import torch
 
 from .milp_imitation import (
+    AUTOREGRESSIVE_ARCHITECTURE,
+    AUTOREGRESSIVE_CHECKPOINT_SCHEMA_VERSION,
     CONSTRAINT_FEATURE_NAMES,
     GLOBAL_FEATURE_NAMES,
     VARIABLE_FEATURE_NAMES,
     CandidateConstraintGNN,
-    batch_graph_samples,
-    greedy_decode_scores,
-    imitation_loss,
+    MILPGraphSample,
+    autoregressive_set_loss,
 )
+from .hard_decoder import greedy_feasible_projection
 from .online_milp_dataset import (
     load_online_milp_dataset,
     samples_for_episode_seeds,
@@ -45,14 +48,31 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--weight-decay", type=float, default=1e-5)
     parser.add_argument("--hidden-dim", type=int, default=64)
     parser.add_argument("--layers", type=int, default=3)
-    parser.add_argument("--threshold", type=float, default=0.5)
     parser.add_argument("--training-seed", type=int, default=20260813)
     parser.add_argument("--validation-fraction", type=float, default=0.2)
     parser.add_argument("--test-fraction", type=float, default=0.2)
+    parser.add_argument(
+        "--validation-seeds",
+        type=int,
+        nargs="+",
+        help="Explicit validation episode seeds; requires --test-seeds.",
+    )
+    parser.add_argument(
+        "--test-seeds",
+        type=int,
+        nargs="+",
+        help="Explicit held-out test episode seeds; requires --validation-seeds.",
+    )
     parser.add_argument("--patience", type=int, default=60)
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--evaluation-batch-size", type=int, default=2)
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
+    parser.add_argument("--random-baseline-trials", type=int, default=32)
+    parser.add_argument(
+        "--target-mode",
+        choices=("set", "fixed_order"),
+        default="set",
+    )
     return parser
 
 
@@ -94,6 +114,108 @@ def _split_episode_seeds(
     return train, validation, test
 
 
+def _resolve_episode_split(
+    seeds: tuple[int, ...],
+    *,
+    validation_fraction: float,
+    test_fraction: float,
+    random_seed: int,
+    validation_seeds: Sequence[int] | None = None,
+    test_seeds: Sequence[int] | None = None,
+) -> tuple[tuple[int, ...], tuple[int, ...], tuple[int, ...]]:
+    if validation_seeds is None and test_seeds is None:
+        return _split_episode_seeds(
+            seeds,
+            validation_fraction=validation_fraction,
+            test_fraction=test_fraction,
+            random_seed=random_seed,
+        )
+    if validation_seeds is None or test_seeds is None:
+        raise ValueError(
+            "explicit episode split requires both validation and test seeds"
+        )
+    available = set(int(seed) for seed in seeds)
+    validation = tuple(sorted(set(int(seed) for seed in validation_seeds)))
+    test = tuple(sorted(set(int(seed) for seed in test_seeds)))
+    if not validation or not test:
+        raise ValueError("explicit validation and test splits cannot be empty")
+    if len(validation) != len(tuple(validation_seeds)):
+        raise ValueError("validation seeds must be unique")
+    if len(test) != len(tuple(test_seeds)):
+        raise ValueError("test seeds must be unique")
+    unknown = (set(validation) | set(test)) - available
+    if unknown:
+        raise ValueError(f"unknown explicit episode seed: {min(unknown)}")
+    if set(validation) & set(test):
+        raise ValueError("validation and test episode seeds overlap")
+    train = tuple(sorted(available - set(validation) - set(test)))
+    if not train:
+        raise ValueError("explicit episode split leaves no training episodes")
+    return train, validation, test
+
+
+def _random_feasible_baseline(
+    samples: Sequence[MILPGraphSample],
+    *,
+    trials: int,
+    random_seed: int,
+) -> dict[str, float | int]:
+    if not samples:
+        raise ValueError("random baseline requires at least one sample")
+    if trials < 1:
+        raise ValueError("random baseline trials must be positive")
+    trial_pooled_ratios = []
+    sample_ratios = []
+    feasible_count = 0
+    decision_count = 0
+    optimal_total_mass = float(sum(
+        sample.optimal_expected_completed_request_mass
+        for sample in samples
+    ))
+    for trial_index in range(trials):
+        selected_total_mass = 0.0
+        for sample_index, sample in enumerate(samples):
+            rng = np.random.default_rng(np.random.SeedSequence((
+                int(random_seed),
+                int(trial_index),
+                int(sample_index),
+            )))
+            projected = greedy_feasible_projection(
+                sample.variables,
+                sample.resource_capacities,
+                rng.random(len(sample.variables)),
+                request_ids=sample.request_ids,
+                reserved_usage=sample.reserved_usage,
+                support_tolerance=0.0,
+            )
+            selected_mass = projected.expected_completed_request_mass
+            selected_total_mass += selected_mass
+            optimal_mass = sample.optimal_expected_completed_request_mass
+            sample_ratios.append(
+                selected_mass / optimal_mass if optimal_mass else 1.0
+            )
+            feasible_count += int(projected.feasibility.feasible)
+            decision_count += 1
+        trial_pooled_ratios.append(
+            selected_total_mass / optimal_total_mass
+            if optimal_total_mass else 1.0
+        )
+    return {
+        "trials": trials,
+        "mean_sample_throughput_ratio": float(np.mean(sample_ratios)),
+        "mean_pooled_throughput_ratio": float(np.mean(trial_pooled_ratios)),
+        "p05_pooled_throughput_ratio": float(np.percentile(
+            trial_pooled_ratios,
+            5,
+        )),
+        "p95_pooled_throughput_ratio": float(np.percentile(
+            trial_pooled_ratios,
+            95,
+        )),
+        "feasible_rate": feasible_count / max(decision_count, 1),
+    }
+
+
 def _resolve_device(name: str) -> torch.device:
     if name == "auto":
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -102,101 +224,20 @@ def _resolve_device(name: str) -> torch.device:
     return torch.device(name)
 
 
-def _calibrate_decode_threshold(
-    model: CandidateConstraintGNN,
-    samples,
-    *,
-    device: torch.device,
-    sample_batch_size: int,
-) -> tuple[float, list[dict[str, float]]]:
-    """Choose a support threshold on validation episodes only.
+def _validation_key(
+    metrics: dict[str, object],
+) -> tuple[float, float, float, float]:
+    """Select checkpoints by pooled throughput before per-graph averages."""
 
-    Candidate probabilities are primarily ranking scores: one selected plan
-    competes with many time-shift alternatives, so they need not be calibrated
-    above 0.5.  The threshold only decides which candidates enter the feasible
-    greedy packing; resource constraints remain enforced by the decoder.
-    """
-
-    model.eval()
-    all_probabilities: list[np.ndarray] = []
-    probability_slices: list[tuple[int, int]] = []
-    probability_offset = 0
-    for batch_start in range(0, len(samples), sample_batch_size):
-        batch_samples = samples[batch_start:batch_start + sample_batch_size]
-        graph = batch_graph_samples(batch_samples, device=device)
-        with torch.no_grad():
-            batch_probabilities = torch.sigmoid(model(graph)).cpu().numpy()
-        all_probabilities.append(batch_probabilities)
-        for start, end in graph.variable_slices:
-            probability_slices.append((
-                probability_offset + start,
-                probability_offset + end,
-            ))
-        probability_offset += len(batch_probabilities)
-    probabilities = np.concatenate(all_probabilities)
-    quantiles = np.quantile(probabilities, np.linspace(0.0, 1.0, 41))
-    thresholds = sorted({
-        0.0,
-        0.5,
-        *(float(value) for value in quantiles),
-    })
-    rows: list[dict[str, float]] = []
-    best_threshold = 0.0
-    best_key: tuple[float, ...] | None = None
-    for threshold in thresholds:
-        ratios = []
-        optimal = []
-        latency_gaps = []
-        for sample, (start, end) in zip(samples, probability_slices):
-            decoded = greedy_decode_scores(
-                sample,
-                probabilities[start:end],
-                threshold=threshold,
-            )
-            target = sample.optimal_expected_completed_request_mass
-            ratio = (
-                decoded.expected_completed_request_mass / target
-                if target > 0.0 else 1.0
-            )
-            is_optimal = abs(
-                decoded.expected_completed_request_mass - target
-            ) <= 1e-7
-            ratios.append(ratio)
-            optimal.append(float(is_optimal))
-            if is_optimal:
-                latency_gaps.append(
-                    (
-                        decoded.total_completion_latency
-                        - sample.optimal_total_completion_latency
-                    )
-                    / max(sample.optimal_total_completion_latency, 1.0)
-                )
-        mean_ratio = float(np.mean(ratios))
-        minimum_ratio = float(np.min(ratios))
-        optimal_rate = float(np.mean(optimal))
-        mean_latency_gap = (
-            float(np.mean(latency_gaps)) if latency_gaps else float("inf")
-        )
-        rows.append({
-            "threshold": threshold,
-            "mean_decoded_throughput_ratio": mean_ratio,
-            "minimum_decoded_throughput_ratio": minimum_ratio,
-            "throughput_optimal_rate": optimal_rate,
-            "mean_latency_relative_gap_when_throughput_optimal": (
-                mean_latency_gap
-            ),
-        })
-        key = (
-            mean_ratio,
-            minimum_ratio,
-            optimal_rate,
-            -mean_latency_gap,
-            -threshold,
-        )
-        if best_key is None or key > best_key:
-            best_key = key
-            best_threshold = threshold
-    return best_threshold, rows
+    latency_gap = metrics[
+        "mean_latency_relative_gap_when_throughput_optimal"
+    ]
+    return (
+        float(metrics["pooled_throughput_ratio"]),
+        float(metrics["mean_throughput_ratio"]),
+        float("-inf") if latency_gap is None else -float(latency_gap),
+        -float(metrics["loss"]),
+    )
 
 
 def _save_outputs(
@@ -206,9 +247,14 @@ def _save_outputs(
 ) -> tuple[Path, Path, Path, Path]:
     output.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    report_versioned = output / f"online_milp_gnn_{timestamp}.json"
+    suffix = ""
+    collision_index = 1
+    while (output / f"online_milp_gnn_{timestamp}{suffix}.json").exists():
+        collision_index += 1
+        suffix = f"_{collision_index}"
+    report_versioned = output / f"online_milp_gnn_{timestamp}{suffix}.json"
     report_latest = output / "online_milp_gnn.json"
-    checkpoint_versioned = output / f"online_milp_gnn_{timestamp}.pt"
+    checkpoint_versioned = output / f"online_milp_gnn_{timestamp}{suffix}.pt"
     checkpoint_latest = output / "online_milp_gnn.pt"
     report_versioned.write_text(
         json.dumps(report, ensure_ascii=False, indent=2),
@@ -231,18 +277,20 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError("epochs and patience must be positive")
     if args.learning_rate <= 0.0 or args.weight_decay < 0.0:
         raise ValueError("optimizer hyperparameters are invalid")
-    if not 0.0 <= args.threshold <= 1.0:
-        raise ValueError("threshold must lie in [0, 1]")
     if args.batch_size < 1 or args.evaluation_batch_size < 1:
         raise ValueError("batch sizes must be positive")
+    if args.random_baseline_trials < 1:
+        raise ValueError("random-baseline-trials must be positive")
     _seed_everything(args.training_seed)
     device = _resolve_device(args.device)
     loaded = load_online_milp_dataset(args.dataset)
-    train_seeds, validation_seeds, test_seeds = _split_episode_seeds(
+    train_seeds, validation_seeds, test_seeds = _resolve_episode_split(
         loaded.episode_seeds,
         validation_fraction=args.validation_fraction,
         test_fraction=args.test_fraction,
         random_seed=args.training_seed,
+        validation_seeds=args.validation_seeds,
+        test_seeds=args.test_seeds,
     )
     train_samples = samples_for_episode_seeds(loaded.samples, train_seeds)
     validation_samples = samples_for_episode_seeds(
@@ -274,30 +322,47 @@ def main(argv: list[str] | None = None) -> int:
         "train": _evaluate(
             model,
             train_samples,
-            threshold=args.threshold,
             device=device,
             sample_batch_size=args.evaluation_batch_size,
+            target_mode=args.target_mode,
         ),
         "validation": _evaluate(
             model,
             validation_samples,
-            threshold=args.threshold,
             device=device,
             sample_batch_size=args.evaluation_batch_size,
+            target_mode=args.target_mode,
         ),
         "test": _evaluate(
             model,
             test_samples,
-            threshold=args.threshold,
             device=device,
             sample_batch_size=args.evaluation_batch_size,
+            target_mode=args.target_mode,
+        ),
+    }
+    random_baseline = {
+        "train": _random_feasible_baseline(
+            train_samples,
+            trials=args.random_baseline_trials,
+            random_seed=args.training_seed + 101,
+        ),
+        "validation": _random_feasible_baseline(
+            validation_samples,
+            trials=args.random_baseline_trials,
+            random_seed=args.training_seed + 202,
+        ),
+        "test": _random_feasible_baseline(
+            test_samples,
+            trials=args.random_baseline_trials,
+            random_seed=args.training_seed + 303,
         ),
     }
     best_state = {
         key: value.detach().cpu().clone()
         for key, value in model.state_dict().items()
     }
-    best_validation_loss = float("inf")
+    best_validation_key = _validation_key(before["validation"])
     best_epoch = 0
     stale_epochs = 0
     history: list[dict[str, float | int]] = []
@@ -313,10 +378,13 @@ def main(argv: list[str] | None = None) -> int:
         for batch_start in range(0, len(order), args.batch_size):
             indices = order[batch_start:batch_start + args.batch_size]
             batch_samples = tuple(train_samples[index] for index in indices)
-            graph = batch_graph_samples(batch_samples, device=device)
             optimizer.zero_grad(set_to_none=True)
-            logits = model(graph)
-            loss, parts = imitation_loss(logits, graph)
+            loss, parts = autoregressive_set_loss(
+                model,
+                batch_samples,
+                device=device,
+                target_mode=args.target_mode,
+            )
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
             optimizer.step()
@@ -338,36 +406,47 @@ def main(argv: list[str] | None = None) -> int:
             validation = _evaluate(
                 model,
                 validation_samples,
-                threshold=args.threshold,
                 device=device,
                 sample_batch_size=args.evaluation_batch_size,
+                target_mode=args.target_mode,
             )
             validation_loss = float(validation["loss"])
             history.append({
                 "epoch": epoch,
                 "train_loss": mean_train_loss,
-                "train_bce": mean_train_parts["bce"],
-                "train_constraint_penalty": mean_train_parts[
-                    "constraint_penalty"
+                "train_candidate_set_nll": mean_train_parts[
+                    "candidate_set_nll"
                 ],
-                "train_expected_mass_penalty": mean_train_parts[
-                    "expected_mass_penalty"
+                "train_stop_nll": mean_train_parts["stop_nll"],
+                "train_valid_candidate_fraction": mean_train_parts[
+                    "valid_candidate_fraction"
+                ],
+                "train_masked_candidate_fraction": mean_train_parts[
+                    "masked_candidate_fraction"
                 ],
                 "validation_loss": validation_loss,
                 "validation_f1": float(validation["f1"]),
-                "validation_decoded_throughput_ratio": float(
-                    validation["mean_decoded_throughput_ratio"]
+                "validation_throughput_ratio": float(
+                    validation["mean_throughput_ratio"]
+                ),
+                "validation_pooled_throughput_ratio": float(
+                    validation["pooled_throughput_ratio"]
                 ),
             })
             print(
                 f"epoch={epoch} train_loss={mean_train_loss:.6f} "
                 f"validation_loss={validation_loss:.6f} "
                 f"validation_f1={float(validation['f1']):.4f} "
-                f"decoded_ratio={float(validation['mean_decoded_throughput_ratio']):.4f}",
+                f"pooled_throughput_ratio="
+                f"{float(validation['pooled_throughput_ratio']):.4f} "
+                f"mean_throughput_ratio="
+                f"{float(validation['mean_throughput_ratio']):.4f} "
+                f"masked={mean_train_parts['masked_candidate_fraction']:.4f}",
                 flush=True,
             )
-            if validation_loss < best_validation_loss - 1e-8:
-                best_validation_loss = validation_loss
+            validation_key = _validation_key(validation)
+            if validation_key > best_validation_key:
+                best_validation_key = validation_key
                 best_epoch = epoch
                 best_state = {
                     key: value.detach().cpu().clone()
@@ -380,36 +459,27 @@ def main(argv: list[str] | None = None) -> int:
                     break
     training_seconds = perf_counter() - started
     model.load_state_dict(best_state)
-    decode_threshold, threshold_calibration = _calibrate_decode_threshold(
-        model,
-        validation_samples,
-        device=device,
-        sample_batch_size=args.evaluation_batch_size,
-    )
     after = {
         "train": _evaluate(
             model,
             train_samples,
-            threshold=args.threshold,
-            decode_threshold=decode_threshold,
             device=device,
             sample_batch_size=args.evaluation_batch_size,
+            target_mode=args.target_mode,
         ),
         "validation": _evaluate(
             model,
             validation_samples,
-            threshold=args.threshold,
-            decode_threshold=decode_threshold,
             device=device,
             sample_batch_size=args.evaluation_batch_size,
+            target_mode=args.target_mode,
         ),
         "test": _evaluate(
             model,
             test_samples,
-            threshold=args.threshold,
-            decode_threshold=decode_threshold,
             device=device,
             sample_batch_size=args.evaluation_batch_size,
+            target_mode=args.target_mode,
         ),
     }
     try:
@@ -417,9 +487,40 @@ def main(argv: list[str] | None = None) -> int:
     except PackageNotFoundError:
         sequence_version = "unknown"
     report = {
-        "schema_version": 1,
-        "experiment": "online_exact_milp_gnn_imitation",
-        "supervision": "exact two-stage MILP final binary primal",
+        "schema_version": AUTOREGRESSIVE_CHECKPOINT_SCHEMA_VERSION,
+        "experiment": (
+            "online_masked_autoregressive_milp_"
+            f"{args.target_mode}_imitation"
+        ),
+        "architecture": AUTOREGRESSIVE_ARCHITECTURE,
+        "supervision": (
+            (
+                "unordered exact-MILP selected set"
+                if args.target_mode == "set"
+                else "one deterministic variable-ID ordering of the MILP set"
+            )
+            + " plus terminal STOP over the dynamically feasible candidate "
+            "action set"
+        ),
+        "training_objective": {
+            "target_mode": args.target_mode,
+            "candidate_target": (
+                "combined probability mass of all remaining teacher actions"
+                if args.target_mode == "set"
+                else "one deterministic variable-ID order"
+            ),
+            "feasibility": (
+                "exact packing mask before categorical normalization"
+            ),
+        },
+        "checkpoint_selection": {
+            "primary": "validation_pooled_throughput_ratio",
+            "tie_breakers": [
+                "validation_mean_throughput_ratio",
+                "negative_validation_latency_relative_gap",
+                "negative_validation_loss",
+            ],
+        },
         "dataset_manifest": str(loaded.manifest_path),
         "configuration": {
             **vars(args),
@@ -442,6 +543,11 @@ def main(argv: list[str] | None = None) -> int:
         },
         "split": {
             "unit": "episode",
+            "strategy": (
+                "explicit_held_out_episodes"
+                if args.validation_seeds is not None
+                else "seeded_random_episodes"
+            ),
             "train_seeds": list(train_seeds),
             "validation_seeds": list(validation_seeds),
             "test_seeds": list(test_seeds),
@@ -450,37 +556,39 @@ def main(argv: list[str] | None = None) -> int:
             "test_sample_count": len(test_samples),
         },
         "best_epoch": best_epoch,
-        "decode_threshold": decode_threshold,
-        "decode_threshold_selection": "validation_episode_lexicographic",
-        "threshold_calibration": threshold_calibration,
         "training_seconds": training_seconds,
         "before_training": before,
         "after_training": after,
+        "random_feasible_baseline": random_baseline,
         "history": history,
     }
     checkpoint = {
-        "schema_version": 1,
+        "schema_version": AUTOREGRESSIVE_CHECKPOINT_SCHEMA_VERSION,
         "model_class": "CandidateConstraintGNN",
+        "architecture": AUTOREGRESSIVE_ARCHITECTURE,
         "model_config": {
             "hidden_dim": args.hidden_dim,
             "layers": args.layers,
         },
         "state_dict": best_state,
-        "classification_threshold": args.threshold,
-        "decode_threshold": decode_threshold,
         "feature_schema": report["feature_schema"],
         "dataset_manifest": str(loaded.manifest_path),
         "split": report["split"],
         "best_epoch": best_epoch,
+        "training_objective": report["training_objective"],
+        "checkpoint_selection": report["checkpoint_selection"],
     }
     paths = _save_outputs(args.output, report, checkpoint)
     test = after["test"]
     print(
         "test: "
         f"f1={float(test['f1']):.4f} "
-        f"decoded_ratio={float(test['mean_decoded_throughput_ratio']):.4f} "
+        f"pooled_throughput_ratio="
+        f"{float(test['pooled_throughput_ratio']):.4f} "
+        f"mean_throughput_ratio="
+        f"{float(test['mean_throughput_ratio']):.4f} "
         f"throughput_optimal={float(test['throughput_optimal_rate']):.4f} "
-        f"feasible={float(test['post_projection_feasible_rate']):.4f}"
+        f"feasible={float(test['selection_feasible_rate']):.4f}"
     )
     print(f"report: {paths[0]}")
     print(f"checkpoint: {paths[2]}")

@@ -26,7 +26,10 @@ from .time_expansion import TimeExpandedCandidate, TimeExpansionResult
 # to reject materially suboptimal incumbents.
 NUMERICAL_ZERO_MIP_GAP_TOLERANCE = 1e-9
 DEFAULT_MILP_INTEGRALITY_TOLERANCE = 1e-6
-NUMERICAL_OBJECTIVE_ABSOLUTE_TOLERANCE = 1e-8
+# HiGHS may round a certified optimal primal/dual pair a few 1e-8 apart even
+# when it reports a zero MIP gap.  Keep this well below the solver's usual
+# feasibility tolerance while avoiding false rejection of exact labels.
+NUMERICAL_OBJECTIVE_ABSOLUTE_TOLERANCE = 1e-7
 NUMERICAL_OBJECTIVE_RELATIVE_TOLERANCE = 1e-9
 
 

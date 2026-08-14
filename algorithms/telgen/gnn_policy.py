@@ -10,27 +10,30 @@ from typing import Mapping
 import numpy as np
 
 from .milp_imitation import (
+    AUTOREGRESSIVE_ARCHITECTURE,
+    AUTOREGRESSIVE_CHECKPOINT_SCHEMA_VERSION,
     CONSTRAINT_FEATURE_NAMES,
     GLOBAL_FEATURE_NAMES,
     VARIABLE_FEATURE_NAMES,
+    AutoregressiveSelection,
     CandidateConstraintGNN,
     CandidateConstraintGraph,
-    GreedyDecodeResult,
-    batch_graph_samples,
-    greedy_decode_scores,
+    autoregressive_rollout,
     torch,
 )
 
 
 @dataclass(frozen=True)
 class OnlineGNNDecision:
-    """One GNN score vector and its feasible projected decision."""
+    """One feasibility-masked discrete action sequence emitted by the GNN."""
 
     probabilities: np.ndarray
-    decoded: GreedyDecodeResult
-    decode_threshold: float
-    support_variable_count: int
+    stop_probability: float
+    selection: AutoregressiveSelection
+    action_indices: tuple[int, ...]
     inference_seconds: float
+    invalid_action_index: int | None = None
+    invalid_action_reason: str | None = None
 
 
 def _resolve_device(name: str):
@@ -48,25 +51,21 @@ def _resolve_device(name: str):
 
 
 class OnlineGNNPolicy:
-    """Load a trained checkpoint and score unlabelled planning graphs."""
+    """Load a checkpoint and emit a feasible discrete action sequence."""
 
     def __init__(
         self,
         model: CandidateConstraintGNN,
         *,
         device="cpu",
-        decode_threshold: float = 0.0,
         checkpoint_path: str | Path | None = None,
     ):
         if torch is None:  # pragma: no cover - optional dependency environment
             raise ModuleNotFoundError(
                 "PyTorch is required for the online GNN policy"
             )
-        if not 0.0 <= float(decode_threshold) <= 1.0:
-            raise ValueError("decode threshold must lie in [0, 1]")
         self.device = torch.device(device)
         self.model = model.to(self.device).eval()
-        self.decode_threshold = float(decode_threshold)
         self.checkpoint_path = (
             None if checkpoint_path is None else Path(checkpoint_path)
         )
@@ -77,7 +76,6 @@ class OnlineGNNPolicy:
         path: str | Path,
         *,
         device: str = "auto",
-        decode_threshold: float | None = None,
     ) -> "OnlineGNNPolicy":
         if torch is None:  # pragma: no cover - optional dependency environment
             raise ModuleNotFoundError(
@@ -96,6 +94,19 @@ class OnlineGNNPolicy:
             raise ValueError("GNN checkpoint must contain a mapping")
         if checkpoint.get("model_class") != "CandidateConstraintGNN":
             raise ValueError("checkpoint contains an unsupported model class")
+        if checkpoint.get("schema_version") != (
+            AUTOREGRESSIVE_CHECKPOINT_SCHEMA_VERSION
+        ):
+            raise ValueError(
+                "checkpoint predates current masked autoregressive inference and "
+                "must be retrained"
+            )
+        architecture = checkpoint.get("architecture")
+        if architecture != AUTOREGRESSIVE_ARCHITECTURE:
+            raise ValueError(
+                "checkpoint uses an unsupported autoregressive architecture and "
+                "must be retrained"
+            )
         expected_schema = {
             "variable": list(VARIABLE_FEATURE_NAMES),
             "constraint": list(CONSTRAINT_FEATURE_NAMES),
@@ -118,41 +129,36 @@ class OnlineGNNPolicy:
         state_dict = checkpoint.get("state_dict")
         if not isinstance(state_dict, Mapping):
             raise ValueError("checkpoint is missing model weights")
+        if not any(
+            str(key).startswith("candidate_action_head.")
+            for key in state_dict
+        ):
+            raise ValueError(
+                "checkpoint predates the autoregressive action head and must "
+                "be retrained"
+            )
         model.load_state_dict(state_dict, strict=True)
-        resolved_threshold = (
-            checkpoint.get("decode_threshold")
-            if decode_threshold is None
-            else decode_threshold
-        )
-        if resolved_threshold is None:
-            raise ValueError("checkpoint is missing a decode threshold")
         return cls(
             model,
             device=resolved_device,
-            decode_threshold=float(resolved_threshold),
             checkpoint_path=source,
         )
 
     def decide(self, graph: CandidateConstraintGraph) -> OnlineGNNDecision:
         started = perf_counter()
-        batch = batch_graph_samples((graph,), device=self.device)
-        with torch.no_grad():
-            probabilities = torch.sigmoid(self.model(batch)).cpu().numpy()
-        decoded = greedy_decode_scores(
+        rollout = autoregressive_rollout(
+            self.model,
             graph,
-            probabilities,
-            threshold=self.decode_threshold,
+            device=self.device,
         )
-        if not decoded.feasible:
-            raise RuntimeError("GNN hard projection returned an infeasible plan")
         return OnlineGNNDecision(
-            probabilities=probabilities,
-            decoded=decoded,
-            decode_threshold=self.decode_threshold,
-            support_variable_count=int(np.sum(
-                probabilities >= self.decode_threshold
-            )),
+            probabilities=rollout.initial_candidate_probabilities,
+            stop_probability=rollout.initial_stop_probability,
+            selection=rollout.selection,
+            action_indices=rollout.action_indices,
             inference_seconds=perf_counter() - started,
+            invalid_action_index=rollout.invalid_action_index,
+            invalid_action_reason=rollout.invalid_action_reason,
         )
 
 

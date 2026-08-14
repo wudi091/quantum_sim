@@ -7,8 +7,12 @@ The only active research plan is documented in
 [`TELGEN_CONSTRUCTION_AWARE_ROUTING_PLAN.md`](TELGEN_CONSTRUCTION_AWARE_ROUTING_PLAN.md):
 a generalizable construction-aware planner that jointly selects a path and an
 entanglement-construction plan. The planning-only LP teacher, hard decoder,
-rolling SeQUeNCe physical validation, and paired Q-CAST comparison are
-implemented; the learned GNN planner is not implemented yet.
+rolling SeQUeNCe physical validation, exact MILP label generator, and paired
+Q-CAST comparison are implemented. The learned policy is a candidate--constraint
+autoregressive GNN that directly emits candidate plans or STOP. Exact packing
+constraints define a dynamic feasible action mask before each categorical
+decision; the GNN chooses among feasible candidates without post-hoc repair or
+local search.
 
 ## Repository scope
 

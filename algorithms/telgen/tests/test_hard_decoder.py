@@ -8,6 +8,7 @@ from algorithms.telgen import (
     TimeExpandedCandidate,
     build_teacher_batch_record,
     compare_decoder_and_milp,
+    greedy_feasible_projection,
     validate_decoded_selection,
 )
 from qnet_core.construction_catalog import build_route_construction_catalogue
@@ -59,6 +60,76 @@ def variable(base, resources, *, completion=1, token="0"):
 
 
 class HardDecoderTests(unittest.TestCase):
+    def test_greedy_projection_is_only_a_single_score_order_scan(self):
+        bases = request_bases()
+        variables = (
+            variable(bases["r0"], ("a", "b")),
+            variable(bases["r1"], ("a",)),
+            variable(bases["r2"], ("b",)),
+        )
+        projected = greedy_feasible_projection(
+            variables,
+            {"a": 1, "b": 1},
+            {"r0@0": 0.9, "r1@0": 0.8, "r2@0": 0.8},
+        )
+
+        self.assertEqual(projected.completed_request_count, 1)
+        self.assertEqual(projected.selected_variables[0].request_id, "r0")
+        self.assertEqual(projected.search_strategy, "score_order_greedy")
+        self.assertEqual(projected.random_restarts, 0)
+        self.assertEqual(projected.local_search_iterations, 0)
+
+    def test_greedy_projection_selects_at_most_one_candidate_per_request(self):
+        bases = request_bases()
+        variables = (
+            variable(bases["r0"], ("a",), token="first"),
+            variable(bases["r0"], ("b",), token="second"),
+        )
+        projected = greedy_feasible_projection(
+            variables,
+            {"a": 1, "b": 1},
+            {"r0@first": 0.9, "r0@second": 0.8},
+        )
+
+        self.assertEqual(projected.completed_request_count, 1)
+        self.assertEqual(
+            projected.selected_variables[0].variable_id,
+            "r0@first",
+        )
+        self.assertTrue(projected.feasibility.feasible)
+
+    def test_greedy_projection_respects_reserved_usage(self):
+        bases = request_bases()
+        variables = (
+            variable(bases["r0"], ("shared",)),
+            variable(bases["r1"], ("shared",)),
+        )
+        projected = greedy_feasible_projection(
+            variables,
+            {"shared": 2},
+            {"r0@0": 0.9, "r1@0": 0.8},
+            reserved_usage={("shared", 0): 1},
+        )
+
+        self.assertEqual(projected.completed_request_count, 1)
+        self.assertTrue(projected.feasibility.feasible)
+
+    def test_greedy_projection_ignores_zero_lp_support(self):
+        bases = request_bases()
+        variables = (
+            variable(bases["r0"], ("a",)),
+            variable(bases["r1"], ("b",)),
+        )
+        projected = greedy_feasible_projection(
+            variables,
+            {"a": 1, "b": 1},
+            {"r0@0": 0.5, "r1@0": 0.0},
+        )
+
+        self.assertEqual(projected.completed_request_count, 1)
+        self.assertEqual(projected.support_variable_count, 1)
+        self.assertEqual(projected.rejected_request_ids, ("r1",))
+
     def test_one_drop_local_search_replaces_one_blocker_with_two_requests(self):
         bases = request_bases()
         variables = (

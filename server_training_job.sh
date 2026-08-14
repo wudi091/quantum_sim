@@ -228,7 +228,6 @@ print("SeQUeNCe：OK")
         --weight-decay 0.00001 \
         --hidden-dim 32 \
         --layers 2 \
-        --threshold 0.5 \
         --training-seed 20260813 \
         --validation-fraction 0.2 \
         --test-fraction 0.2 \

@@ -18,6 +18,8 @@ from algorithms.telgen import (
 from algorithms.telgen.hard_decoder import validate_decoded_selection
 from algorithms.telgen.milp_imitation import CONSTRAINT_FEATURE_NAMES
 from algorithms.telgen.milp_imitation import (
+    AUTOREGRESSIVE_ARCHITECTURE,
+    AUTOREGRESSIVE_CHECKPOINT_SCHEMA_VERSION,
     GLOBAL_FEATURE_NAMES,
     VARIABLE_FEATURE_NAMES,
     CandidateConstraintGNN,
@@ -54,21 +56,35 @@ class OnlineTELGENTests(unittest.TestCase):
         return OnlineTELGENConfig(**values)
 
     @staticmethod
-    def _save_gnn_checkpoint(path, *, decode_threshold=0.0):
+    def _save_gnn_checkpoint(
+        path,
+        *,
+        legacy_decode_threshold=None,
+        force_repeated_candidate=False,
+    ):
         torch.manual_seed(7)
         model = CandidateConstraintGNN(hidden_dim=8, layers=1)
-        torch.save({
-            "schema_version": 1,
+        if force_repeated_candidate:
+            with torch.no_grad():
+                for parameter in model.parameters():
+                    parameter.zero_()
+                model.candidate_action_head.layers[-1].bias.fill_(10.0)
+                model.stop_action_head.layers[-1].bias.fill_(-10.0)
+        payload = {
+            "schema_version": AUTOREGRESSIVE_CHECKPOINT_SCHEMA_VERSION,
             "model_class": "CandidateConstraintGNN",
+            "architecture": AUTOREGRESSIVE_ARCHITECTURE,
             "model_config": {"hidden_dim": 8, "layers": 1},
             "state_dict": model.state_dict(),
-            "decode_threshold": decode_threshold,
             "feature_schema": {
                 "variable": list(VARIABLE_FEATURE_NAMES),
                 "constraint": list(CONSTRAINT_FEATURE_NAMES),
                 "global": list(GLOBAL_FEATURE_NAMES),
             },
-        }, path)
+        }
+        if legacy_decode_threshold is not None:
+            payload["decode_threshold"] = legacy_decode_threshold
+        torch.save(payload, path)
 
     def test_default_controller_uses_periodic_decisions(self):
         spec = EpisodeSpec(
@@ -588,7 +604,7 @@ class OnlineTELGENTests(unittest.TestCase):
             "no_feasible_time_expanded_variables",
         )
 
-    def test_gnn_checkpoint_rollout_submits_only_feasible_plans(self):
+    def test_gnn_checkpoint_masks_invalid_actions_before_selection(self):
         spec = EpisodeSpec(
             seed=85,
             nodes=(0, 1, 2),
@@ -605,7 +621,9 @@ class OnlineTELGENTests(unittest.TestCase):
         )
         with TemporaryDirectory() as directory:
             checkpoint = f"{directory}/policy.pt"
-            self._save_gnn_checkpoint(checkpoint)
+            self._save_gnn_checkpoint(
+                checkpoint, force_repeated_candidate=True
+            )
             result = run_online_telgen(
                 spec,
                 OnlineTELGENConfig(
@@ -623,10 +641,17 @@ class OnlineTELGENTests(unittest.TestCase):
         self.assertTrue(all(
             item.decision_backend == "gnn" for item in result.decisions
         ))
-        self.assertTrue(any(
-            item.decoder_search_strategy == "gnn_greedy_projection"
-            for item in result.decisions
+        gnn_decisions = [
+            item for item in result.decisions
+            if item.decoder_search_strategy == "gnn_autoregressive_masked"
+        ]
+        self.assertTrue(gnn_decisions)
+        self.assertTrue(all(
+            item.policy_output_feasible is True
+            for item in gnn_decisions
         ))
+        self.assertEqual(result.metrics["gnn_invalid_decision_count"], 0.0)
+        self.assertGreater(result.metrics["construction_attempt_count"], 0.0)
         self.assertEqual(result.metrics["schedule_violation_count"], 0.0)
 
     def test_gnn_policy_rejects_checkpoint_schema_mismatch(self):
@@ -642,6 +667,46 @@ class OnlineTELGENTests(unittest.TestCase):
                 OnlineGNNPolicy.from_checkpoint(
                     checkpoint, device="cpu"
                 )
+
+    def test_gnn_policy_rejects_pre_autoregressive_checkpoint(self):
+        with TemporaryDirectory() as directory:
+            checkpoint = f"{directory}/policy.pt"
+            self._save_gnn_checkpoint(checkpoint)
+            payload = torch.load(
+                checkpoint, map_location="cpu", weights_only=True
+            )
+            payload.pop("architecture")
+            payload["state_dict"] = {
+                key: value
+                for key, value in payload["state_dict"].items()
+                if not key.startswith("candidate_action_head.")
+            }
+            torch.save(payload, checkpoint)
+            with self.assertRaisesRegex(ValueError, "must be retrained"):
+                OnlineGNNPolicy.from_checkpoint(
+                    checkpoint, device="cpu"
+                )
+
+    def test_gnn_policy_loads_new_checkpoint_without_decode_threshold(self):
+        with TemporaryDirectory() as directory:
+            checkpoint = f"{directory}/policy.pt"
+            self._save_gnn_checkpoint(checkpoint)
+            policy = OnlineGNNPolicy.from_checkpoint(
+                checkpoint, device="cpu"
+            )
+        self.assertIsInstance(policy, OnlineGNNPolicy)
+
+    def test_gnn_policy_ignores_legacy_decode_threshold(self):
+        with TemporaryDirectory() as directory:
+            checkpoint = f"{directory}/policy.pt"
+            self._save_gnn_checkpoint(
+                checkpoint,
+                legacy_decode_threshold=0.99,
+            )
+            policy = OnlineGNNPolicy.from_checkpoint(
+                checkpoint, device="cpu"
+            )
+        self.assertIsInstance(policy, OnlineGNNPolicy)
 
 
 if __name__ == "__main__":

@@ -154,6 +154,106 @@ class SharedContractTests(unittest.TestCase):
                 make_episode(config, 7)
         self.assertEqual(generator.call_count, 2)
 
+    def test_barabasi_albert_batch_is_seeded_and_distance_stratified(self):
+        config = ScenarioConfig(
+            request_count=24,
+            min_hops=2,
+            max_hops=4,
+            topology_nodes=96,
+            topology_mode="barabasi_albert",
+            barabasi_attachment=2,
+            ttl=8,
+            horizon=8,
+        )
+        first = make_episode(config, 919)
+        second = make_episode(config, 919)
+        self.assertEqual(first, second)
+        graph = nx.Graph(first.edges)
+        self.assertTrue(nx.is_connected(graph))
+        self.assertEqual(len(first.nodes), 96)
+        expected_hops = sorted(
+            config.min_hops + round(
+                (config.max_hops - config.min_hops) * index
+                / (config.request_count - 1)
+            )
+            for index in range(config.request_count)
+        )
+        actual_hops = sorted(
+            nx.shortest_path_length(
+                graph, request.source, request.destination
+            )
+            for request in first.requests
+        )
+        self.assertEqual(actual_hops, expected_hops)
+
+    def test_barabasi_albert_rejects_invalid_attachment_count(self):
+        config = ScenarioConfig(
+            request_count=1,
+            topology_nodes=8,
+            topology_mode="barabasi_albert",
+            barabasi_attachment=8,
+        )
+        with self.assertRaises(ValueError):
+            make_episode(config, 1)
+
+    def test_erdos_renyi_batch_is_seeded_and_distance_stratified(self):
+        config = ScenarioConfig(
+            request_count=24,
+            min_hops=4,
+            max_hops=4,
+            topology_nodes=64,
+            topology_mode="erdos_renyi",
+            erdos_renyi_mean_degree=6.0,
+            ttl=8,
+            horizon=8,
+        )
+        first = make_episode(config, 44000)
+        second = make_episode(config, 44000)
+        self.assertEqual(first, second)
+        graph = nx.Graph(first.edges)
+        self.assertTrue(nx.is_connected(graph))
+        self.assertEqual(len(first.nodes), 64)
+        self.assertEqual({
+            nx.shortest_path_length(
+                graph, request.source, request.destination
+            )
+            for request in first.requests
+        }, {4})
+
+    def test_random_regular_batch_is_seeded_and_distance_stratified(self):
+        config = ScenarioConfig(
+            request_count=24,
+            min_hops=4,
+            max_hops=4,
+            topology_nodes=64,
+            topology_mode="random_regular",
+            random_regular_degree=4,
+            ttl=8,
+            horizon=8,
+        )
+        first = make_episode(config, 44100)
+        second = make_episode(config, 44100)
+        self.assertEqual(first, second)
+        graph = nx.Graph(first.edges)
+        self.assertTrue(nx.is_connected(graph))
+        self.assertEqual(len(first.nodes), 64)
+        self.assertEqual({
+            nx.shortest_path_length(
+                graph, request.source, request.destination
+            )
+            for request in first.requests
+        }, {4})
+
+    def test_random_regular_rejects_odd_degree_sum(self):
+        config = ScenarioConfig(
+            request_count=1,
+            topology_nodes=9,
+            topology_mode="random_regular",
+            random_regular_degree=3,
+        )
+        with self.assertRaises(ValueError):
+            make_episode(config, 1)
+
     def test_episode_spec_rejects_invalid_probability(self):
         with self.assertRaises(ValueError):
             EpisodeSpec(

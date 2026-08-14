@@ -40,7 +40,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--gnn-device", choices=("auto", "cpu", "cuda"), default="auto"
     )
-    parser.add_argument("--gnn-decode-threshold", type=float)
     parser.add_argument("--milp-time-limit-seconds", type=float, default=60.0)
     parser.add_argument(
         "--save-milp-dataset",
@@ -49,9 +48,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--topology-mode",
-        choices=("waxman", "parallel_corridors"),
+        choices=(
+            "waxman",
+            "barabasi_albert",
+            "erdos_renyi",
+            "random_regular",
+            "parallel_corridors",
+        ),
         default="waxman",
     )
+    parser.add_argument(
+        "--endpoint-mode",
+        choices=("distance_stratified", "uniform_random"),
+        default="distance_stratified",
+    )
+    parser.add_argument("--waxman-alpha", type=float, default=0.15)
+    parser.add_argument("--waxman-beta", type=float, default=0.45)
+    parser.add_argument("--topology-attempts", type=int, default=128)
+    parser.add_argument("--waxman-add-mst", action="store_true")
+    parser.add_argument("--barabasi-attachment", type=int, default=2)
+    parser.add_argument("--erdos-renyi-mean-degree", type=float, default=6.0)
+    parser.add_argument("--random-regular-degree", type=int, default=4)
     parser.add_argument("--parallel-corridors", type=int, default=2)
     parser.add_argument("--generation-probability", type=float, default=0.8)
     parser.add_argument("--swap-probability", type=float, default=0.9)
@@ -89,15 +106,25 @@ def main(argv: list[str] | None = None) -> int:
         quantum_distance_m=args.quantum_distance_m,
         slot_duration_ps=args.slot_duration_ps,
     )
+    min_hops = None if args.endpoint_mode == "uniform_random" else args.min_hops
+    max_hops = None if args.endpoint_mode == "uniform_random" else args.max_hops
     scenario = ScenarioConfig(
         request_count=args.requests,
-        min_hops=args.min_hops,
-        max_hops=args.max_hops,
+        min_hops=min_hops,
+        max_hops=max_hops,
         ttl=args.ttl,
         horizon=horizon,
         physical=physical,
         topology_nodes=args.nodes,
         topology_mode=args.topology_mode,
+        endpoint_mode=args.endpoint_mode,
+        waxman_alpha=args.waxman_alpha,
+        waxman_beta=args.waxman_beta,
+        topology_attempts=args.topology_attempts,
+        waxman_add_mst=args.waxman_add_mst,
+        barabasi_attachment=args.barabasi_attachment,
+        erdos_renyi_mean_degree=args.erdos_renyi_mean_degree,
+        random_regular_degree=args.random_regular_degree,
         parallel_corridors=args.parallel_corridors,
         arrival_batch_size=args.requests_per_batch,
         arrival_interval=args.decision_interval,
@@ -126,7 +153,6 @@ def main(argv: list[str] | None = None) -> int:
                     decision_backend="gnn",
                     gnn_checkpoint=args.gnn_checkpoint,
                     gnn_device=args.gnn_device,
-                    gnn_decode_threshold=args.gnn_decode_threshold,
                 )
                 if args.decision_backend == "gnn"
                 else OnlineTELGENConfig(

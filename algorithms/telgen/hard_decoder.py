@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 import itertools
 import json
+import math
 from pathlib import Path
 import random
 from typing import Mapping, Sequence
@@ -210,6 +211,118 @@ class _PackingState:
         cloned.selected = dict(self.selected)
         cloned.usage = dict(self.usage)
         return cloned
+
+
+def greedy_feasible_projection(
+    expanded: TimeExpansionResult | Sequence[TimeExpandedCandidate],
+    resource_capacities: Mapping[str, int],
+    scores: Mapping[str, float] | Sequence[float],
+    *,
+    request_ids: Sequence[str] | None = None,
+    reserved_usage: Mapping[tuple[str, int], int] | None = None,
+    support_tolerance: float = 1e-9,
+) -> HardDecoderSolution:
+    """Project scores with one deterministic feasibility scan.
+
+    Candidates are visited only in descending score order.  A candidate is
+    accepted exactly when its request is still unselected and adding its
+    resource--slot usage remains within capacity.  There is deliberately no
+    beam search, restart, replacement, or local improvement.  ``variable_id``
+    is used only to make equal-score ordering reproducible.
+    """
+
+    if support_tolerance < 0.0:
+        raise ValueError("support_tolerance cannot be negative")
+    raw_variables = (
+        expanded.variables
+        if isinstance(expanded, TimeExpansionResult)
+        else expanded
+    )
+    variables = tuple(sorted(
+        raw_variables,
+        key=lambda item: item.variable_id,
+    ))
+    if isinstance(scores, Mapping):
+        missing = [
+            variable.variable_id
+            for variable in variables
+            if variable.variable_id not in scores
+        ]
+        if missing:
+            raise ValueError(f"missing projection score: {missing[0]}")
+        ordered_scores = tuple(
+            float(scores[variable.variable_id]) for variable in variables
+        )
+    else:
+        ordered_scores = tuple(float(value) for value in scores)
+        if len(ordered_scores) != len(variables):
+            raise ValueError("projection score vector has the wrong length")
+    if any(
+        not math.isfinite(score) or not 0.0 <= score <= 1.0
+        for score in ordered_scores
+    ):
+        raise ValueError("projection scores must be finite and lie in [0, 1]")
+    score_by_id = {
+        variable.variable_id: score
+        for variable, score in zip(variables, ordered_scores)
+    }
+
+    variable_request_ids = {variable.request_id for variable in variables}
+    if request_ids is None:
+        ordered_request_ids = tuple(sorted(variable_request_ids))
+    else:
+        ordered_request_ids = tuple(str(item) for item in request_ids)
+        if len(set(ordered_request_ids)) != len(ordered_request_ids):
+            raise ValueError("request_ids must be unique")
+        missing_requests = variable_request_ids - set(ordered_request_ids)
+        if missing_requests:
+            raise ValueError(
+                "candidate belongs to undeclared request: "
+                f"{sorted(missing_requests)[0]}"
+            )
+
+    ranked = tuple(sorted(
+        (
+            variable
+            for variable in variables
+            if score_by_id[variable.variable_id] > support_tolerance
+        ),
+        key=lambda variable: (
+            -score_by_id[variable.variable_id],
+            variable.variable_id,
+        ),
+    ))
+    state = _PackingState(resource_capacities, reserved_usage)
+    for variable in ranked:
+        if state.can_add(variable):
+            state.add(variable)
+
+    selected_variables = tuple(sorted(
+        state.selected.values(),
+        key=lambda variable: variable.variable_id,
+    ))
+    feasibility = validate_decoded_selection(
+        selected_variables,
+        resource_capacities,
+        reserved_usage,
+    )
+    if not feasibility.feasible:
+        raise RuntimeError(
+            "greedy projection produced an infeasible plan: "
+            f"{feasibility.violations[0]}"
+        )
+    return HardDecoderSolution(
+        variables=variables,
+        scores=ordered_scores,
+        request_ids=ordered_request_ids,
+        selected_variables=selected_variables,
+        feasibility=feasibility,
+        beam_width=1,
+        random_restarts=0,
+        local_search_iterations=0,
+        search_strategy="score_order_greedy",
+        support_variable_count=len(ranked),
+    )
 
 
 class HardConstraintDecoder:

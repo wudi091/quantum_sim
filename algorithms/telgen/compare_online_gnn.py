@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict
 from datetime import datetime
+import hashlib
 import json
 from pathlib import Path
 import shutil
@@ -34,12 +35,48 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--nodes", type=int, default=64)
     parser.add_argument("--min-hops", type=int, default=4)
     parser.add_argument("--max-hops", type=int, default=4)
+    parser.add_argument(
+        "--endpoint-mode",
+        choices=("distance_stratified", "uniform_random"),
+        default="distance_stratified",
+    )
+    parser.add_argument(
+        "--topology-mode",
+        choices=(
+            "waxman",
+            "barabasi_albert",
+            "erdos_renyi",
+            "random_regular",
+            "parallel_corridors",
+        ),
+        default="waxman",
+    )
+    parser.add_argument("--waxman-alpha", type=float, default=0.15)
+    parser.add_argument("--waxman-beta", type=float, default=0.45)
+    parser.add_argument("--topology-attempts", type=int, default=128)
+    parser.add_argument("--waxman-add-mst", action="store_true")
+    parser.add_argument("--barabasi-attachment", type=int, default=2)
+    parser.add_argument("--erdos-renyi-mean-degree", type=float, default=6.0)
+    parser.add_argument("--random-regular-degree", type=int, default=4)
+    parser.add_argument("--parallel-corridors", type=int, default=2)
     parser.add_argument("--paths", type=int, default=4)
     parser.add_argument("--construction-plans", type=int, default=5)
+    parser.add_argument(
+        "--fixed-swap-tree-index",
+        type=int,
+        help=(
+            "Restrict the GNN candidate set to one swap_tree_k. Omit this "
+            "option for adaptive per-request construction selection."
+        ),
+    )
     parser.add_argument("--gnn-device", choices=("auto", "cpu", "cuda"), default="auto")
-    parser.add_argument("--gnn-decode-threshold", type=float)
     parser.add_argument("--milp-time-limit-seconds", type=float, default=300.0)
     parser.add_argument("--skip-milp", action="store_true")
+    parser.add_argument(
+        "--skip-qcast",
+        action="store_true",
+        help="run only the configured GNN variant for paired ablations",
+    )
     parser.add_argument("--generation-probability", type=float, default=0.8)
     parser.add_argument("--swap-probability", type=float, default=0.9)
     parser.add_argument("--memory-capacity", type=int, default=2)
@@ -78,10 +115,52 @@ def _save(output: Path, payload: dict[str, object]) -> tuple[Path, Path]:
     return versioned, latest
 
 
+def _checkpoint_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _method_payload(result, wall_seconds: float) -> dict[str, object]:
+    return {
+        "metrics": dict(result.metrics),
+        "wall_seconds": wall_seconds,
+        "violations": [asdict(item) for item in result.violations],
+    }
+
+
+def _resolve_construction_space(
+    construction_plans: int,
+    fixed_swap_tree_index: int | None,
+) -> tuple[tuple[str, ...], int | None, str]:
+    if construction_plans < 1:
+        raise ValueError("construction-plans must be positive")
+    if fixed_swap_tree_index is None:
+        return (), construction_plans, "adaptive_swap_tree_selection"
+    if not 0 <= fixed_swap_tree_index < construction_plans:
+        raise ValueError(
+            "fixed-swap-tree-index must lie in "
+            "[0, construction-plans)"
+        )
+    return (
+        (f"swap_tree_{fixed_swap_tree_index}",),
+        None,
+        f"fixed_swap_tree_{fixed_swap_tree_index}",
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.seeds < 1 or args.requests < 1 or args.requests_per_batch < 1:
         raise ValueError("seeds and request counts must be positive")
+    construction_kinds, swap_tree_count, construction_policy = (
+        _resolve_construction_space(
+            args.construction_plans,
+            args.fixed_swap_tree_index,
+        )
+    )
     arrival_rounds = (
         args.requests + args.requests_per_batch - 1
     ) // args.requests_per_batch
@@ -98,28 +177,34 @@ def main(argv: list[str] | None = None) -> int:
         quantum_distance_m=args.quantum_distance_m,
         slot_duration_ps=args.slot_duration_ps,
     )
+    min_hops = None if args.endpoint_mode == "uniform_random" else args.min_hops
+    max_hops = None if args.endpoint_mode == "uniform_random" else args.max_hops
     scenario = ScenarioConfig(
         request_count=args.requests,
-        min_hops=args.min_hops,
-        max_hops=args.max_hops,
+        min_hops=min_hops,
+        max_hops=max_hops,
         ttl=args.ttl,
         horizon=horizon,
         physical=physical,
         topology_nodes=args.nodes,
-        topology_mode="waxman",
-        waxman_alpha=0.15,
-        waxman_beta=0.45,
-        topology_attempts=128,
-        waxman_add_mst=False,
-        endpoint_mode="distance_stratified",
+        topology_mode=args.topology_mode,
+        waxman_alpha=args.waxman_alpha,
+        waxman_beta=args.waxman_beta,
+        topology_attempts=args.topology_attempts,
+        waxman_add_mst=args.waxman_add_mst,
+        endpoint_mode=args.endpoint_mode,
+        barabasi_attachment=args.barabasi_attachment,
+        erdos_renyi_mean_degree=args.erdos_renyi_mean_degree,
+        random_regular_degree=args.random_regular_degree,
+        parallel_corridors=args.parallel_corridors,
         arrival_batch_size=args.requests_per_batch,
         arrival_interval=args.decision_interval,
     )
     common = dict(
         decision_interval=args.decision_interval,
         path_candidate_count=args.paths,
-        construction_kinds=(),
-        swap_tree_count=args.construction_plans,
+        construction_kinds=construction_kinds,
+        swap_tree_count=swap_tree_count,
         purification_kinds=("none",),
         teacher_solver_backend="highs_ipm",
     )
@@ -128,7 +213,6 @@ def main(argv: list[str] | None = None) -> int:
         decision_backend="gnn",
         gnn_checkpoint=str(args.checkpoint),
         gnn_device=args.gnn_device,
-        gnn_decode_threshold=args.gnn_decode_threshold,
     )
     milp_config = OnlineTELGENConfig(
         **common,
@@ -149,24 +233,29 @@ def main(argv: list[str] | None = None) -> int:
         methods = {}
         gnn_started = perf_counter()
         gnn = run_online_telgen(episode, gnn_config)
-        methods["gnn"] = {
-            "metrics": dict(gnn.metrics),
-            "wall_seconds": perf_counter() - gnn_started,
-        }
-        qcast_started = perf_counter()
-        qcast = run_online_qcast(episode, qcast_config)
-        methods["qcast"] = {
-            "metrics": dict(qcast.metrics),
-            "wall_seconds": perf_counter() - qcast_started,
-        }
+        methods["gnn"] = _method_payload(
+            gnn,
+            perf_counter() - gnn_started,
+        )
+        if not args.skip_qcast:
+            qcast_started = perf_counter()
+            qcast = run_online_qcast(episode, qcast_config)
+            methods["qcast"] = _method_payload(
+                qcast,
+                perf_counter() - qcast_started,
+            )
         if not args.skip_milp:
             milp_started = perf_counter()
             milp = run_online_telgen(episode, milp_config)
-            methods["milp"] = {
-                "metrics": dict(milp.metrics),
-                "wall_seconds": perf_counter() - milp_started,
-            }
-        trials.append({"seed": seed, "methods": methods})
+            methods["milp"] = _method_payload(
+                milp,
+                perf_counter() - milp_started,
+            )
+        trials.append({
+            "seed": seed,
+            "episode": asdict(episode),
+            "methods": methods,
+        })
         summary = " ".join(
             f"{name}={int(item['metrics']['completed_requests'])}"
             for name, item in methods.items()
@@ -178,16 +267,28 @@ def main(argv: list[str] | None = None) -> int:
     payload = {
         "schema_version": 1,
         "experiment": "paired_online_gnn_milp_qcast",
+        "comparison_contract": {
+            "paired_episode_spec": True,
+            "independent_persistent_executors": True,
+            "future_requests_hidden": True,
+            "gnn_calls_milp_online": False,
+            "qcast_uses_gnn_or_milp": False,
+            "qcast_included": not args.skip_qcast,
+            "primary_metric": "completed_requests",
+            "secondary_metric": "mean_censored_latency_ps",
+            "gnn_construction_policy": construction_policy,
+        },
         "configuration": {
             **vars(args),
             "checkpoint": str(args.checkpoint),
             "output": str(args.output),
             "resolved_horizon": horizon,
         },
+        "checkpoint_sha256": _checkpoint_sha256(args.checkpoint),
         "scenario": asdict(scenario),
         "gnn_config": asdict(gnn_config),
         "milp_config": None if args.skip_milp else asdict(milp_config),
-        "qcast_config": asdict(qcast_config),
+        "qcast_config": None if args.skip_qcast else asdict(qcast_config),
         "elapsed_seconds": perf_counter() - started,
         "aggregate": _aggregate(trials),
         "trials": trials,

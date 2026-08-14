@@ -26,15 +26,31 @@ Current implementations:
 - `telgen/milp_oracle.py`: exact two-stage binary oracle and LP relaxation-gap
   report for small-instance auditing.
 - `telgen/validate_discrete_gap.py`: command-line LP-versus-MILP validation.
+- `telgen/milp_imitation.py`: candidate--constraint graph encoder,
+  residual-capacity state, unordered MILP-set imitation loss, and a dynamically
+  feasibility-masked autoregressive candidate/STOP policy.
+- `telgen/gnn_policy.py`: checkpoint loading and direct online autoregressive
+  GNN inference without thresholding, post-hoc plan repair, or local search.
+- `telgen/train_online_milp_gnn.py`: episode-disjoint training and evaluation
+  from persisted exact-MILP online graphs, with pooled validation throughput
+  used for checkpoint selection.
+- `telgen/generate_online_milp_data.py`: resumable exact-MILP rollout
+  collection on parameterized Waxman, Barabasi--Albert, or corridor graphs.
+- `telgen/combine_online_milp_datasets.py`: provenance-checked assembly of
+  disjoint train/validation/test topology collections.
+- `telgen/compare_online_gnn.py`: paired online GNN/Q-CAST execution with the
+  exact episode, checkpoint hash, metrics, and violation records persisted.
+- `telgen/analyze_online_gnn.py`: paired bootstrap, randomization tests, and
+  hard-gate auditing for held-out online GNN/Q-CAST scenarios.
 - `telgen/hard_decoder.py`: continuous-score to feasible 0/1 plan decoding,
-  feasibility validation, and decoder-versus-MILP quality reporting.
+  feasibility validation, and decoder-versus-MILP quality reporting for the
+  legacy LP baseline only.
 - `telgen/evaluate_hard_decoder.py`: command-line hard-decoder evaluation.
 - `telgen/physical_validation.py`: hard-decoded schedule compilation,
   SeQUeNCe execution, repeated physical trials, and nominal-to-physical
   consistency metrics.
-- `telgen/online.py`: rolling control that reuses the existing
-  candidate generator, LP teacher, hard decoder, neutral scheduler, and one
-  persistent SeQUeNCe episode.
+- `telgen/online.py`: rolling control with selectable LP-decoder, exact-MILP,
+  or autoregressive-GNN planning backends on one persistent SeQUeNCe episode.
 - `telgen/run_online.py`: command-line periodic micro-batch execution with versioned
   JSON/CSV results.
 - `telgen/compare_online.py`: paired rolling TELGEN/Q-CAST comparison

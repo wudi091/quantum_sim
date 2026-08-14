@@ -23,15 +23,15 @@ from qnet_core.scenario import ScenarioConfig
 from qnet_core.spec import PhysicalConfig
 
 from .milp_imitation import (
+    AUTOREGRESSIVE_ARCHITECTURE,
+    AUTOREGRESSIVE_CHECKPOINT_SCHEMA_VERSION,
     CandidateConstraintGNN,
     MILPGraphSample,
-    batch_graph_samples,
+    autoregressive_rollout,
+    autoregressive_set_loss,
     generate_milp_graph_sample,
-    greedy_decode_scores,
-    imitation_loss,
 )
 from .milp_oracle import has_numerically_zero_mip_gap
-from .hard_decoder import validate_decoded_selection
 
 
 def _seed_everything(seed: int) -> None:
@@ -44,11 +44,12 @@ def _evaluate(
     model: CandidateConstraintGNN,
     samples: Sequence[MILPGraphSample],
     *,
-    threshold: float,
-    decode_threshold: float | None = None,
     device: torch.device,
     sample_batch_size: int | None = None,
+    target_mode: str = "set",
 ) -> dict[str, object]:
+    """Evaluate the GNN's own discrete autoregressive selections."""
+
     model.eval()
     if not samples:
         raise ValueError("evaluation requires at least one sample")
@@ -58,35 +59,19 @@ def _evaluate(
     if batch_size < 1:
         raise ValueError("sample batch size must be positive")
     tp = fp = fn = tn = 0
-    positive_prediction_count = 0
-    positive_label_count = 0
     variable_count = 0
     evaluated_sample_count = 0
     weighted_parts: dict[str, float] = {}
-    decoded = []
-    resolved_decode_threshold = (
-        threshold if decode_threshold is None else float(decode_threshold)
-    )
-    if not 0.0 <= resolved_decode_threshold <= 1.0:
-        raise ValueError("decode threshold must lie in [0, 1]")
+    selections = []
     for batch_start in range(0, len(samples), batch_size):
         batch_samples = samples[batch_start:batch_start + batch_size]
-        graph = batch_graph_samples(batch_samples, device=device)
         with torch.no_grad():
-            logits = model(graph)
-            probabilities = torch.sigmoid(logits).cpu().numpy()
-            loss, parts = imitation_loss(logits, graph)
-        true = graph.labels.cpu().numpy()
-        predicted_binary = probabilities >= threshold
-        true_binary = true >= 0.5
-        tp += int(np.sum(predicted_binary & true_binary))
-        fp += int(np.sum(predicted_binary & ~true_binary))
-        fn += int(np.sum(~predicted_binary & true_binary))
-        tn += int(np.sum(~predicted_binary & ~true_binary))
-        positive_prediction_count += int(np.sum(predicted_binary))
-        positive_label_count += int(np.sum(true_binary))
-        batch_variable_count = len(true_binary)
-        variable_count += batch_variable_count
+            loss, parts = autoregressive_set_loss(
+                model,
+                batch_samples,
+                device=device,
+                target_mode=target_mode,
+            )
         batch_sample_count = len(batch_samples)
         evaluated_sample_count += batch_sample_count
         weighted_parts["loss"] = weighted_parts.get("loss", 0.0) + (
@@ -96,27 +81,21 @@ def _evaluate(
             weighted_parts[key] = weighted_parts.get(key, 0.0) + (
                 float(value) * batch_sample_count
             )
-        for sample, (start, end) in zip(
-            batch_samples, graph.variable_slices
-        ):
-            sample_probabilities = probabilities[start:end]
-            raw_selected = tuple(
-                variable
-                for variable, probability in zip(
-                    sample.variables, sample_probabilities
-                )
-                if probability >= threshold
+        for sample in batch_samples:
+            rollout = autoregressive_rollout(
+                model, sample, device=device
             )
-            raw_feasibility = validate_decoded_selection(
-                raw_selected,
-                sample.resource_capacities,
-                sample.reserved_usage,
+            result = rollout.selection
+            predicted_binary = np.zeros(
+                len(sample.variables), dtype=np.bool_
             )
-            result = greedy_decode_scores(
-                sample,
-                sample_probabilities,
-                threshold=resolved_decode_threshold,
-            )
+            predicted_binary[list(result.selected_indices)] = True
+            true_binary = sample.labels >= 0.5
+            tp += int(np.sum(predicted_binary & true_binary))
+            fp += int(np.sum(predicted_binary & ~true_binary))
+            fn += int(np.sum(~predicted_binary & true_binary))
+            tn += int(np.sum(~predicted_binary & ~true_binary))
+            variable_count += len(sample.variables)
             throughput_optimal = (
                 abs(
                     result.expected_completed_request_mass
@@ -133,14 +112,11 @@ def _evaluate(
                 / max(sample.optimal_total_completion_latency, 1.0)
                 if latency_gap is not None else None
             )
-            decoded.append({
+            selections.append({
                 "seed": sample.seed,
-                "raw_threshold_selected_count": len(raw_selected),
-                "raw_threshold_feasible": raw_feasibility.feasible,
-                "raw_threshold_violation_count": len(
-                    raw_feasibility.violations
-                ),
-                "post_projection_feasible": result.feasible,
+                "selection_feasible": result.feasible,
+                "stopped_by_model": rollout.stopped_by_model,
+                "action_count": result.action_count,
                 "completed_request_count": result.completed_request_count,
                 "optimal_completed_request_count": (
                     sample.optimal_completed_request_count
@@ -181,9 +157,16 @@ def _evaluate(
             })
     comparable_latency_gaps = [
         item["latency_relative_gap_when_throughput_optimal"]
-        for item in decoded
+        for item in selections
         if item["latency_relative_gap_when_throughput_optimal"] is not None
     ]
+    total_predicted_mass = float(sum(
+        item["expected_completed_request_mass"] for item in selections
+    ))
+    total_optimal_mass = float(sum(
+        item["optimal_expected_completed_request_mass"]
+        for item in selections
+    ))
     return {
         **{
             key: value / max(evaluated_sample_count, 1)
@@ -199,39 +182,38 @@ def _evaluate(
         "precision": tp / max(tp + fp, 1),
         "recall": tp / max(tp + fn, 1),
         "f1": 2 * tp / max(2 * tp + fp + fn, 1),
-        "positive_prediction_count": positive_prediction_count,
-        "positive_label_count": positive_label_count,
-        "classification_threshold": float(threshold),
-        "decode_threshold": resolved_decode_threshold,
-        "mean_decoded_throughput_ratio": float(np.mean([
-            item["throughput_ratio"] for item in decoded
+        "positive_prediction_count": tp + fp,
+        "positive_label_count": tp + fn,
+        "mean_throughput_ratio": float(np.mean([
+            item["throughput_ratio"] for item in selections
         ])),
-        "minimum_decoded_throughput_ratio": float(np.min([
-            item["throughput_ratio"] for item in decoded
+        "pooled_throughput_ratio": (
+            total_predicted_mass / total_optimal_mass
+            if total_optimal_mass else 1.0
+        ),
+        "minimum_throughput_ratio": float(np.min([
+            item["throughput_ratio"] for item in selections
         ])),
-        "raw_threshold_feasible_rate": float(np.mean([
-            item["raw_threshold_feasible"] for item in decoded
+        "selection_feasible_rate": float(np.mean([
+            item["selection_feasible"] for item in selections
         ])),
-        "mean_raw_threshold_violation_count": float(np.mean([
-            item["raw_threshold_violation_count"] for item in decoded
-        ])),
-        "post_projection_feasible_rate": float(np.mean([
-            item["post_projection_feasible"] for item in decoded
+        "model_stop_rate": float(np.mean([
+            item["stopped_by_model"] for item in selections
         ])),
         "throughput_optimal_rate": float(np.mean([
-            item["throughput_optimal"] for item in decoded
+            item["throughput_optimal"] for item in selections
         ])),
         "mean_latency_relative_gap_when_throughput_optimal": (
             float(np.mean(comparable_latency_gaps))
             if comparable_latency_gaps else None
         ),
         "lexicographic_objective_optimal_rate": float(np.mean([
-            item["lexicographic_objective_optimal"] for item in decoded
+            item["lexicographic_objective_optimal"] for item in selections
         ])),
         "exact_selected_set_rate": float(np.mean([
-            item["exact_selected_set"] for item in decoded
+            item["exact_selected_set"] for item in selections
         ])),
-        "decoded": decoded,
+        "selections": selections,
     }
 
 
@@ -240,21 +222,17 @@ def _build_overfit_gate(after: dict[str, object]) -> dict[str, object]:
 
     tolerance = 1e-12
     passed = bool(
-        float(after["minimum_decoded_throughput_ratio"])
+        float(after["minimum_throughput_ratio"])
         >= 1.0 - tolerance
         and float(after["lexicographic_objective_optimal_rate"])
         >= 1.0 - tolerance
-        and float(after["raw_threshold_feasible_rate"])
-        >= 1.0 - tolerance
-        and float(after["post_projection_feasible_rate"])
+        and float(after["selection_feasible_rate"])
         >= 1.0 - tolerance
     )
     return {
-        "f1_is_diagnostic_only": True,
-        "target_minimum_decoded_throughput_ratio": 1.0,
+        "target_minimum_throughput_ratio": 1.0,
         "target_lexicographic_objective_optimal_rate": 1.0,
-        "target_raw_threshold_feasible_rate": 1.0,
-        "target_post_projection_feasible_rate": 1.0,
+        "target_selection_feasible_rate": 1.0,
         "passed": passed,
     }
 
@@ -284,7 +262,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--weight-decay", type=float, default=1e-5)
     parser.add_argument("--hidden-dim", type=int, default=64)
     parser.add_argument("--layers", type=int, default=3)
-    parser.add_argument("--threshold", type=float, default=0.5)
     parser.add_argument("--training-seed", type=int, default=20260813)
     parser.add_argument("--requests", type=int, default=20)
     parser.add_argument("--horizon", type=int, default=4)
@@ -305,8 +282,6 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError("epochs must be positive")
     if args.learning_rate <= 0:
         raise ValueError("learning-rate must be positive")
-    if not 0.0 <= args.threshold <= 1.0:
-        raise ValueError("threshold must lie in [0, 1]")
     _seed_everything(args.training_seed)
     device = torch.device("cpu")
     scenario = ScenarioConfig(
@@ -361,17 +336,15 @@ def main(argv: list[str] | None = None) -> int:
         lr=args.learning_rate,
         weight_decay=args.weight_decay,
     )
-    graph = batch_graph_samples(samples, device=device)
-    before = _evaluate(
-        model, samples, threshold=args.threshold, device=device
-    )
+    before = _evaluate(model, samples, device=device)
     training_started = perf_counter()
     history = []
     for epoch in range(1, args.epochs + 1):
         model.train()
         optimizer.zero_grad(set_to_none=True)
-        logits = model(graph)
-        loss, parts = imitation_loss(logits, graph)
+        loss, parts = autoregressive_set_loss(
+            model, samples, device=device
+        )
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
         optimizer.step()
@@ -383,18 +356,25 @@ def main(argv: list[str] | None = None) -> int:
             })
             print(
                 f"epoch={epoch} loss={float(loss.detach()):.6f} "
-                f"bce={parts['bce']:.6f} "
-                f"constraint={parts['constraint_penalty']:.6f}",
+                f"candidate_nll={parts['candidate_set_nll']:.6f} "
+                f"stop_nll={parts['stop_nll']:.6f} "
+                f"masked={parts['masked_candidate_fraction']:.4f}",
                 flush=True,
             )
     training_seconds = perf_counter() - training_started
-    after = _evaluate(
-        model, samples, threshold=args.threshold, device=device
-    )
+    after = _evaluate(model, samples, device=device)
     payload = {
-        "schema_version": 2,
-        "experiment": "direct_milp_binary_imitation_overfit",
-        "supervision": "exact two-stage construction-aware MILP final 0/1 labels",
+        "schema_version": AUTOREGRESSIVE_CHECKPOINT_SCHEMA_VERSION,
+        "experiment": "masked_autoregressive_milp_set_imitation_overfit",
+        "architecture": AUTOREGRESSIVE_ARCHITECTURE,
+        "supervision": (
+            "unordered exact-MILP selected set plus terminal STOP over the "
+            "dynamically feasible candidate action set"
+        ),
+        "training_objective": {
+            "candidate_target": "combined probability mass of all remaining teacher actions",
+            "feasibility": "exact packing mask before categorical normalization",
+        },
         "uses_lp_trajectory": False,
         "configuration": {
             **vars(args),
@@ -430,12 +410,10 @@ def main(argv: list[str] | None = None) -> int:
     print(
         "after: "
         f"f1={after['f1']:.4f} "
-        f"decoded_ratio={after['mean_decoded_throughput_ratio']:.4f} "
+        f"throughput_ratio={after['mean_throughput_ratio']:.4f} "
         f"objective_optimal="
         f"{after['lexicographic_objective_optimal_rate']:.4f} "
-        f"raw_feasible={after['raw_threshold_feasible_rate']:.4f} "
-        f"projected_feasible="
-        f"{after['post_projection_feasible_rate']:.4f} "
+        f"feasible={after['selection_feasible_rate']:.4f} "
         f"gate={payload['overfit_gate']['passed']}"
     )
     print(f"json: {versioned}")

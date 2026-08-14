@@ -73,7 +73,6 @@ class OnlineTELGENConfig:
     decision_backend: str = "lp_decoder"
     gnn_checkpoint: str | None = None
     gnn_device: str = "auto"
-    gnn_decode_threshold: float | None = None
     teacher_solver_backend: str = "trajectory_ipm"
     milp_time_limit_seconds: float = 60.0
     milp_relative_gap: float = 0.0
@@ -105,10 +104,6 @@ class OnlineTELGENConfig:
             raise ValueError("milp_relative_gap cannot be negative")
         if self.gnn_device not in {"auto", "cpu", "cuda"}:
             raise ValueError(f"unknown GNN device: {self.gnn_device}")
-        if self.gnn_decode_threshold is not None and not (
-            0.0 <= self.gnn_decode_threshold <= 1.0
-        ):
-            raise ValueError("GNN decode threshold must lie in [0, 1]")
         if self.decision_backend == "gnn" and not self.gnn_checkpoint:
             raise ValueError("GNN decision backend requires a checkpoint")
         if (
@@ -138,7 +133,6 @@ class OnlineDecisionRecord:
     decoded_request_count: int
     decoded_expected_completed_mass: float
     decoder_search_strategy: str
-    decoder_support_variable_count: int
     teacher_total_completion_latency: float
     teacher_stage_one_iterations: int
     teacher_stage_two_iterations: int
@@ -146,9 +140,11 @@ class OnlineDecisionRecord:
     decision_seconds: float
     decision_backend: str = "lp_decoder"
     policy_inference_seconds: float = 0.0
-    policy_decode_threshold: float | None = None
     teacher_stage_one_mip_gap: float | None = None
     teacher_stage_two_mip_gap: float | None = None
+    policy_output_feasible: bool | None = None
+    policy_invalid_action_index: int | None = None
+    policy_invalid_action_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -261,7 +257,6 @@ class OnlineTELGENController:
                 self.gnn_policy = OnlineGNNPolicy.from_checkpoint(
                     self.config.gnn_checkpoint,
                     device=self.config.gnn_device,
-                    decode_threshold=self.config.gnn_decode_threshold,
                 )
         elif self.gnn_policy is not None:
             raise ValueError("a GNN policy requires the GNN decision backend")
@@ -621,17 +616,18 @@ class OnlineTELGENController:
                 eligible,
             )
         elif gnn_decision is not None:
-            selected_variables = gnn_decision.decoded.selected_variables
-            selected_ids = gnn_decision.decoded.selected_variable_ids
-            decoded_count = gnn_decision.decoded.completed_request_count
+            selected_variables = gnn_decision.selection.selected_variables
+            selected_ids = gnn_decision.selection.selected_variable_ids
+            decoded_count = gnn_decision.selection.completed_request_count
             expected_completed_mass = (
-                gnn_decision.decoded.expected_completed_request_mass
+                gnn_decision.selection.expected_completed_request_mass
             )
-            self._register_selected_variables(
-                slot,
-                selected_variables,
-                eligible,
-            )
+            if gnn_decision.selection.feasible:
+                self._register_selected_variables(
+                    slot,
+                    selected_variables,
+                    eligible,
+                )
         elif decoded is not None:
             self._register_attempts(slot, decoded)
             selected_variables = decoded.selected_variables
@@ -705,21 +701,16 @@ class OnlineTELGENController:
                 "milp_exact"
                 if milp_solution is not None
                 else (
-                    "gnn_greedy_projection"
+                    "gnn_autoregressive_masked"
                     if gnn_decision is not None
                     else ("none" if decoded is None else decoded.search_strategy)
                 )
-            ),
-            decoder_support_variable_count=(
-                gnn_decision.support_variable_count
-                if gnn_decision is not None
-                else (0 if decoded is None else decoded.support_variable_count)
             ),
             teacher_total_completion_latency=(
                 milp_solution.total_completion_latency
                 if milp_solution is not None
                 else (
-                    gnn_decision.decoded.total_completion_latency
+                    gnn_decision.selection.total_completion_latency
                     if gnn_decision is not None
                     else (
                         0.0 if record is None
@@ -745,11 +736,6 @@ class OnlineTELGENController:
                 if gnn_decision is None
                 else gnn_decision.inference_seconds
             ),
-            policy_decode_threshold=(
-                None
-                if gnn_decision is None
-                else gnn_decision.decode_threshold
-            ),
             teacher_stage_one_mip_gap=(
                 None
                 if milp_solution is None
@@ -759,6 +745,21 @@ class OnlineTELGENController:
                 None
                 if milp_solution is None
                 else milp_solution.stage_two.mip_gap
+            ),
+            policy_output_feasible=(
+                None
+                if gnn_decision is None
+                else gnn_decision.selection.feasible
+            ),
+            policy_invalid_action_index=(
+                None
+                if gnn_decision is None
+                else gnn_decision.invalid_action_index
+            ),
+            policy_invalid_action_reason=(
+                None
+                if gnn_decision is None
+                else gnn_decision.invalid_action_reason
             ),
         ))
 
@@ -832,6 +833,14 @@ class OnlineTELGENController:
             for item in self._decisions
             if item.variable_count > 0
         ]
+        gnn_policy_decisions = [
+            item for item in self._decisions
+            if getattr(item, "policy_output_feasible", None) is not None
+        ]
+        invalid_gnn_decisions = [
+            item for item in gnn_policy_decisions
+            if not getattr(item, "policy_output_feasible", True)
+        ]
         event_metrics = execution_event_metrics(self.scheduler.event_trace)
         return {
             "request_count": float(len(settlements)),
@@ -864,6 +873,14 @@ class OnlineTELGENController:
                     getattr(item, "policy_inference_seconds", 0.0)
                     for item in self._decisions
                 )
+            ),
+            "gnn_policy_decision_count": float(len(gnn_policy_decisions)),
+            "gnn_invalid_decision_count": float(
+                len(invalid_gnn_decisions)
+            ),
+            "gnn_invalid_decision_rate": (
+                len(invalid_gnn_decisions)
+                / max(len(gnn_policy_decisions), 1)
             ),
             "mean_teacher_stage_one_iterations": (
                 0.0

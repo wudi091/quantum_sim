@@ -82,6 +82,16 @@ class MILPOracleTests(unittest.TestCase):
             mip_dual_bound=1.0 + 3e-14,
         )
         self.assertTrue(is_numerically_optimal_stage(stage))
+        self.assertTrue(is_numerically_optimal_stage(
+            DiscreteStageResult(
+                **{
+                    **stage.__dict__,
+                    "objective_value": 28.366848000000008,
+                    "mip_gap": 0.0,
+                    "mip_dual_bound": 28.366847971612057,
+                }
+            )
+        ))
         self.assertFalse(is_numerically_optimal_stage(
             DiscreteStageResult(
                 **{

@@ -1,4 +1,4 @@
-"""Deterministic Waxman workloads shared by training and baselines."""
+"""Deterministic graph workloads shared by training and baselines."""
 
 from __future__ import annotations
 
@@ -27,6 +27,9 @@ class ScenarioConfig:
     demand_pairs: int = 1
     topology_mode: str = "waxman"
     parallel_corridors: int = 2
+    barabasi_attachment: int = 2
+    erdos_renyi_mean_degree: float = 6.0
+    random_regular_degree: int = 4
     arrival_batch_size: int | None = None
     arrival_interval: int = 1
 
@@ -99,6 +102,179 @@ def _make_waxman_graph(
             return graph, distances
     raise RuntimeError(
         "could not generate a connected Waxman topology satisfying the "
+        f"endpoint contract with {node_count} nodes after "
+        f"{config.topology_attempts} attempts"
+    )
+
+
+def _make_barabasi_albert_graph(
+    config: ScenarioConfig,
+    seed: int,
+) -> tuple[nx.Graph, dict[int, dict[int, int]]]:
+    """Generate a connected scale-free graph with the endpoint contract."""
+
+    configured_max_hops = config.max_hops or 1
+    node_count = config.topology_nodes or max(4 * configured_max_hops, 16)
+    attachment = config.barabasi_attachment
+    if node_count < 2:
+        raise ValueError("Barabasi-Albert topology needs at least two nodes")
+    if attachment < 1 or attachment >= node_count:
+        raise ValueError(
+            "barabasi_attachment must lie in [1, topology_nodes)"
+        )
+    if (
+        config.endpoint_mode == "distance_stratified"
+        and node_count <= configured_max_hops
+    ):
+        raise ValueError(
+            "Barabasi-Albert topology needs more nodes than max_hops"
+        )
+
+    topology_rng = np.random.default_rng(
+        np.random.SeedSequence([seed, 0x42414D4F])
+    )
+    for _ in range(config.topology_attempts):
+        graph_seed = int(
+            topology_rng.integers(0, np.iinfo(np.int32).max)
+        )
+        graph = nx.barabasi_albert_graph(
+            node_count,
+            attachment,
+            seed=graph_seed,
+        )
+        if config.endpoint_mode == "uniform_random":
+            return graph, {}
+        distances = {
+            int(source): {
+                int(target): int(distance)
+                for target, distance in targets.items()
+            }
+            for source, targets in nx.all_pairs_shortest_path_length(
+                graph, cutoff=configured_max_hops
+            )
+        }
+        pair_buckets = _candidate_pair_buckets(distances, config)
+        if all(pair_buckets[hop] for hop in set(_hop_targets(config))):
+            return graph, distances
+    raise RuntimeError(
+        "could not generate a Barabasi-Albert topology satisfying the "
+        f"endpoint contract with {node_count} nodes after "
+        f"{config.topology_attempts} attempts"
+    )
+
+
+def _make_erdos_renyi_graph(
+    config: ScenarioConfig,
+    seed: int,
+) -> tuple[nx.Graph, dict[int, dict[int, int]]]:
+    """Generate a connected sparse Erdos-Renyi graph."""
+
+    configured_max_hops = config.max_hops or 1
+    node_count = config.topology_nodes or max(4 * configured_max_hops, 16)
+    mean_degree = config.erdos_renyi_mean_degree
+    if node_count < 2:
+        raise ValueError("Erdos-Renyi topology needs at least two nodes")
+    if not 0.0 < mean_degree <= node_count - 1:
+        raise ValueError(
+            "erdos_renyi_mean_degree must lie in (0, topology_nodes - 1]"
+        )
+    if (
+        config.endpoint_mode == "distance_stratified"
+        and node_count <= configured_max_hops
+    ):
+        raise ValueError("Erdos-Renyi topology needs more nodes than max_hops")
+
+    edge_probability = mean_degree / (node_count - 1)
+    topology_rng = np.random.default_rng(
+        np.random.SeedSequence([seed, 0x45524453])
+    )
+    for _ in range(config.topology_attempts):
+        graph_seed = int(
+            topology_rng.integers(0, np.iinfo(np.int32).max)
+        )
+        graph = nx.gnp_random_graph(
+            node_count,
+            edge_probability,
+            seed=graph_seed,
+        )
+        if not nx.is_connected(graph):
+            continue
+        if config.endpoint_mode == "uniform_random":
+            return graph, {}
+        distances = {
+            int(source): {
+                int(target): int(distance)
+                for target, distance in targets.items()
+            }
+            for source, targets in nx.all_pairs_shortest_path_length(
+                graph, cutoff=configured_max_hops
+            )
+        }
+        pair_buckets = _candidate_pair_buckets(distances, config)
+        if all(pair_buckets[hop] for hop in set(_hop_targets(config))):
+            return graph, distances
+    raise RuntimeError(
+        "could not generate an Erdos-Renyi topology satisfying the "
+        f"endpoint contract with {node_count} nodes after "
+        f"{config.topology_attempts} attempts"
+    )
+
+
+def _make_random_regular_graph(
+    config: ScenarioConfig,
+    seed: int,
+) -> tuple[nx.Graph, dict[int, dict[int, int]]]:
+    """Generate a connected random regular graph."""
+
+    configured_max_hops = config.max_hops or 1
+    node_count = config.topology_nodes or max(4 * configured_max_hops, 16)
+    degree = config.random_regular_degree
+    if node_count < 2:
+        raise ValueError("random regular topology needs at least two nodes")
+    if degree < 1 or degree >= node_count:
+        raise ValueError(
+            "random_regular_degree must lie in [1, topology_nodes)"
+        )
+    if degree * node_count % 2:
+        raise ValueError(
+            "random_regular_degree * topology_nodes must be even"
+        )
+    if (
+        config.endpoint_mode == "distance_stratified"
+        and node_count <= configured_max_hops
+    ):
+        raise ValueError("random regular topology needs more nodes than max_hops")
+
+    topology_rng = np.random.default_rng(
+        np.random.SeedSequence([seed, 0x52454755])
+    )
+    for _ in range(config.topology_attempts):
+        graph_seed = int(
+            topology_rng.integers(0, np.iinfo(np.int32).max)
+        )
+        graph = nx.random_regular_graph(
+            degree,
+            node_count,
+            seed=graph_seed,
+        )
+        if not nx.is_connected(graph):
+            continue
+        if config.endpoint_mode == "uniform_random":
+            return graph, {}
+        distances = {
+            int(source): {
+                int(target): int(distance)
+                for target, distance in targets.items()
+            }
+            for source, targets in nx.all_pairs_shortest_path_length(
+                graph, cutoff=configured_max_hops
+            )
+        }
+        pair_buckets = _candidate_pair_buckets(distances, config)
+        if all(pair_buckets[hop] for hop in set(_hop_targets(config))):
+            return graph, distances
+    raise RuntimeError(
+        "could not generate a random regular topology satisfying the "
         f"endpoint contract with {node_count} nodes after "
         f"{config.topology_attempts} attempts"
     )
@@ -186,13 +362,25 @@ def make_episode(config: ScenarioConfig, seed: int) -> EpisodeSpec:
         raise ValueError("arrival_batch_size must be positive when set")
     if config.arrival_interval < 1:
         raise ValueError("arrival_interval must be positive")
-    if config.topology_mode not in {"waxman", "parallel_corridors"}:
+    if config.topology_mode not in {
+        "waxman",
+        "barabasi_albert",
+        "erdos_renyi",
+        "random_regular",
+        "parallel_corridors",
+    }:
         raise ValueError(f"unknown topology_mode: {config.topology_mode}")
     if config.endpoint_mode not in {"distance_stratified", "uniform_random"}:
         raise ValueError(f"unknown endpoint_mode: {config.endpoint_mode}")
 
     if config.topology_mode == "parallel_corridors":
         graph, distances = _make_parallel_corridor_graph(config)
+    elif config.topology_mode == "barabasi_albert":
+        graph, distances = _make_barabasi_albert_graph(config, seed)
+    elif config.topology_mode == "erdos_renyi":
+        graph, distances = _make_erdos_renyi_graph(config, seed)
+    elif config.topology_mode == "random_regular":
+        graph, distances = _make_random_regular_graph(config, seed)
     else:
         graph, distances = _make_waxman_graph(config, seed)
     nodes = tuple(sorted(int(node) for node in graph.nodes))
@@ -217,7 +405,8 @@ def make_episode(config: ScenarioConfig, seed: int) -> EpisodeSpec:
         ]
         if missing:
             raise RuntimeError(
-                f"Waxman topology is missing shortest-path distances: {missing}"
+                "generated topology is missing shortest-path distances: "
+                f"{missing}"
             )
         hops = _hop_targets(config)
         request_rng.shuffle(hops)

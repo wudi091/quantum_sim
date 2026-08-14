@@ -108,3 +108,58 @@
 | 2026-08-13 12:12 | /experiment-bridge | results/online_milp_gnn_first_batch/paired_online_5seeds_loss_fixed/online_gnn_comparison.json | implementation | latest five-seed online comparison |
 | 2026-08-13 12:32 | /experiment-bridge | results/online_milp_gnn_first_batch/paired_online_post_audit_sanity/online_gnn_comparison_20260813_123253.json | implementation | post-audit online GNN/Q-CAST sanity comparison |
 | 2026-08-13 12:32 | /experiment-bridge | results/online_milp_gnn_first_batch/paired_online_post_audit_sanity/online_gnn_comparison.json | implementation | latest post-audit sanity comparison |
+| 2026-08-14 19:27 | /experiment-bridge | results/generalization_formal_v1/dataset/suite/online_milp_dataset_20260814_182535.json | implementation | 15-episode、130-graph 严格拓扑泛化 MILP 标签集合 |
+| 2026-08-14 19:27 | /experiment-bridge | results/generalization_formal_v1/dataset/suite/online_milp_dataset.json | implementation | 最新严格拓扑泛化 MILP 标签集合 |
+| 2026-08-14 19:27 | /experiment-bridge | results/generalization_formal_v1/models_pooled/seed_20260821/online_milp_gnn_20260814_190719.json | implementation | pooled 验证选择的训练 seed 20260821 报告 |
+| 2026-08-14 19:27 | /experiment-bridge | results/generalization_formal_v1/models_pooled/seed_20260821/online_milp_gnn_20260814_190719.pt | implementation | pooled 验证选择的训练 seed 20260821 checkpoint |
+| 2026-08-14 19:27 | /experiment-bridge | results/generalization_formal_v1/models_pooled/seed_20260822/online_milp_gnn_20260814_191242.json | implementation | pooled 验证训练 seed 20260822 报告 |
+| 2026-08-14 19:27 | /experiment-bridge | results/generalization_formal_v1/models_pooled/seed_20260822/online_milp_gnn_20260814_191242.pt | implementation | pooled 验证训练 seed 20260822 checkpoint |
+| 2026-08-14 19:27 | /experiment-bridge | results/generalization_formal_v1/models_pooled/seed_20260823/online_milp_gnn_20260814_191644.json | implementation | pooled 验证训练 seed 20260823 报告 |
+| 2026-08-14 19:27 | /experiment-bridge | results/generalization_formal_v1/models_pooled/seed_20260823/online_milp_gnn_20260814_191644.pt | implementation | pooled 验证训练 seed 20260823 checkpoint |
+| 2026-08-14 19:27 | /experiment-bridge | results/generalization_formal_v1/online_ood_pooled/waxman192/online_gnn_comparison_20260814_192300.json | implementation | 192 节点 Waxman 的 20-seed 在线 GNN/Q-CAST 配对结果 |
+| 2026-08-14 19:27 | /experiment-bridge | results/generalization_formal_v1/online_ood_pooled/waxman192/online_gnn_comparison.json | implementation | 最新 192 节点 Waxman 在线配对结果 |
+| 2026-08-14 19:27 | /experiment-bridge | results/generalization_formal_v1/online_ood_pooled/ba128/online_gnn_comparison_20260814_192026.json | implementation | 未见 Barabasi--Albert 的 20-seed 在线配对结果 |
+| 2026-08-14 19:27 | /experiment-bridge | results/generalization_formal_v1/online_ood_pooled/ba128/online_gnn_comparison.json | implementation | 最新未见 Barabasi--Albert 在线配对结果 |
+| 2026-08-14 19:27 | /experiment-bridge | results/generalization_formal_v1/analysis_pooled/online_benchmark_20260814_192630.json | implementation | 40-seed 配对 bootstrap、随机化检验与硬门槛审计 JSON |
+| 2026-08-14 19:27 | /experiment-bridge | results/generalization_formal_v1/analysis_pooled/online_benchmark_20260814_192630.csv | implementation | 40-seed 配对统计 CSV |
+| 2026-08-14 19:27 | /experiment-bridge | results/generalization_formal_v1/analysis_pooled/online_benchmark_20260814_192630.md | implementation | 40-seed 配对统计中文摘要 |
+| 2026-08-14 19:27 | /experiment-bridge | results/generalization_formal_v1/analysis_pooled/online_benchmark.json | implementation | 最新 40-seed 配对统计 JSON |
+| 2026-08-14 19:27 | /experiment-bridge | results/generalization_formal_v1/analysis_pooled/online_benchmark.csv | implementation | 最新 40-seed 配对统计 CSV |
+| 2026-08-14 19:27 | /experiment-bridge | results/generalization_formal_v1/analysis_pooled/online_benchmark.md | implementation | 最新 40-seed 配对统计摘要 |
+| 2026-08-14 19:27 | /experiment-bridge | refine-logs/EXPERIMENT_PLAN_20260814_192700.md | implementation | 当前 MILP 集合监督与自回归 GNN 泛化实验计划 |
+| 2026-08-14 19:27 | /experiment-bridge | refine-logs/EXPERIMENT_PLAN.md | implementation | 最新泛化实验计划 |
+| 2026-08-14 19:27 | /experiment-bridge | refine-logs/EXPERIMENT_RESULTS_20260814_192700.md | implementation | 严格 OOD 泛化训练与在线结果 |
+| 2026-08-14 19:27 | /experiment-bridge | refine-logs/EXPERIMENT_RESULTS.md | implementation | 最新严格 OOD 泛化结果 |
+| 2026-08-14 19:27 | /experiment-bridge | refine-logs/EXPERIMENT_TRACKER_20260814_192700.md | implementation | 当前 GNN 实验追踪 |
+| 2026-08-14 19:27 | /experiment-bridge | refine-logs/EXPERIMENT_TRACKER.md | implementation | 最新 GNN 实验追踪 |
+| 2026-08-14 19:35 | /experiment-bridge | results/generalization_formal_v1/analysis_pooled/online_benchmark_20260814_193523.json | implementation | 加入单 checkpoint 与无在线 MILP 防伪检查后的最终统计 JSON |
+| 2026-08-14 19:35 | /experiment-bridge | results/generalization_formal_v1/analysis_pooled/online_benchmark_20260814_193523.csv | implementation | 最终 40-seed 配对统计 CSV |
+| 2026-08-14 19:35 | /experiment-bridge | results/generalization_formal_v1/analysis_pooled/online_benchmark_20260814_193523.md | implementation | 最终 40-seed 配对统计中文摘要 |
+| 2026-08-14 23:22 | /experiment-bridge | results/construction_ablation_online_v1/sanity/adaptive/online_gnn_comparison_20260814_232235.json | implementation | 构造自适应 GNN 单种子运行检查 |
+| 2026-08-14 23:22 | /experiment-bridge | results/construction_ablation_online_v1/sanity/adaptive/online_gnn_comparison.json | implementation | 最新构造自适应单种子运行检查 |
+| 2026-08-14 23:22 | /experiment-bridge | results/construction_ablation_online_v1/sanity/fixed_tree_0/online_gnn_comparison_20260814_232241.json | implementation | 固定交换树 GNN 单种子运行检查 |
+| 2026-08-14 23:22 | /experiment-bridge | results/construction_ablation_online_v1/sanity/fixed_tree_0/online_gnn_comparison.json | implementation | 最新固定交换树单种子运行检查 |
+| 2026-08-14 23:26 | /experiment-bridge | results/construction_ablation_online_v1/test/er_n128_h/adaptive/online_gnn_comparison_20260814_232632.json | implementation | ER-128 构造自适应 20-seed 测试 |
+| 2026-08-14 23:26 | /experiment-bridge | results/construction_ablation_online_v1/test/er_n128_h/adaptive/online_gnn_comparison.json | implementation | 最新 ER-128 构造自适应测试 |
+| 2026-08-14 23:27 | /experiment-bridge | results/construction_ablation_online_v1/test/er_n128_h/fixed_tree_0/online_gnn_comparison_20260814_232729.json | implementation | ER-128 固定 tree0 的 20-seed 测试 |
+| 2026-08-14 23:27 | /experiment-bridge | results/construction_ablation_online_v1/test/er_n128_h/fixed_tree_0/online_gnn_comparison.json | implementation | 最新 ER-128 固定 tree0 测试 |
+| 2026-08-14 23:30 | /experiment-bridge | results/construction_ablation_online_v1/test/er_n256_h/adaptive/online_gnn_comparison_20260814_233037.json | implementation | ER-256 构造自适应 20-seed 测试 |
+| 2026-08-14 23:30 | /experiment-bridge | results/construction_ablation_online_v1/test/er_n256_h/adaptive/online_gnn_comparison.json | implementation | 最新 ER-256 构造自适应测试 |
+| 2026-08-14 23:32 | /experiment-bridge | results/construction_ablation_online_v1/test/er_n256_h/fixed_tree_1/online_gnn_comparison_20260814_233247.json | implementation | ER-256 固定 tree1 的 20-seed 测试 |
+| 2026-08-14 23:32 | /experiment-bridge | results/construction_ablation_online_v1/test/er_n256_h/fixed_tree_1/online_gnn_comparison.json | implementation | 最新 ER-256 固定 tree1 测试 |
+| 2026-08-14 23:34 | /experiment-bridge | results/construction_ablation_online_v1/test/rr_n128_h/adaptive/online_gnn_comparison_20260814_233416.json | implementation | RR-128 构造自适应 20-seed 测试 |
+| 2026-08-14 23:34 | /experiment-bridge | results/construction_ablation_online_v1/test/rr_n128_h/adaptive/online_gnn_comparison.json | implementation | 最新 RR-128 构造自适应测试 |
+| 2026-08-14 23:35 | /experiment-bridge | results/construction_ablation_online_v1/test/rr_n128_h/fixed_tree_2/online_gnn_comparison_20260814_233506.json | implementation | RR-128 固定 tree2 的 20-seed 测试 |
+| 2026-08-14 23:35 | /experiment-bridge | results/construction_ablation_online_v1/test/rr_n128_h/fixed_tree_2/online_gnn_comparison.json | implementation | 最新 RR-128 固定 tree2 测试 |
+| 2026-08-14 23:37 | /experiment-bridge | results/construction_ablation_online_v1/test/rr_n256_h/adaptive/online_gnn_comparison_20260814_233739.json | implementation | RR-256 构造自适应 20-seed 测试 |
+| 2026-08-14 23:37 | /experiment-bridge | results/construction_ablation_online_v1/test/rr_n256_h/adaptive/online_gnn_comparison.json | implementation | 最新 RR-256 构造自适应测试 |
+| 2026-08-14 23:39 | /experiment-bridge | results/construction_ablation_online_v1/test/rr_n256_h/fixed_tree_2/online_gnn_comparison_20260814_233931.json | implementation | RR-256 固定 tree2 的 20-seed 测试 |
+| 2026-08-14 23:39 | /experiment-bridge | results/construction_ablation_online_v1/test/rr_n256_h/fixed_tree_2/online_gnn_comparison.json | implementation | 最新 RR-256 固定 tree2 测试 |
+| 2026-08-14 23:44 | /experiment-bridge | results/construction_ablation_online_v1/analysis/construction_ablation_20260814_234432.json | implementation | 构造感知在线消融首轮配对统计 JSON |
+| 2026-08-14 23:44 | /experiment-bridge | results/construction_ablation_online_v1/analysis/construction_ablation_20260814_234432.csv | implementation | 构造感知在线消融首轮配对统计 CSV |
+| 2026-08-14 23:46 | /experiment-bridge | results/construction_ablation_online_v1/analysis/construction_ablation_20260814_234627.json | implementation | 构造感知在线消融统计复核 JSON |
+| 2026-08-14 23:46 | /experiment-bridge | results/construction_ablation_online_v1/analysis/construction_ablation_20260814_234627.csv | implementation | 构造感知在线消融统计复核 CSV |
+| 2026-08-14 23:49 | /experiment-bridge | results/construction_ablation_online_v1/analysis/construction_ablation_20260814_234916.json | implementation | 通过候选空间审计后的最终构造消融统计 JSON |
+| 2026-08-14 23:49 | /experiment-bridge | results/construction_ablation_online_v1/analysis/construction_ablation_20260814_234916.csv | implementation | 通过候选空间审计后的最终构造消融统计 CSV |
+| 2026-08-14 23:49 | /experiment-bridge | results/construction_ablation_online_v1/analysis/construction_ablation.json | implementation | 最新构造感知在线消融统计 JSON |
+| 2026-08-14 23:49 | /experiment-bridge | results/construction_ablation_online_v1/analysis/construction_ablation.csv | implementation | 最新构造感知在线消融统计 CSV |

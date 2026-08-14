@@ -41,6 +41,30 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--nodes", type=int, default=64)
     parser.add_argument("--min-hops", type=int, default=4)
     parser.add_argument("--max-hops", type=int, default=4)
+    parser.add_argument(
+        "--endpoint-mode",
+        choices=("distance_stratified", "uniform_random"),
+        default="distance_stratified",
+    )
+    parser.add_argument(
+        "--topology-mode",
+        choices=(
+            "waxman",
+            "barabasi_albert",
+            "erdos_renyi",
+            "random_regular",
+            "parallel_corridors",
+        ),
+        default="waxman",
+    )
+    parser.add_argument("--waxman-alpha", type=float, default=0.15)
+    parser.add_argument("--waxman-beta", type=float, default=0.45)
+    parser.add_argument("--topology-attempts", type=int, default=128)
+    parser.add_argument("--waxman-add-mst", action="store_true")
+    parser.add_argument("--barabasi-attachment", type=int, default=2)
+    parser.add_argument("--erdos-renyi-mean-degree", type=float, default=6.0)
+    parser.add_argument("--random-regular-degree", type=int, default=4)
+    parser.add_argument("--parallel-corridors", type=int, default=2)
     parser.add_argument("--paths", type=int, default=4)
     parser.add_argument("--construction-plans", type=int, default=5)
     parser.add_argument("--time-limit-seconds", type=float, default=300.0)
@@ -225,20 +249,26 @@ def main(argv: list[str] | None = None) -> int:
         quantum_distance_m=args.quantum_distance_m,
         slot_duration_ps=args.slot_duration_ps,
     )
+    min_hops = None if args.endpoint_mode == "uniform_random" else args.min_hops
+    max_hops = None if args.endpoint_mode == "uniform_random" else args.max_hops
     scenario = ScenarioConfig(
         request_count=args.requests,
-        min_hops=args.min_hops,
-        max_hops=args.max_hops,
+        min_hops=min_hops,
+        max_hops=max_hops,
         ttl=args.ttl,
         horizon=horizon,
         physical=physical,
         topology_nodes=args.nodes,
-        topology_mode="waxman",
-        waxman_alpha=0.15,
-        waxman_beta=0.45,
-        topology_attempts=128,
-        waxman_add_mst=False,
-        endpoint_mode="distance_stratified",
+        topology_mode=args.topology_mode,
+        waxman_alpha=args.waxman_alpha,
+        waxman_beta=args.waxman_beta,
+        topology_attempts=args.topology_attempts,
+        waxman_add_mst=args.waxman_add_mst,
+        endpoint_mode=args.endpoint_mode,
+        barabasi_attachment=args.barabasi_attachment,
+        erdos_renyi_mean_degree=args.erdos_renyi_mean_degree,
+        random_regular_degree=args.random_regular_degree,
+        parallel_corridors=args.parallel_corridors,
         arrival_batch_size=args.requests_per_batch,
         arrival_interval=args.decision_interval,
     )

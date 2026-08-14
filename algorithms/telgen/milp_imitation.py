@@ -1,8 +1,11 @@
-"""Directly imitate exact construction-aware MILP decisions with a small GNN.
+"""Imitate exact MILP sets with a feasibility-masked autoregressive GNN.
 
 The graph is the sparse candidate--constraint incidence graph of the stage-one
-packing model.  Labels are the final binary variables of the exact two-stage
-MILP.  No LP trajectory or LP primal is used as supervision.
+packing model.  At inference the GNN repeatedly chooses one candidate or STOP.
+Candidates that would violate request uniqueness, resource--slot capacity, or
+positive-success requirements are removed from the current action space before
+the categorical decision.  The GNN still decides among every feasible action;
+there is no post-hoc repair or local search.
 """
 
 from __future__ import annotations
@@ -18,7 +21,6 @@ from qnet_core.construction_api import OperationKind
 from qnet_core.scenario import ScenarioConfig
 from qnet_core.spec import EpisodeSpec
 
-from .hard_decoder import validate_decoded_selection
 from .milp_oracle import ConstructionAwareMILPOracle, DiscreteOracleSolution
 from .teacher import LinearProgramStage, build_stage_one_lp
 from .time_expansion import TimeExpandedCandidate
@@ -94,6 +96,10 @@ GLOBAL_FEATURE_NAMES = (
     "reserved_resource_slot_count",
     "mean_reserved_fraction",
 )
+
+AUTOREGRESSIVE_ARCHITECTURE = "constraint_masked_autoregressive_v3"
+AUTOREGRESSIVE_CHECKPOINT_SCHEMA_VERSION = 4
+FEASIBILITY_TOLERANCE = 1e-7
 
 
 @dataclass(frozen=True)
@@ -253,12 +259,21 @@ class MILPGraphSample:
             for variable, label in zip(self.variables, self.labels)
             if label > 0.5
         )
-        feasibility = validate_decoded_selection(
-            selected,
-            self.resource_capacities,
-            self.reserved_usage,
+        if any(
+            variable.expected_success_probability <= 0.0
+            for variable in selected
+        ):
+            raise ValueError(
+                "MILP labels cannot select a zero-success candidate"
+            )
+        loads = np.zeros(constraint_count, dtype=float)
+        np.add.at(
+            loads,
+            self.edge_constraint_indices,
+            self.labels[self.edge_variable_indices]
+            * self.edge_features[:, 0],
         )
-        if not feasibility.feasible:
+        if np.any(loads > self.constraint_rhs + FEASIBILITY_TOLERANCE):
             raise ValueError("MILP labels encode an infeasible selection")
         selected_expected_mass = float(sum(
             variable.expected_success_probability for variable in selected
@@ -284,12 +299,93 @@ class MILPGraphSample:
 
 
 @dataclass(frozen=True)
-class GreedyDecodeResult:
+class SparsePackingIncidence:
+    """Sparse ``A x <= b`` columns used to validate emitted actions."""
+
+    constraint_rhs: np.ndarray
+    variable_constraint_indices: tuple[np.ndarray, ...]
+    variable_constraint_coefficients: tuple[np.ndarray, ...]
+    positive_success_flags: np.ndarray
+
+    def __post_init__(self) -> None:
+        variable_count = len(self.variable_constraint_indices)
+        if len(self.variable_constraint_coefficients) != variable_count:
+            raise ValueError("packing incidence columns have different counts")
+        if self.constraint_rhs.ndim != 1:
+            raise ValueError("constraint RHS must be one-dimensional")
+        if self.positive_success_flags.shape != (variable_count,):
+            raise ValueError("success flags have the wrong shape")
+        if not np.all(np.isfinite(self.constraint_rhs)):
+            raise ValueError("constraint RHS must be finite")
+        if np.any(self.constraint_rhs < -FEASIBILITY_TOLERANCE):
+            raise ValueError("constraint RHS cannot be negative")
+        constraint_count = len(self.constraint_rhs)
+        for rows, coefficients in zip(
+            self.variable_constraint_indices,
+            self.variable_constraint_coefficients,
+        ):
+            if rows.ndim != 1 or coefficients.ndim != 1:
+                raise ValueError("packing incidence columns must be vectors")
+            if rows.shape != coefficients.shape:
+                raise ValueError("packing incidence row/value shapes differ")
+            if len(rows) and (
+                int(np.min(rows)) < 0 or int(np.max(rows)) >= constraint_count
+            ):
+                raise ValueError("packing incidence row lies outside constraints")
+            if not np.all(np.isfinite(coefficients)):
+                raise ValueError("packing coefficients must be finite")
+            if np.any(coefficients < -FEASIBILITY_TOLERANCE):
+                raise ValueError(
+                    "autoregressive state validation requires non-negative "
+                    "packing "
+                    "coefficients"
+                )
+
+    @property
+    def variable_count(self) -> int:
+        return len(self.variable_constraint_indices)
+
+
+@dataclass(frozen=True)
+class AutoregressiveState:
+    """Remaining packing capacity after the GNN's previous actions."""
+
+    residual_capacity: np.ndarray
+    selected_mask: np.ndarray
+    stopped: bool = False
+
+    def __post_init__(self) -> None:
+        if self.residual_capacity.ndim != 1:
+            raise ValueError("residual capacity must be one-dimensional")
+        if self.selected_mask.ndim != 1:
+            raise ValueError("selected mask must be one-dimensional")
+        if self.selected_mask.dtype != np.bool_:
+            raise ValueError("selected mask must be boolean")
+        if not np.all(np.isfinite(self.residual_capacity)):
+            raise ValueError("residual capacity must be finite")
+        if np.any(self.residual_capacity < -FEASIBILITY_TOLERANCE):
+            raise ValueError("autoregressive state is infeasible")
+
+    @property
+    def selected_indices(self) -> tuple[int, ...]:
+        return tuple(int(index) for index in np.flatnonzero(self.selected_mask))
+
+
+@dataclass(frozen=True)
+class AutoregressiveSelection:
+    """The discrete plan emitted directly by the autoregressive GNN."""
+
     selected_variables: tuple[TimeExpandedCandidate, ...]
-    feasible: bool
-    completed_request_count: int
-    total_completion_latency: float
+    selected_indices: tuple[int, ...]
     selected_variable_ids: tuple[str, ...]
+    feasible: bool
+    stopped: bool
+    action_count: int
+    total_completion_latency: float
+
+    @property
+    def completed_request_count(self) -> int:
+        return len(self.selected_variables)
 
     @property
     def expected_completed_request_mass(self) -> float:
@@ -297,6 +393,198 @@ class GreedyDecodeResult:
             variable.expected_success_probability
             for variable in self.selected_variables
         ))
+
+
+@dataclass(frozen=True)
+class AutoregressiveRollout:
+    """Inference trace returned by the GNN policy itself."""
+
+    selection: AutoregressiveSelection
+    action_indices: tuple[int, ...]
+    stopped_by_model: bool
+    initial_candidate_probabilities: np.ndarray
+    initial_stop_probability: float
+    invalid_action_index: int | None = None
+    invalid_action_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.initial_candidate_probabilities.ndim != 1:
+            raise ValueError("initial candidate probabilities must be a vector")
+        if not np.all(np.isfinite(self.initial_candidate_probabilities)):
+            raise ValueError("initial candidate probabilities must be finite")
+        if not math.isfinite(float(self.initial_stop_probability)):
+            raise ValueError("initial STOP probability must be finite")
+        if (self.invalid_action_index is None) != (
+            self.invalid_action_reason is None
+        ):
+            raise ValueError(
+                "invalid action index and reason must be reported together"
+            )
+
+
+def build_sparse_packing_incidence(
+    sample: CandidateConstraintGraph | MILPGraphSample,
+) -> SparsePackingIncidence:
+    """Aggregate the graph edges into sparse columns of the exact MILP matrix."""
+
+    variable_count = len(sample.variables)
+    constraint_count = len(sample.constraint_rhs)
+    columns: list[dict[int, float]] = [
+        {} for _ in range(variable_count)
+    ]
+    coefficients = np.asarray(sample.edge_features[:, 0], dtype=float)
+    if np.any(coefficients < -FEASIBILITY_TOLERANCE):
+        raise ValueError(
+            "autoregressive state validation supports packing constraints only"
+        )
+    for variable_index, constraint_index, coefficient in zip(
+        sample.edge_variable_indices,
+        sample.edge_constraint_indices,
+        coefficients,
+    ):
+        variable = int(variable_index)
+        constraint = int(constraint_index)
+        if not 0 <= variable < variable_count:
+            raise ValueError("variable edge index lies outside the graph")
+        if not 0 <= constraint < constraint_count:
+            raise ValueError("constraint edge index lies outside the graph")
+        columns[variable][constraint] = (
+            columns[variable].get(constraint, 0.0) + float(coefficient)
+        )
+    row_indices: list[np.ndarray] = []
+    column_coefficients: list[np.ndarray] = []
+    for column in columns:
+        ordered = tuple(sorted(column.items()))
+        row_indices.append(np.asarray(
+            [row for row, _ in ordered], dtype=np.int64
+        ))
+        column_coefficients.append(np.asarray(
+            [value for _, value in ordered], dtype=np.float32
+        ))
+    return SparsePackingIncidence(
+        constraint_rhs=np.asarray(
+            sample.constraint_rhs, dtype=np.float32
+        ).copy(),
+        variable_constraint_indices=tuple(row_indices),
+        variable_constraint_coefficients=tuple(column_coefficients),
+        positive_success_flags=np.asarray(
+            [
+                variable.expected_success_probability > 0.0
+                for variable in sample.variables
+            ],
+            dtype=np.bool_,
+        ),
+    )
+
+
+def initial_autoregressive_state(
+    incidence: SparsePackingIncidence,
+) -> AutoregressiveState:
+    """Create the initial state ``r=b`` before the first GNN action."""
+
+    return AutoregressiveState(
+        residual_capacity=incidence.constraint_rhs.copy(),
+        selected_mask=np.zeros(incidence.variable_count, dtype=np.bool_),
+        stopped=False,
+    )
+
+
+def candidate_action_violation(
+    incidence: SparsePackingIncidence,
+    state: AutoregressiveState,
+    variable_index: int,
+) -> str | None:
+    """Return why a candidate is absent from the current feasible action set."""
+
+    if state.selected_mask.shape != (incidence.variable_count,):
+        raise ValueError("autoregressive state has the wrong variable count")
+    if state.residual_capacity.shape != incidence.constraint_rhs.shape:
+        raise ValueError("autoregressive state has the wrong constraint count")
+    index = int(variable_index)
+    if not 0 <= index < incidence.variable_count:
+        return "candidate_index_out_of_range"
+    if state.stopped:
+        return "candidate_after_stop"
+    if state.selected_mask[index]:
+        return "duplicate_candidate"
+    if not incidence.positive_success_flags[index]:
+        return "nonpositive_success_probability"
+    rows = incidence.variable_constraint_indices[index]
+    coefficients = incidence.variable_constraint_coefficients[index]
+    if len(rows) and np.any(
+        coefficients > state.residual_capacity[rows] + FEASIBILITY_TOLERANCE
+    ):
+        return "packing_constraint_violation"
+    return None
+
+
+def apply_candidate_action(
+    incidence: SparsePackingIncidence,
+    state: AutoregressiveState,
+    variable_index: int,
+) -> AutoregressiveState:
+    """Apply one GNN candidate action as ``r <- r - A[:,j]``."""
+
+    index = int(variable_index)
+    if not 0 <= index < incidence.variable_count:
+        raise IndexError("candidate action lies outside the graph")
+    violation = candidate_action_violation(incidence, state, index)
+    if violation is not None:
+        raise ValueError(f"invalid candidate action: {violation}")
+    residual = state.residual_capacity.copy()
+    rows = incidence.variable_constraint_indices[index]
+    residual[rows] -= incidence.variable_constraint_coefficients[index]
+    residual[np.abs(residual) <= FEASIBILITY_TOLERANCE] = 0.0
+    selected = state.selected_mask.copy()
+    selected[index] = True
+    return AutoregressiveState(
+        residual_capacity=residual,
+        selected_mask=selected,
+        stopped=False,
+    )
+
+
+def apply_stop_action(state: AutoregressiveState) -> AutoregressiveState:
+    """Terminate the learned action sequence without changing its selection."""
+
+    return AutoregressiveState(
+        residual_capacity=state.residual_capacity.copy(),
+        selected_mask=state.selected_mask.copy(),
+        stopped=True,
+    )
+
+
+def selection_from_state(
+    sample: CandidateConstraintGraph | MILPGraphSample,
+    incidence: SparsePackingIncidence,
+    state: AutoregressiveState,
+) -> AutoregressiveSelection:
+    """Materialize the GNN's already-made actions; no repair is performed."""
+
+    if state.selected_mask.shape != (len(sample.variables),):
+        raise ValueError("selection state does not match graph variables")
+    feasible = bool(np.all(
+        state.residual_capacity >= -FEASIBILITY_TOLERANCE
+    ))
+    selected_indices = state.selected_indices
+    selected_variables = tuple(
+        sample.variables[index] for index in selected_indices
+    )
+    return AutoregressiveSelection(
+        selected_variables=selected_variables,
+        selected_indices=selected_indices,
+        selected_variable_ids=tuple(
+            variable.variable_id for variable in selected_variables
+        ),
+        feasible=feasible,
+        stopped=state.stopped,
+        action_count=len(selected_indices),
+        total_completion_latency=float(sum(
+            variable.expected_success_probability
+            * variable.completion_latency
+            for variable in selected_variables
+        )),
+    )
 
 
 def _construction_family(kind: str) -> tuple[float, float, float, float]:
@@ -768,78 +1056,6 @@ def generate_milp_graph_sample(
     )
 
 
-def greedy_decode_scores(
-    sample: CandidateConstraintGraph | MILPGraphSample,
-    scores: Sequence[float],
-    *,
-    threshold: float = 0.5,
-) -> GreedyDecodeResult:
-    """Project binary candidate scores to a feasible plan without search."""
-
-    score_array = np.asarray(scores, dtype=float)
-    if score_array.shape != (len(sample.variables),):
-        raise ValueError("score vector has the wrong shape")
-    if not np.all(np.isfinite(score_array)):
-        raise ValueError("scores must be finite")
-    if not 0.0 <= threshold <= 1.0:
-        raise ValueError("threshold must lie in [0, 1]")
-    selected: list[TimeExpandedCandidate] = []
-    selected_requests: set[str] = set()
-    usage: dict[tuple[str, int], int] = {}
-    order = sorted(
-        range(len(sample.variables)),
-        key=lambda index: (
-            -score_array[index],
-            sample.variables[index].completion_latency,
-            sample.variables[index].variable_id,
-        ),
-    )
-    for index in order:
-        if score_array[index] < threshold:
-            break
-        variable = sample.variables[index]
-        if variable.request_id in selected_requests:
-            continue
-        feasible = True
-        for item in variable.resource_usage:
-            key = (item.resource_id, item.slot)
-            if (
-                sample.reserved_usage.get(key, 0)
-                + usage.get(key, 0)
-                + item.amount
-                > sample.resource_capacities[item.resource_id]
-            ):
-                feasible = False
-                break
-        if not feasible:
-            continue
-        selected.append(variable)
-        selected_requests.add(variable.request_id)
-        for item in variable.resource_usage:
-            key = (item.resource_id, item.slot)
-            usage[key] = usage.get(key, 0) + item.amount
-    selected_tuple = tuple(sorted(
-        selected, key=lambda variable: variable.variable_id
-    ))
-    feasibility = validate_decoded_selection(
-        selected_tuple,
-        sample.resource_capacities,
-        sample.reserved_usage,
-    )
-    return GreedyDecodeResult(
-        selected_variables=selected_tuple,
-        feasible=feasibility.feasible,
-        completed_request_count=len(selected_tuple),
-        total_completion_latency=float(sum(
-            variable.expected_success_probability * variable.completion_latency
-            for variable in selected_tuple
-        )),
-        selected_variable_ids=tuple(
-            variable.variable_id for variable in selected_tuple
-        ),
-    )
-
-
 # Torch is intentionally imported below the data-generation code.  Exact MILP
 # validation remains usable in lightweight environments without PyTorch.
 try:
@@ -867,6 +1083,29 @@ if torch is not None:
         constraint_graph_indices: torch.Tensor
         graph_count: int
         variable_slices: tuple[tuple[int, int], ...]
+
+
+    @dataclass(frozen=True)
+    class EncodedCandidateConstraintGraph:
+        """Static graph embeddings reused by every autoregressive step."""
+
+        variable_embeddings: torch.Tensor
+        constraint_embeddings: torch.Tensor
+        global_embeddings: torch.Tensor
+
+
+    @dataclass(frozen=True)
+    class AutoregressiveActionLogits:
+        """One learned categorical decision: all candidates plus STOP."""
+
+        candidate_logits: torch.Tensor
+        stop_logits: torch.Tensor
+
+        def __post_init__(self) -> None:
+            if self.candidate_logits.ndim != 1:
+                raise ValueError("candidate logits must be one-dimensional")
+            if self.stop_logits.ndim != 1:
+                raise ValueError("STOP logits must be one-dimensional")
 
 
     def batch_graph_samples(
@@ -991,7 +1230,7 @@ if torch is not None:
 
 
     class CandidateConstraintGNN(nn.Module):
-        """Tripartite candidate--constraint--global message-passing model."""
+        """Feasibility-masked autoregressive candidate/STOP policy."""
 
         def __init__(
             self,
@@ -1040,9 +1279,22 @@ if torch is not None:
                 self.variable_norms.append(nn.LayerNorm(hidden_dim))
                 self.constraint_norms.append(nn.LayerNorm(hidden_dim))
                 self.global_norms.append(nn.LayerNorm(hidden_dim))
-            self.output = _MLP(2 * hidden_dim, hidden_dim, 1)
+            self.dynamic_constraint_to_variable = _MLP(
+                hidden_dim + 3, hidden_dim, hidden_dim
+            )
+            self.candidate_action_head = _MLP(
+                3 * hidden_dim + 4, hidden_dim, 1
+            )
+            self.stop_action_head = _MLP(
+                3 * hidden_dim + 3, hidden_dim, 1
+            )
 
-        def forward(self, graph: BatchedMILPGraph) -> torch.Tensor:
+        def encode(
+            self,
+            graph: BatchedMILPGraph,
+        ) -> EncodedCandidateConstraintGraph:
+            """Encode the static incidence graph exactly once per rollout."""
+
             variable = self.variable_encoder(graph.variable_features)
             constraint = self.constraint_encoder(
                 graph.constraint_features
@@ -1119,109 +1371,539 @@ if torch is not None:
                 global_state = self.global_norms[layer_index](
                     global_state + global_delta
                 )
-            return self.output(torch.cat((
+            return EncodedCandidateConstraintGraph(
+                variable_embeddings=variable,
+                constraint_embeddings=constraint,
+                global_embeddings=global_state,
+            )
+
+        def action_logits(
+            self,
+            graph: BatchedMILPGraph,
+            *,
+            encoded: EncodedCandidateConstraintGraph | None = None,
+            residual_capacity: torch.Tensor | None = None,
+            selected_mask: torch.Tensor | None = None,
+        ) -> AutoregressiveActionLogits:
+            """Score candidates and STOP from static embeddings plus ``r``."""
+
+            state = self.encode(graph) if encoded is None else encoded
+            variable = state.variable_embeddings
+            constraint = state.constraint_embeddings
+            global_state = state.global_embeddings
+            if variable.shape[0] != graph.variable_features.shape[0]:
+                raise ValueError("encoded variables do not match the graph")
+            if constraint.shape[0] != graph.constraint_features.shape[0]:
+                raise ValueError("encoded constraints do not match the graph")
+            if global_state.shape[0] != graph.graph_count:
+                raise ValueError("encoded global states do not match the graph")
+            residual = (
+                graph.constraint_rhs
+                if residual_capacity is None
+                else residual_capacity
+            )
+            if residual.shape != graph.constraint_rhs.shape:
+                raise ValueError("residual capacity has the wrong shape")
+            if not bool(torch.all(torch.isfinite(residual)).item()):
+                raise ValueError("residual capacity must be finite")
+            chosen = (
+                torch.zeros(
+                    len(variable), dtype=torch.bool, device=variable.device
+                )
+                if selected_mask is None
+                else selected_mask.to(device=variable.device, dtype=torch.bool)
+            )
+            if chosen.shape != (len(variable),):
+                raise ValueError("selected mask has the wrong shape")
+
+            rhs_scale = graph.constraint_rhs.clamp_min(1.0)
+            residual_ratio = (residual / rhs_scale).clamp(min=0.0, max=1.0)
+            variable_edge = graph.edge_variable_indices
+            constraint_edge = graph.edge_constraint_indices
+            dynamic_messages = self.dynamic_constraint_to_variable(
+                torch.cat((
+                    constraint[constraint_edge],
+                    residual_ratio[constraint_edge, None],
+                    graph.edge_features,
+                ), dim=-1)
+            )
+            dynamic_aggregate = variable.new_zeros(variable.shape)
+            dynamic_aggregate.index_add_(
+                0, variable_edge, dynamic_messages
+            )
+            edge_degree = variable.new_zeros((len(variable), 1))
+            edge_degree.index_add_(
+                0,
+                variable_edge,
+                variable.new_ones((len(variable_edge), 1)),
+            )
+            dynamic_aggregate = dynamic_aggregate / edge_degree.clamp_min(1.0)
+
+            edge_slack = residual_ratio[constraint_edge]
+            slack_sum = variable.new_zeros(len(variable))
+            slack_sum.index_add_(0, variable_edge, edge_slack)
+            mean_slack = slack_sum / edge_degree.squeeze(-1).clamp_min(1.0)
+            minimum_slack = variable.new_ones(len(variable))
+            if len(variable_edge):
+                if hasattr(minimum_slack, "scatter_reduce_"):
+                    minimum_slack.scatter_reduce_(
+                        0,
+                        variable_edge,
+                        edge_slack,
+                        reduce="amin",
+                        include_self=True,
+                    )
+                else:  # pragma: no cover - old PyTorch fallback
+                    for edge_index in range(len(variable_edge)):
+                        variable_index = int(variable_edge[edge_index])
+                        minimum_slack[variable_index] = torch.minimum(
+                            minimum_slack[variable_index],
+                            edge_slack[edge_index],
+                        )
+            coefficient_pressure = variable.new_zeros(len(variable))
+            coefficient_pressure.index_add_(
+                0, variable_edge, graph.edge_features[:, 1]
+            )
+            selected_fraction = chosen.to(variable.dtype)
+            candidate_logits = self.candidate_action_head(torch.cat((
                 variable,
+                dynamic_aggregate,
                 global_state[graph.variable_graph_indices],
+                mean_slack[:, None],
+                minimum_slack[:, None],
+                coefficient_pressure[:, None],
+                selected_fraction[:, None],
             ), dim=-1)).squeeze(-1)
 
+            variable_pool = _segment_mean(
+                variable,
+                graph.variable_graph_indices,
+                graph.graph_count,
+            )
+            constraint_pool = _segment_mean(
+                constraint * residual_ratio[:, None],
+                graph.constraint_graph_indices,
+                graph.graph_count,
+            )
+            graph_selected = variable.new_zeros(graph.graph_count)
+            graph_selected.index_add_(
+                0,
+                graph.variable_graph_indices,
+                chosen.to(variable.dtype),
+            )
+            graph_variable_count = variable.new_zeros(graph.graph_count)
+            graph_variable_count.index_add_(
+                0,
+                graph.variable_graph_indices,
+                variable.new_ones(len(variable)),
+            )
+            graph_selected = (
+                graph_selected / graph_variable_count.clamp_min(1.0)
+            )
+            graph_residual = residual.new_zeros(graph.graph_count)
+            graph_residual.index_add_(
+                0, graph.constraint_graph_indices, residual_ratio
+            )
+            graph_constraint_count = residual.new_zeros(graph.graph_count)
+            graph_constraint_count.index_add_(
+                0,
+                graph.constraint_graph_indices,
+                residual.new_ones(len(residual)),
+            )
+            graph_residual = (
+                graph_residual / graph_constraint_count.clamp_min(1.0)
+            )
+            remaining_fraction = 1.0 - graph_selected
+            stop_logits = self.stop_action_head(torch.cat((
+                global_state,
+                variable_pool,
+                constraint_pool,
+                graph_selected[:, None],
+                graph_residual[:, None],
+                remaining_fraction[:, None],
+            ), dim=-1)).squeeze(-1)
+            return AutoregressiveActionLogits(
+                candidate_logits=candidate_logits,
+                stop_logits=stop_logits,
+            )
 
-    def imitation_loss(
-        logits: torch.Tensor,
-        graph: BatchedMILPGraph,
+        def forward(
+            self,
+            graph: BatchedMILPGraph,
+            *,
+            residual_capacity: torch.Tensor | None = None,
+            selected_mask: torch.Tensor | None = None,
+        ) -> AutoregressiveActionLogits:
+            """Return the learned candidate/STOP categorical action logits."""
+
+            return self.action_logits(
+                graph,
+                residual_capacity=residual_capacity,
+                selected_mask=selected_mask,
+            )
+
+
+    def _categorical_log_probabilities(
+        actions: AutoregressiveActionLogits,
+        valid_candidate_flags: np.ndarray | torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Normalize feasible candidates and STOP into one action distribution."""
+
+        candidate_logits = actions.candidate_logits
+        if valid_candidate_flags is not None:
+            valid = torch.as_tensor(
+                valid_candidate_flags,
+                dtype=torch.bool,
+                device=candidate_logits.device,
+            )
+            if valid.shape != candidate_logits.shape:
+                raise ValueError("valid candidate mask has the wrong shape")
+            candidate_logits = candidate_logits.masked_fill(
+                ~valid,
+                float("-inf"),
+            )
+        logits = torch.cat((
+            candidate_logits,
+            actions.stop_logits[:1],
+        ))
+        if not bool(torch.all(torch.isfinite(
+            actions.candidate_logits
+        )).item()):
+            raise ValueError("candidate logits must be finite before masking")
+        if not bool(torch.all(torch.isfinite(actions.stop_logits)).item()):
+            raise ValueError("STOP logits must be finite")
+        return nn.functional.log_softmax(logits, dim=0)
+
+
+    def _valid_candidate_flags(
+        incidence: SparsePackingIncidence,
+        state: AutoregressiveState,
+    ) -> np.ndarray:
+        """Return the exact feasible candidate action mask for one state."""
+
+        return np.asarray([
+            candidate_action_violation(incidence, state, index) is None
+            for index in range(incidence.variable_count)
+        ], dtype=np.bool_)
+
+
+    def autoregressive_set_loss(
+        model: CandidateConstraintGNN,
+        samples: Sequence[MILPGraphSample],
         *,
-        constraint_weight: float = 0.1,
-        count_weight: float = 0.1,
+        device: str | torch.device | None = None,
+        target_mode: str = "set",
     ) -> tuple[torch.Tensor, dict[str, float]]:
-        if logits.shape != graph.labels.shape:
-            raise ValueError("logits and labels have different shapes")
-        if not bool(torch.all(torch.isfinite(logits)).item()):
-            raise ValueError("logits must be finite")
-        if (
-            not math.isfinite(float(constraint_weight))
-            or float(constraint_weight) < 0.0
-        ):
-            raise ValueError("constraint_weight must be finite and non-negative")
-        if (
-            not math.isfinite(float(count_weight))
-            or float(count_weight) < 0.0
-        ):
-            raise ValueError("count_weight must be finite and non-negative")
-        graph_losses = []
-        graph_bce = []
-        graph_constraint_penalties = []
-        graph_mass_penalties = []
-        probabilities = torch.sigmoid(logits)
-        loads = graph.constraint_rhs.new_zeros(
-            graph.constraint_rhs.shape
+        """Teacher-force unordered MILP sets through candidate/STOP actions.
+
+        At each non-terminal state every still-unselected MILP candidate is a
+        correct action.  The loss maximizes their *combined* probability mass,
+        so no arbitrary MILP variable ordering is used as a label sequence.
+        """
+
+        if not samples:
+            raise ValueError("autoregressive loss requires at least one sample")
+        if target_mode not in {"set", "fixed_order"}:
+            raise ValueError(f"unknown autoregressive target mode: {target_mode}")
+        resolved_device = (
+            next(model.parameters()).device
+            if device is None
+            else torch.device(device)
         )
-        loads.index_add_(
-            0,
-            graph.edge_constraint_indices,
-            probabilities[graph.edge_variable_indices]
-            * graph.edge_features[:, 0],
-        )
-        predicted_mass = probabilities.new_zeros(graph.graph_count)
-        target_mass = probabilities.new_zeros(graph.graph_count)
-        predicted_mass.index_add_(
-            0,
-            graph.variable_graph_indices,
-            probabilities * graph.success_probabilities,
-        )
-        target_mass.index_add_(
-            0,
-            graph.variable_graph_indices,
-            graph.labels * graph.success_probabilities,
-        )
-        expected_mass_penalties = (
-            (predicted_mass - target_mass)
-            / target_mass.clamp_min(1.0)
-        ) ** 2
-        constraint_violations = torch.relu(
-            loads / graph.constraint_rhs.clamp_min(1.0) - 1.0
-        ) ** 2
-        for graph_index, (start, end) in enumerate(graph.variable_slices):
-            labels = graph.labels[start:end]
-            graph_logits = logits[start:end]
-            positives = labels.sum().clamp_min(1.0)
-            negatives = (len(labels) - labels.sum()).clamp_min(1.0)
-            positive_weight = (negatives / positives).clamp(max=50.0)
-            bce = nn.functional.binary_cross_entropy_with_logits(
-                graph_logits,
-                labels,
-                pos_weight=positive_weight,
+        graph = batch_graph_samples(samples, device=resolved_device)
+        encoded = model.encode(graph)
+        incidences = [
+            build_sparse_packing_incidence(sample) for sample in samples
+        ]
+        states = [
+            initial_autoregressive_state(incidence)
+            for incidence in incidences
+        ]
+        remaining_teacher = [
+            set(int(index) for index in np.flatnonzero(sample.labels > 0.5))
+            for sample in samples
+        ]
+        finished = [False] * len(samples)
+        sample_losses: list[list[torch.Tensor]] = [
+            [] for _ in samples
+        ]
+        sample_action_losses: list[list[torch.Tensor]] = [
+            [] for _ in samples
+        ]
+        sample_target_masses: list[list[torch.Tensor]] = [
+            [] for _ in samples
+        ]
+        sample_correct_actions = [0] * len(samples)
+        sample_action_counts = [0] * len(samples)
+        stop_losses: list[torch.Tensor] = []
+        correct_stops = 0
+        valid_candidate_total = 0
+        candidate_total = 0
+        while not all(finished):
+            residual_capacity = torch.as_tensor(
+                np.concatenate([
+                    state.residual_capacity for state in states
+                ]),
+                dtype=torch.float32,
+                device=resolved_device,
             )
-            constraint_mask = graph.constraint_graph_indices == graph_index
-            constraint_penalty = constraint_violations[
-                constraint_mask
-            ].mean()
-            expected_mass_penalty = expected_mass_penalties[graph_index]
-            graph_bce.append(bce)
-            graph_constraint_penalties.append(constraint_penalty)
-            graph_mass_penalties.append(expected_mass_penalty)
-            graph_losses.append(
-                bce
-                + float(constraint_weight) * constraint_penalty
-                + float(count_weight) * expected_mass_penalty
+            selected_mask = torch.as_tensor(
+                np.concatenate([
+                    state.selected_mask for state in states
+                ]),
+                dtype=torch.bool,
+                device=resolved_device,
             )
-        loss = torch.stack(graph_losses).mean()
-        bce = torch.stack(graph_bce).mean()
-        constraint_penalty = torch.stack(
-            graph_constraint_penalties
-        ).mean()
-        expected_mass_penalty = torch.stack(graph_mass_penalties).mean()
-        return loss, {
-            "bce": float(bce.detach()),
-            "constraint_penalty": float(constraint_penalty.detach()),
-            "expected_mass_penalty": float(expected_mass_penalty.detach()),
-            # Compatibility alias for existing result parsers.
-            "count_penalty": float(expected_mass_penalty.detach()),
+            batch_actions = model.action_logits(
+                graph,
+                encoded=encoded,
+                residual_capacity=residual_capacity,
+                selected_mask=selected_mask,
+            )
+            for graph_index, (
+                sample,
+                incidence,
+                (start, end),
+            ) in enumerate(zip(
+                samples, incidences, graph.variable_slices
+            )):
+                if finished[graph_index]:
+                    continue
+                state = states[graph_index]
+                actions = AutoregressiveActionLogits(
+                    candidate_logits=batch_actions.candidate_logits[start:end],
+                    stop_logits=batch_actions.stop_logits[
+                        graph_index:graph_index + 1
+                    ],
+                )
+                valid_candidates = _valid_candidate_flags(
+                    incidence,
+                    state,
+                )
+                valid_candidate_total += int(np.sum(valid_candidates))
+                candidate_total += len(valid_candidates)
+                log_probabilities = _categorical_log_probabilities(
+                    actions,
+                    valid_candidates,
+                )
+                targets = remaining_teacher[graph_index]
+                if targets:
+                    invalid_targets = sorted(
+                        index for index in targets
+                        if not valid_candidates[index]
+                    )
+                    if invalid_targets:
+                        raise ValueError(
+                            "MILP teacher set contains an invalid action: "
+                            f"{invalid_targets}"
+                        )
+                    supervised_targets = (
+                        sorted(targets)
+                        if target_mode == "set"
+                        else [min(targets)]
+                    )
+                    target_indices = torch.as_tensor(
+                        supervised_targets,
+                        dtype=torch.long,
+                        device=resolved_device,
+                    )
+                    target_log_mass = torch.logsumexp(
+                        log_probabilities[target_indices], dim=0
+                    )
+                    step_loss = -target_log_mass
+                    sample_losses[graph_index].append(step_loss)
+                    sample_action_losses[graph_index].append(step_loss)
+                    sample_target_masses[graph_index].append(
+                        target_log_mass.exp()
+                    )
+                    predicted_action = int(
+                        torch.argmax(log_probabilities).item()
+                    )
+                    sample_correct_actions[graph_index] += int(
+                        predicted_action in supervised_targets
+                    )
+                    sample_action_counts[graph_index] += 1
+
+                    # Follow the model's preferred correct action.  This is a
+                    # dynamic teacher oracle, not a pre-generated sequence.
+                    teacher_logits = actions.candidate_logits[target_indices]
+                    preferred_offset = int(torch.argmax(
+                        teacher_logits.detach()
+                    ).item())
+                    chosen_teacher = int(
+                        target_indices[preferred_offset].item()
+                    )
+                    states[graph_index] = apply_candidate_action(
+                        incidence, state, chosen_teacher
+                    )
+                    targets.remove(chosen_teacher)
+                    continue
+
+                stop_loss = -log_probabilities[-1]
+                sample_losses[graph_index].append(stop_loss)
+                stop_losses.append(stop_loss)
+                correct_stops += int(
+                    int(torch.argmax(log_probabilities).item())
+                    == len(sample.variables)
+                )
+                finished[graph_index] = True
+
+        graph_losses = [
+            torch.stack(losses).mean() for losses in sample_losses
+        ]
+        teacher_loss = torch.stack(graph_losses).mean()
+        graph_action_losses = [
+            (
+                torch.stack(losses).mean()
+                if losses else teacher_loss.new_zeros(())
+            )
+            for losses in sample_action_losses
+        ]
+        graph_target_masses = [
+            (
+                torch.stack(values).mean()
+                if values else teacher_loss.new_ones(())
+            )
+            for values in sample_target_masses
+        ]
+        mean_action_loss = torch.stack(graph_action_losses).mean()
+        mean_stop_loss = torch.stack(stop_losses).mean()
+        mean_target_mass = torch.stack(graph_target_masses).mean()
+        return teacher_loss, {
+            "autoregressive_nll": float(teacher_loss.detach()),
+            "candidate_set_nll": float(mean_action_loss.detach()),
+            "stop_nll": float(mean_stop_loss.detach()),
+            "valid_candidate_fraction": (
+                valid_candidate_total / max(candidate_total, 1)
+            ),
+            "masked_candidate_fraction": (
+                1.0 - valid_candidate_total / max(candidate_total, 1)
+            ),
+            "mean_target_probability_mass": float(
+                mean_target_mass.detach()
+            ),
+            "candidate_action_accuracy": (
+                float(np.mean([
+                    correct / max(count, 1)
+                    for correct, count in zip(
+                        sample_correct_actions, sample_action_counts
+                    )
+                ]))
+            ),
+            "stop_accuracy": correct_stops / len(samples),
+            "mean_teacher_action_count": float(np.mean([
+                int(np.sum(sample.labels > 0.5)) for sample in samples
+            ])),
         }
 
 
+    def autoregressive_rollout(
+        model: CandidateConstraintGNN,
+        sample: CandidateConstraintGraph | MILPGraphSample,
+        *,
+        device: str | torch.device | None = None,
+    ) -> AutoregressiveRollout:
+        """Emit a discrete plan from the dynamically feasible action space."""
+
+        resolved_device = (
+            next(model.parameters()).device
+            if device is None
+            else torch.device(device)
+        )
+        graph = batch_graph_samples((sample,), device=resolved_device)
+        incidence = build_sparse_packing_incidence(sample)
+        state = initial_autoregressive_state(incidence)
+        action_indices: list[int] = []
+        initial_candidate_probabilities: np.ndarray | None = None
+        initial_stop_probability: float | None = None
+        stopped_by_model = False
+        with torch.no_grad():
+            encoded = model.encode(graph)
+            for _ in range(len(sample.variables) + 1):
+                actions = model.action_logits(
+                    graph,
+                    encoded=encoded,
+                    residual_capacity=torch.as_tensor(
+                        state.residual_capacity,
+                        dtype=torch.float32,
+                        device=resolved_device,
+                    ),
+                    selected_mask=torch.as_tensor(
+                        state.selected_mask,
+                        dtype=torch.bool,
+                        device=resolved_device,
+                    ),
+                )
+                valid_candidates = _valid_candidate_flags(incidence, state)
+                log_probabilities = _categorical_log_probabilities(
+                    actions,
+                    valid_candidates,
+                )
+                probabilities = log_probabilities.exp()
+                if initial_candidate_probabilities is None:
+                    initial_candidate_probabilities = (
+                        probabilities[:-1].cpu().numpy()
+                    )
+                    initial_stop_probability = float(probabilities[-1].item())
+                action_index = int(torch.argmax(log_probabilities).item())
+                if action_index == len(sample.variables):
+                    state = apply_stop_action(state)
+                    stopped_by_model = True
+                    break
+                action_indices.append(action_index)
+                violation = candidate_action_violation(
+                    incidence, state, action_index
+                )
+                if violation is not None:
+                    raise RuntimeError(
+                        "feasibility mask admitted an invalid action: "
+                        f"{violation}"
+                    )
+                state = apply_candidate_action(
+                    incidence, state, action_index
+                )
+            else:
+                raise RuntimeError(
+                    "masked autoregressive policy failed to emit STOP"
+                )
+        selection = selection_from_state(sample, incidence, state)
+        if not selection.feasible:
+            raise RuntimeError(
+                "masked autoregressive policy produced an infeasible state"
+            )
+        if initial_candidate_probabilities is None:
+            raise RuntimeError("autoregressive policy emitted no action logits")
+        return AutoregressiveRollout(
+            selection=selection,
+            action_indices=tuple(action_indices),
+            stopped_by_model=stopped_by_model,
+            initial_candidate_probabilities=initial_candidate_probabilities,
+            initial_stop_probability=float(initial_stop_probability),
+            invalid_action_index=None,
+            invalid_action_reason=None,
+        )
+
+
 else:
+
+    class CandidateConstraintGNN:  # pragma: no cover
+        def __init__(self, *args, **kwargs):
+            raise ModuleNotFoundError(
+                "PyTorch is required for the autoregressive GNN"
+            )
 
     def batch_graph_samples(*args, **kwargs):  # pragma: no cover
         raise ModuleNotFoundError(
             "PyTorch is required for MILP imitation; run in the project "
             "Conda environment"
+        )
+
+    def autoregressive_set_loss(*args, **kwargs):  # pragma: no cover
+        raise ModuleNotFoundError(
+            "PyTorch is required for the autoregressive GNN"
+        )
+
+    def autoregressive_rollout(*args, **kwargs):  # pragma: no cover
+        raise ModuleNotFoundError(
+            "PyTorch is required for the autoregressive GNN"
         )
