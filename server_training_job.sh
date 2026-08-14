@@ -91,7 +91,7 @@ usage() {
 }
 
 ensure_directories() {
-    mkdir -p "${STATE_DIR}"
+    mkdir -p "${STATE_DIR}" "${RESULT_BASE}"
 }
 
 read_pid() {
