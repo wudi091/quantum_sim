@@ -7,7 +7,7 @@ from statistics import fmean
 from time import perf_counter
 from typing import Mapping
 
-from algorithms.telgen.hard_decoder import HardDecoderSolution
+from algorithms.telgen.packing import PackingSolution
 from algorithms.telgen.online import (
     OnlineAttemptRecord,
     OnlineTELGENConfig,
@@ -61,13 +61,6 @@ class OnlineQCASTDecisionRecord:
     planner_seconds: float
     decision_seconds: float
 
-    @property
-    def teacher_solve_seconds(self) -> float:
-        """Compatibility hook for shared online metric aggregation."""
-
-        return self.planner_seconds
-
-
 @dataclass(frozen=True)
 class OnlineQCASTResult:
     config: OnlineQCASTConfig
@@ -109,7 +102,7 @@ class OnlineQCASTController(OnlineTELGENController):
         start_window_end_slot: int,
         eligible_request_ids: tuple[str, ...],
         reserved_usage: Mapping[tuple[str, int], int],
-    ) -> tuple[QCASTPlanningRecord | None, HardDecoderSolution | None]:
+    ) -> tuple[QCASTPlanningRecord | None, PackingSolution | None]:
         if not eligible_request_ids:
             return None, None
         eligible = set(eligible_request_ids)
@@ -149,7 +142,7 @@ class OnlineQCASTController(OnlineTELGENController):
         reserved = self._reserved_usage(self.spec.horizon)
         decision_started = perf_counter()
         planner_started = perf_counter()
-        record, decoded = self._solve_qcast_decision(
+        record, solution = self._solve_qcast_decision(
             slot,
             start_window_end,
             eligible,
@@ -158,15 +151,19 @@ class OnlineQCASTController(OnlineTELGENController):
         planner_seconds = perf_counter() - planner_started
         selected_ids: tuple[str, ...] = ()
         selected_count = 0
-        if decoded is not None:
-            self._register_attempts(slot, decoded)
+        if solution is not None:
+            self._register_selected_variables(
+                slot,
+                solution.selected_variables,
+                solution.request_ids,
+            )
             selected_ids = tuple(
                 variable.variable_id
-                for variable in decoded.selected_variables
+                for variable in solution.selected_variables
             )
-            selected_count = decoded.completed_request_count
+            selected_count = solution.completed_request_count
         selected_requests = (
-            set() if decoded is None else set(decoded.selected_by_request)
+            set() if solution is None else set(solution.selected_by_request)
         )
         decision_seconds = perf_counter() - decision_started
         self._decisions.append(OnlineQCASTDecisionRecord(
@@ -195,7 +192,7 @@ class OnlineQCASTController(OnlineTELGENController):
             ),
             selected_request_count=selected_count,
             selected_total_completion_latency=(
-                0.0 if decoded is None else decoded.total_completion_latency
+                0.0 if solution is None else solution.total_completion_latency
             ),
             planner_seconds=planner_seconds,
             decision_seconds=decision_seconds,
@@ -206,7 +203,6 @@ class OnlineQCASTController(OnlineTELGENController):
         settlements: tuple[RequestSettlement, ...],
     ) -> dict[str, float]:
         metrics = super()._metrics(settlements)
-        metrics.pop("mean_teacher_solve_seconds")
         planner_times = [
             decision.planner_seconds
             for decision in self._decisions

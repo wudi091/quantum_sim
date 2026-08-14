@@ -28,13 +28,13 @@ from .milp_imitation import (
     MILPGraphSample,
     autoregressive_set_loss,
 )
-from .hard_decoder import greedy_feasible_projection
+from .packing import greedy_feasible_projection
 from .online_milp_dataset import (
     load_online_milp_dataset,
     samples_for_episode_seeds,
 )
 from .milp_oracle import has_numerically_zero_mip_gap
-from .train_milp_imitation import _evaluate, _seed_everything
+from .gnn_evaluation import evaluate_gnn, seed_everything
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -281,7 +281,7 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError("batch sizes must be positive")
     if args.random_baseline_trials < 1:
         raise ValueError("random-baseline-trials must be positive")
-    _seed_everything(args.training_seed)
+    seed_everything(args.training_seed)
     device = _resolve_device(args.device)
     loaded = load_online_milp_dataset(args.dataset)
     train_seeds, validation_seeds, test_seeds = _resolve_episode_split(
@@ -319,21 +319,21 @@ def main(argv: list[str] | None = None) -> int:
         weight_decay=args.weight_decay,
     )
     before = {
-        "train": _evaluate(
+        "train": evaluate_gnn(
             model,
             train_samples,
             device=device,
             sample_batch_size=args.evaluation_batch_size,
             target_mode=args.target_mode,
         ),
-        "validation": _evaluate(
+        "validation": evaluate_gnn(
             model,
             validation_samples,
             device=device,
             sample_batch_size=args.evaluation_batch_size,
             target_mode=args.target_mode,
         ),
-        "test": _evaluate(
+        "test": evaluate_gnn(
             model,
             test_samples,
             device=device,
@@ -403,7 +403,7 @@ def main(argv: list[str] | None = None) -> int:
 
         validation_loss = None
         if epoch == 1 or epoch % 5 == 0 or epoch == args.epochs:
-            validation = _evaluate(
+            validation = evaluate_gnn(
                 model,
                 validation_samples,
                 device=device,
@@ -460,21 +460,21 @@ def main(argv: list[str] | None = None) -> int:
     training_seconds = perf_counter() - started
     model.load_state_dict(best_state)
     after = {
-        "train": _evaluate(
+        "train": evaluate_gnn(
             model,
             train_samples,
             device=device,
             sample_batch_size=args.evaluation_batch_size,
             target_mode=args.target_mode,
         ),
-        "validation": _evaluate(
+        "validation": evaluate_gnn(
             model,
             validation_samples,
             device=device,
             sample_batch_size=args.evaluation_batch_size,
             target_mode=args.target_mode,
         ),
-        "test": _evaluate(
+        "test": evaluate_gnn(
             model,
             test_samples,
             device=device,

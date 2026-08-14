@@ -1,5 +1,5 @@
-"""Q-CAST adapter for the shared SeQUeNCe routing environment."""
+"""Q-CAST online baseline for the shared SeQUeNCe environment."""
 
-from .legacy_planner import QCASTPlanner
+from .online import OnlineQCASTConfig, run_online_qcast
 
-__all__ = ["QCASTPlanner"]
+__all__ = ["OnlineQCASTConfig", "run_online_qcast"]

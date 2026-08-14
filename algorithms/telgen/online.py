@@ -35,11 +35,8 @@ from qnet_core.spec import EpisodeSpec
 
 from .dataset import (
     PlanningBatchProblem,
-    TeacherBatchRecord,
     build_planning_batch_problem,
-    solve_planning_batch_problem,
 )
-from .hard_decoder import HardConstraintDecoder, HardDecoderSolution
 from .milp_imitation import (
     CONSTRAINT_FEATURE_NAMES,
     GLOBAL_FEATURE_NAMES,
@@ -57,7 +54,6 @@ from .gnn_policy import OnlineGNNPolicy
 from .physical_validation import (
     compile_selected_schedule,
 )
-from .teacher import ConstructionAwareLPTeacher
 from .time_expansion import TimeExpandedCandidate
 
 
@@ -70,10 +66,9 @@ class OnlineTELGENConfig:
     construction_kinds: tuple[str, ...] = ("left_deep", "balanced")
     swap_tree_count: int | None = None
     purification_kinds: tuple[str, ...] = ("none", "elementary_once")
-    decision_backend: str = "lp_decoder"
+    decision_backend: str = "milp_teacher"
     gnn_checkpoint: str | None = None
     gnn_device: str = "auto"
-    teacher_solver_backend: str = "trajectory_ipm"
     milp_time_limit_seconds: float = 60.0
     milp_relative_gap: float = 0.0
 
@@ -88,15 +83,9 @@ class OnlineTELGENConfig:
             raise ValueError("swap_tree_count must be positive")
         if not self.purification_kinds:
             raise ValueError("at least one purification kind is required")
-        if self.decision_backend not in {
-            "lp_decoder", "milp_teacher", "gnn"
-        }:
+        if self.decision_backend not in {"milp_teacher", "gnn"}:
             raise ValueError(
                 f"unknown online decision backend: {self.decision_backend}"
-            )
-        if self.teacher_solver_backend not in {"trajectory_ipm", "highs_ipm"}:
-            raise ValueError(
-                f"unknown teacher solver backend: {self.teacher_solver_backend}"
             )
         if self.milp_time_limit_seconds <= 0:
             raise ValueError("milp_time_limit_seconds must be positive")
@@ -129,19 +118,16 @@ class OnlineDecisionRecord:
     variable_count: int
     candidate_rejection_count: int
     reserved_resource_slot_count: int
-    teacher_completed_mass: float
-    decoded_request_count: int
-    decoded_expected_completed_mass: float
-    decoder_search_strategy: str
-    teacher_total_completion_latency: float
-    teacher_stage_one_iterations: int
-    teacher_stage_two_iterations: int
-    teacher_solve_seconds: float
+    selected_request_count: int
+    selected_expected_completed_mass: float
+    selection_strategy: str
+    selected_expected_completion_latency: float
+    planner_seconds: float
     decision_seconds: float
-    decision_backend: str = "lp_decoder"
+    decision_backend: str = "milp_teacher"
     policy_inference_seconds: float = 0.0
-    teacher_stage_one_mip_gap: float | None = None
-    teacher_stage_two_mip_gap: float | None = None
+    milp_stage_one_mip_gap: float | None = None
+    milp_stage_two_mip_gap: float | None = None
     policy_output_feasible: bool | None = None
     policy_invalid_action_index: int | None = None
     policy_invalid_action_reason: str | None = None
@@ -234,19 +220,11 @@ class OnlineTELGENController:
         spec: EpisodeSpec,
         config: OnlineTELGENConfig | None = None,
         *,
-        teacher: ConstructionAwareLPTeacher | None = None,
-        decoder: HardConstraintDecoder | None = None,
         milp_oracle: ConstructionAwareMILPOracle | None = None,
         gnn_policy: OnlineGNNPolicy | None = None,
     ):
         self.spec = spec
         self.config = config or OnlineTELGENConfig()
-        self.teacher = teacher or ConstructionAwareLPTeacher(
-            solver_backend=self.config.teacher_solver_backend
-        )
-        self.decoder = decoder or HardConstraintDecoder(
-            random_seed=spec.seed
-        )
         self.milp_oracle = milp_oracle or ConstructionAwareMILPOracle(
             time_limit_seconds=self.config.milp_time_limit_seconds,
             mip_relative_gap=self.config.milp_relative_gap,
@@ -365,27 +343,6 @@ class OnlineTELGENController:
             purification_kinds=self.config.purification_kinds,
         )
 
-    def _solve_lp_decision(
-        self,
-        problem: PlanningBatchProblem | None,
-        eligible_request_ids: tuple[str, ...],
-        reserved_usage: Mapping[tuple[str, int], int],
-    ) -> tuple[TeacherBatchRecord | None, HardDecoderSolution | None]:
-        if problem is None:
-            return None, None
-        record = solve_planning_batch_problem(
-            problem,
-            teacher=self.teacher,
-        )
-        decoded = self.decoder.decode(
-            record.expansion,
-            self.capacities,
-            record.solution.final_values,
-            request_ids=eligible_request_ids,
-            reserved_usage=reserved_usage,
-        )
-        return record, decoded
-
     def _solve_milp_decision(
         self,
         problem: PlanningBatchProblem | None,
@@ -434,38 +391,6 @@ class OnlineTELGENController:
             attempt_counts=attempt_counts,
         )
         return self.gnn_policy.decide(graph)
-
-    def _solve_decision(
-        self,
-        slot: int,
-        start_window_end_slot: int,
-        eligible_request_ids: tuple[str, ...],
-        reserved_usage: Mapping[tuple[str, int], int],
-    ) -> tuple[TeacherBatchRecord | None, HardDecoderSolution | None]:
-        """Backward-compatible LP/decoder entry used by existing tests."""
-
-        problem = self._build_decision_problem(
-            slot,
-            start_window_end_slot,
-            eligible_request_ids,
-            reserved_usage,
-        )
-        return self._solve_lp_decision(
-            problem,
-            eligible_request_ids,
-            reserved_usage,
-        )
-
-    def _register_attempts(
-        self,
-        slot: int,
-        decoded: HardDecoderSolution,
-    ) -> None:
-        self._register_selected_variables(
-            slot,
-            decoded.selected_variables,
-            decoded.request_ids,
-        )
 
     def _register_selected_variables(
         self,
@@ -542,8 +467,6 @@ class OnlineTELGENController:
             eligible,
             reserved,
         )
-        record: TeacherBatchRecord | None = None
-        decoded: HardDecoderSolution | None = None
         milp_solution: DiscreteOracleSolution | None = None
         gnn_decision = None
         milp_solve_seconds = 0.0
@@ -559,14 +482,8 @@ class OnlineTELGENController:
                 running_request_ids=running,
                 attempt_counts=attempt_counts_before,
             )
-        else:
-            record, decoded = self._solve_lp_decision(
-                problem,
-                eligible,
-                reserved,
-            )
         selected_ids: tuple[str, ...] = ()
-        decoded_count = 0
+        selected_count = 0
         expected_completed_mass = 0.0
         selected_variables: tuple[TimeExpandedCandidate, ...] = ()
         if milp_solution is not None:
@@ -574,7 +491,7 @@ class OnlineTELGENController:
             selected_ids = tuple(
                 variable.variable_id for variable in selected_variables
             )
-            decoded_count = milp_solution.completed_request_count
+            selected_count = milp_solution.completed_request_count
             expected_completed_mass = (
                 milp_solution.expected_completed_request_mass
             )
@@ -618,7 +535,7 @@ class OnlineTELGENController:
         elif gnn_decision is not None:
             selected_variables = gnn_decision.selection.selected_variables
             selected_ids = gnn_decision.selection.selected_variable_ids
-            decoded_count = gnn_decision.selection.completed_request_count
+            selected_count = gnn_decision.selection.completed_request_count
             expected_completed_mass = (
                 gnn_decision.selection.expected_completed_request_mass
             )
@@ -628,14 +545,6 @@ class OnlineTELGENController:
                     selected_variables,
                     eligible,
                 )
-        elif decoded is not None:
-            self._register_attempts(slot, decoded)
-            selected_variables = decoded.selected_variables
-            selected_ids = tuple(
-                variable.variable_id for variable in selected_variables
-            )
-            decoded_count = decoded.completed_request_count
-            expected_completed_mass = decoded.expected_completed_request_mass
         elif self.config.decision_backend == "milp_teacher":
             reason = (
                 "no_eligible_requests"
@@ -680,54 +589,30 @@ class OnlineTELGENController:
                 0 if problem is None else len(problem.expansion.rejections)
             ),
             reserved_resource_slot_count=len(reserved),
-            teacher_completed_mass=(
-                milp_solution.expected_completed_request_mass
-                if milp_solution is not None
-                else (
-                    expected_completed_mass
-                    if gnn_decision is not None
-                    else (
-                        0.0
-                        if record is None
-                        else record.solution.completed_request_mass
-                    )
-                )
-            ),
-            decoded_request_count=decoded_count,
-            decoded_expected_completed_mass=(
-                expected_completed_mass
-            ),
-            decoder_search_strategy=(
+            selected_request_count=selected_count,
+            selected_expected_completed_mass=expected_completed_mass,
+            selection_strategy=(
                 "milp_exact"
                 if milp_solution is not None
                 else (
                     "gnn_autoregressive_masked"
                     if gnn_decision is not None
-                    else ("none" if decoded is None else decoded.search_strategy)
+                    else "none"
                 )
             ),
-            teacher_total_completion_latency=(
+            selected_expected_completion_latency=(
                 milp_solution.total_completion_latency
                 if milp_solution is not None
                 else (
-                    gnn_decision.selection.total_completion_latency
-                    if gnn_decision is not None
-                    else (
-                        0.0 if record is None
-                        else record.solution.total_completion_latency
-                    )
+                    0.0
+                    if gnn_decision is None
+                    else gnn_decision.selection.total_completion_latency
                 )
             ),
-            teacher_stage_one_iterations=(
-                0 if record is None else record.solution.stage_one.iterations
-            ),
-            teacher_stage_two_iterations=(
-                0 if record is None else record.solution.stage_two.iterations
-            ),
-            teacher_solve_seconds=(
+            planner_seconds=(
                 milp_solve_seconds
-                if milp_solution is not None
-                else (0.0 if record is None else record.solve_seconds)
+                if gnn_decision is None
+                else gnn_decision.inference_seconds
             ),
             decision_seconds=decision_seconds,
             decision_backend=self.config.decision_backend,
@@ -736,12 +621,12 @@ class OnlineTELGENController:
                 if gnn_decision is None
                 else gnn_decision.inference_seconds
             ),
-            teacher_stage_one_mip_gap=(
+            milp_stage_one_mip_gap=(
                 None
                 if milp_solution is None
                 else milp_solution.stage_one.mip_gap
             ),
-            teacher_stage_two_mip_gap=(
+            milp_stage_two_mip_gap=(
                 None
                 if milp_solution is None
                 else milp_solution.stage_two.mip_gap
@@ -819,18 +704,8 @@ class OnlineTELGENController:
         attempted_requests = len(self._attempt_counts)
         total_attempts = len(self._attempts)
         decision_times = [item.decision_seconds for item in self._decisions]
-        teacher_times = [
-            item.teacher_solve_seconds for item in self._decisions
-            if item.variable_count > 0
-        ]
-        stage_one_iterations = [
-            getattr(item, "teacher_stage_one_iterations", 0)
-            for item in self._decisions
-            if item.variable_count > 0
-        ]
-        stage_two_iterations = [
-            getattr(item, "teacher_stage_two_iterations", 0)
-            for item in self._decisions
+        planner_times = [
+            item.planner_seconds for item in self._decisions
             if item.variable_count > 0
         ]
         gnn_policy_decisions = [
@@ -863,8 +738,8 @@ class OnlineTELGENController:
             "mean_decision_seconds": (
                 0.0 if not decision_times else fmean(decision_times)
             ),
-            "mean_teacher_solve_seconds": (
-                0.0 if not teacher_times else fmean(teacher_times)
+            "mean_planner_seconds": (
+                0.0 if not planner_times else fmean(planner_times)
             ),
             "mean_policy_inference_seconds": (
                 0.0
@@ -881,16 +756,6 @@ class OnlineTELGENController:
             "gnn_invalid_decision_rate": (
                 len(invalid_gnn_decisions)
                 / max(len(gnn_policy_decisions), 1)
-            ),
-            "mean_teacher_stage_one_iterations": (
-                0.0
-                if not stage_one_iterations
-                else fmean(stage_one_iterations)
-            ),
-            "mean_teacher_stage_two_iterations": (
-                0.0
-                if not stage_two_iterations
-                else fmean(stage_two_iterations)
             ),
             "schedule_violation_count": float(len(self.scheduler.violations)),
             "schedule_adherence": float(not self.scheduler.violations),
@@ -953,16 +818,12 @@ def run_online_telgen(
     spec: EpisodeSpec,
     config: OnlineTELGENConfig | None = None,
     *,
-    teacher: ConstructionAwareLPTeacher | None = None,
-    decoder: HardConstraintDecoder | None = None,
     milp_oracle: ConstructionAwareMILPOracle | None = None,
     gnn_policy: OnlineGNNPolicy | None = None,
 ) -> OnlineTELGENResult:
     return OnlineTELGENController(
         spec,
         config,
-        teacher=teacher,
-        decoder=decoder,
         milp_oracle=milp_oracle,
         gnn_policy=gnn_policy,
     ).run()

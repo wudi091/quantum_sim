@@ -1,4 +1,4 @@
-"""Nominal resource--time expansion for construction-aware LP candidates.
+"""Nominal resource--time expansion for construction-aware candidates.
 
 The planning layer treats one construction operation as one synchronized
 planning round.  A construction DAG is scheduled as early as its dependencies
@@ -63,7 +63,7 @@ class NominalConstructionSchedule:
 
 @dataclass(frozen=True)
 class TimeExpandedCandidate:
-    """One LP variable: request, route, construction tree, and start slot."""
+    """One binary choice: request, route, construction tree, and start slot."""
 
     variable_id: str
     base_candidate: RouteConstructionCandidate
@@ -139,8 +139,9 @@ def normalize_reserved_usage(
 
     Online replanning keeps the ordinary ``resource_id -> capacity`` mapping
     unchanged and supplies already committed usage separately.  This helper
-    is shared by expansion, LP assembly, and hard decoding so all three layers
-    apply exactly the same residual-capacity semantics.
+    is shared by expansion, MILP assembly, autoregressive feasibility masking,
+    and physical-plan compilation so every layer applies the same residual-
+    capacity semantics.
     """
 
     capacities = {str(key): int(value) for key, value in resource_capacities.items()}
@@ -364,7 +365,7 @@ def expand_construction_candidates(
 ) -> TimeExpansionResult:
     """Shift every nominal construction schedule across its feasible starts.
 
-    Time-window and optional fidelity checks are performed before LP assembly.
+    Time-window and optional fidelity checks are performed before MILP assembly.
     Construction dependency feasibility is already encoded by the nominal DAG
     schedule.  Missing resource capacities are treated as modelling errors,
     while intrinsically over-capacity candidates are rejected deterministically.

@@ -2,10 +2,7 @@ import unittest
 
 from algorithms.qcast.online import OnlineQCASTConfig, run_online_qcast
 from algorithms.qcast.online_planner import plan_qcast_window
-from algorithms.telgen.compare_online import run_online_comparison
-from algorithms.telgen.online import run_online_telgen
 from qnet_core.resource_catalog import build_resource_capacities
-from qnet_core.scenario import ScenarioConfig
 from qnet_core.planning_spec import RequestSpec
 from qnet_core.spec import EpisodeSpec, PhysicalConfig
 
@@ -189,74 +186,6 @@ class OnlineQCASTTests(unittest.TestCase):
             result.metrics["mean_qcast_planning_seconds"],
             0.0,
         )
-
-    def test_comparison_reuses_the_exact_episode(self):
-        scenario = ScenarioConfig(
-            request_count=1,
-            min_hops=2,
-            max_hops=2,
-            ttl=6,
-            horizon=6,
-            physical=deterministic_physical(node_memory_capacity=4),
-            topology_mode="parallel_corridors",
-            parallel_corridors=2,
-        )
-        report = run_online_comparison(
-            scenario,
-            seeds=1,
-            seed_start=1303,
-            telgen_config=None,
-            qcast_config=None,
-        )
-        trial = report.trials[0]
-        self.assertEqual(trial.telgen.episode, trial.episode)
-        self.assertEqual(trial.qcast.episode, trial.episode)
-        self.assertEqual(trial.telgen.metrics["request_count"], 1.0)
-        self.assertEqual(trial.qcast.metrics["request_count"], 1.0)
-        standalone_telgen = run_online_telgen(
-            trial.episode,
-            report.telgen_config,
-        )
-        standalone_qcast = run_online_qcast(
-            trial.episode,
-            report.qcast_config,
-        )
-        self.assertEqual(standalone_telgen.attempts, trial.telgen.attempts)
-        self.assertEqual(standalone_telgen.event_trace, trial.telgen.event_trace)
-        self.assertEqual(standalone_qcast.attempts, trial.qcast.attempts)
-        self.assertEqual(standalone_qcast.event_trace, trial.qcast.event_trace)
-
-    def test_comparison_can_include_path_only_ablation(self):
-        scenario = ScenarioConfig(
-            request_count=1,
-            min_hops=2,
-            max_hops=2,
-            ttl=6,
-            horizon=6,
-            physical=deterministic_physical(node_memory_capacity=4),
-            topology_mode="parallel_corridors",
-            parallel_corridors=2,
-        )
-
-        report = run_online_comparison(
-            scenario,
-            seeds=1,
-            seed_start=1304,
-            include_path_only=True,
-        )
-
-        trial = report.trials[0]
-        self.assertIsNotNone(report.path_only_config)
-        self.assertIsNotNone(trial.path_only)
-        assert trial.path_only is not None
-        self.assertEqual(trial.path_only.episode, trial.episode)
-        self.assertEqual(
-            report.path_only_config.construction_kinds,
-            ("left_deep",),
-        )
-        self.assertIsNone(report.path_only_config.swap_tree_count)
-        self.assertIn("path_only", report.aggregate)
-
 
 if __name__ == "__main__":
     unittest.main()

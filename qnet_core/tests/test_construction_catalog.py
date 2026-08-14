@@ -5,7 +5,6 @@ from qnet_core.construction_catalog import (
     build_route_construction_catalogue,
     candidates_by_request,
 )
-from qnet_core.construction_evaluate import run_joint_plan_baseline
 from qnet_core.construction_api import OperationKind
 from qnet_core.construction_plans import (
     ordered_swap_trees,
@@ -250,41 +249,6 @@ class ConstructionCatalogueTests(unittest.TestCase):
             purification.resource_demand.get("purify:0-1"),
             1,
         )
-
-    def test_fixed_joint_plan_runs_through_sequence_and_reports_risk(self):
-        spec = self._spec()
-        candidates = build_route_construction_catalogue(spec.planning, candidate_count=1)
-        selected = _select_fixed(candidates, "left_deep")
-        result = run_joint_plan_baseline(spec, selected)
-        self.assertEqual(result.metrics["completed_requests"], 1.0)
-        self.assertEqual(result.metrics["risk_count"], 0.0)
-        self.assertGreater(len(result.event_trace), 0)
-
-    def test_baseline_packs_bsm_contention_without_corrupting_in_flight_pairs(self):
-        spec = EpisodeSpec(
-            seed=307,
-            nodes=(0, 1, 2, 3, 4),
-            edges=((0, 1), (1, 2), (2, 3), (3, 4), (0, 2), (2, 4)),
-            requests=(
-                RequestSpec("r0", 0, 4, ttl=100),
-                RequestSpec("r1", 1, 3, ttl=100),
-            ),
-            horizon=100,
-            physical=PhysicalConfig(
-                generation_probability=1.0,
-                swap_probability=1.0,
-                memory_capacity=2,
-                node_memory_capacity=6,
-                quantum_distance_m=1.0,
-            ),
-        )
-        candidates = build_route_construction_catalogue(spec.planning, candidate_count=3)
-        result = run_joint_plan_baseline(
-            spec, _select_fixed(candidates, "left_deep")
-        )
-        self.assertEqual(result.metrics["completed_requests"], 2.0)
-        self.assertEqual(result.metrics["risk_count"], 0.0)
-
 
 if __name__ == "__main__":
     unittest.main()

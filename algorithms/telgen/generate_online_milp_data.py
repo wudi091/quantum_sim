@@ -125,7 +125,6 @@ def _teacher_config_payload(config: OnlineTELGENConfig) -> dict[str, object]:
         "swap_tree_count",
         "purification_kinds",
         "decision_backend",
-        "teacher_solver_backend",
         "milp_time_limit_seconds",
         "milp_relative_gap",
     )
@@ -279,7 +278,6 @@ def main(argv: list[str] | None = None) -> int:
         swap_tree_count=args.construction_plans,
         purification_kinds=("none",),
         decision_backend="milp_teacher",
-        teacher_solver_backend="highs_ipm",
         milp_time_limit_seconds=args.time_limit_seconds,
         milp_relative_gap=0.0,
     )

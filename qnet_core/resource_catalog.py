@@ -9,7 +9,7 @@ def build_resource_capacities(spec: EpisodeSpec) -> dict[str, int]:
     """Build the opaque capacity catalogue exposed to planning components.
 
     The returned keys deliberately contain no SeQUeNCe objects.  Both the
-    construction executor and the LP teacher consume this same catalogue, so
+    construction executor and the MILP teacher consume this same catalogue, so
     their resource limits cannot silently drift apart.
     """
 

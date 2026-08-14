@@ -23,9 +23,9 @@ from algorithms.telgen.milp_imitation import (
 )
 from algorithms.telgen.milp_oracle import ConstructionAwareMILPOracle
 from algorithms.telgen.time_expansion import expand_construction_candidates
-from algorithms.telgen.train_milp_imitation import (
-    _build_overfit_gate,
-    _evaluate,
+from algorithms.telgen.gnn_evaluation import (
+    build_overfit_gate,
+    evaluate_gnn,
 )
 from algorithms.telgen.train_online_milp_gnn import (
     _random_feasible_baseline,
@@ -457,7 +457,7 @@ class MILPImitationTests(unittest.TestCase):
                 parameter.zero_()
             model.candidate_action_head.layers[-1].bias.fill_(10.0)
             model.stop_action_head.layers[-1].bias.fill_(-10.0)
-        metrics = _evaluate(
+        metrics = evaluate_gnn(
             model,
             (self.sample,),
             device=torch.device("cpu"),
@@ -472,12 +472,12 @@ class MILPImitationTests(unittest.TestCase):
             "lexicographic_objective_optimal_rate": 1.0,
             "selection_feasible_rate": 1.0,
         }
-        self.assertTrue(_build_overfit_gate(passing)["passed"])
+        self.assertTrue(build_overfit_gate(passing)["passed"])
         for key in passing:
             with self.subTest(key=key):
                 failing = dict(passing)
                 failing[key] = 0.99
-                self.assertFalse(_build_overfit_gate(failing)["passed"])
+                self.assertFalse(build_overfit_gate(failing)["passed"])
 
     def test_rollout_masks_duplicate_and_capacity_violating_actions(self):
         model = CandidateConstraintGNN(hidden_dim=16, layers=1).eval()
@@ -676,13 +676,13 @@ class MILPImitationTests(unittest.TestCase):
         torch.manual_seed(19)
         model = CandidateConstraintGNN(hidden_dim=16, layers=2).eval()
         samples = (self.sample, self.second_sample)
-        individual = _evaluate(
+        individual = evaluate_gnn(
             model,
             samples,
             device=torch.device("cpu"),
             sample_batch_size=1,
         )
-        combined = _evaluate(
+        combined = evaluate_gnn(
             model,
             samples,
             device=torch.device("cpu"),

@@ -18,13 +18,11 @@ from typing import Mapping, Sequence
 import numpy as np
 
 from qnet_core.construction_api import OperationKind
-from qnet_core.scenario import ScenarioConfig
 from qnet_core.spec import EpisodeSpec
 
-from .milp_oracle import ConstructionAwareMILPOracle, DiscreteOracleSolution
-from .teacher import LinearProgramStage, build_stage_one_lp
+from .milp_oracle import DiscreteOracleSolution
+from .optimization_model import PackingModelStage, build_stage_one_model
 from .time_expansion import TimeExpandedCandidate
-from .validate_construction_milp import build_construction_problem
 
 
 VARIABLE_FEATURE_NAMES = (
@@ -725,7 +723,7 @@ def _variable_feature_matrix(
 
 
 def _constraint_feature_matrix(
-    lp: LinearProgramStage,
+    model: PackingModelStage,
     episode: EpisodeSpec,
     capacities: Mapping[str, int],
     *,
@@ -741,7 +739,7 @@ def _constraint_feature_matrix(
         for request_id, count in (attempt_counts or {}).items()
     }
     requests = {request.id: request for request in episode.requests}
-    row_degree = np.diff(lp.a_ub.tocsr().indptr)
+    row_degree = np.diff(model.a_ub.tocsr().indptr)
     maximum_degree = max(int(row_degree.max()), 1)
     descriptors = [
         (
@@ -752,7 +750,7 @@ def _constraint_feature_matrix(
             descriptor.request_id,
             int(row_degree[index]),
         )
-        for index, descriptor in enumerate(lp.ub_constraints)
+        for index, descriptor in enumerate(model.ub_constraints)
     ]
     descriptors.extend(
         ("request", 1.0, None, None, request_id, 0)
@@ -867,20 +865,20 @@ def build_candidate_constraint_graph(
         if not 0 < amount <= resource_capacities[resource_id]:
             raise ValueError("reserved usage must lie inside capacity")
 
-    lp = build_stage_one_lp(
+    model = build_stage_one_model(
         ordered_variables,
         resource_capacities,
         reservations,
     )
-    matrix = lp.a_ub.tocoo()
+    matrix = model.a_ub.tocoo()
     represented_resource_slots = {
         (descriptor.resource_id, int(descriptor.slot))
-        for descriptor in lp.ub_constraints
+        for descriptor in model.ub_constraints
         if descriptor.kind == "resource_time"
     }
     represented_request_ids = {
         descriptor.request_id
-        for descriptor in lp.ub_constraints
+        for descriptor in model.ub_constraints
         if descriptor.kind == "request"
     }
     extra_request_ids = tuple(
@@ -898,7 +896,7 @@ def build_candidate_constraint_graph(
         if (resource_id, slot) not in represented_resource_slots
     )
     rhs = np.concatenate((
-        np.asarray(lp.b_ub, dtype=np.float32),
+        np.asarray(model.b_ub, dtype=np.float32),
         np.ones(len(extra_request_ids), dtype=np.float32),
         np.asarray(
             [item[2] for item in extra_resource_rows], dtype=np.float32
@@ -935,13 +933,13 @@ def build_candidate_constraint_graph(
         variable_features=_variable_feature_matrix(
             ordered_variables,
             episode,
-            lp.a_ub,
+            model.a_ub,
             resource_capacities,
             decision_slot=decision_slot,
             attempt_counts=attempt_counts,
         ),
         constraint_features=_constraint_feature_matrix(
-            lp,
+            model,
             episode,
             resource_capacities,
             decision_slot=decision_slot,
@@ -995,11 +993,11 @@ def graph_sample_from_solution(
     )
     if solution_variable_ids != graph_variable_ids:
         raise ValueError("MILP solution variables are not canonically ordered")
-    if solution.stage_one_lp.variable_ids != graph_variable_ids:
+    if solution.stage_one_model.variable_ids != graph_variable_ids:
         raise ValueError("MILP graph and solution use different variables")
     if not np.allclose(
-        solution.stage_one_lp.b_ub,
-        graph.constraint_rhs[:len(solution.stage_one_lp.b_ub)],
+        solution.stage_one_model.b_ub,
+        graph.constraint_rhs[:len(solution.stage_one_model.b_ub)],
         rtol=0.0,
         atol=1e-7,
     ):
@@ -1025,34 +1023,6 @@ def graph_sample_from_solution(
         optimal_total_completion_latency=solution.total_completion_latency,
         stage_one_mip_gap=solution.stage_one.mip_gap,
         stage_two_mip_gap=solution.stage_two.mip_gap,
-    )
-
-
-def generate_milp_graph_sample(
-    seed: int,
-    scenario: ScenarioConfig,
-    *,
-    path_candidate_count: int = 4,
-    swap_tree_count: int = 5,
-    time_limit_seconds: float = 30.0,
-) -> MILPGraphSample:
-    """Generate one problem and label it with the exact two-stage MILP."""
-
-    problem = build_construction_problem(
-        seed,
-        scenario,
-        path_candidate_count=path_candidate_count,
-        swap_tree_count=swap_tree_count,
-    )
-    solution = ConstructionAwareMILPOracle(
-        time_limit_seconds=time_limit_seconds,
-        mip_relative_gap=0.0,
-    ).solve(problem.variables, problem.resource_capacities)
-    return graph_sample_from_solution(
-        seed,
-        problem.episode,
-        solution,
-        problem.resource_capacities,
     )
 
 

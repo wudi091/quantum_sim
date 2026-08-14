@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .planner_api import SwapAction
+from .command_api import SwapAction
 from .sequence_backend import SequenceBackend
 from .spec import EpisodeSpec, PhysicalConfig
 

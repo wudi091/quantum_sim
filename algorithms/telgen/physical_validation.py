@@ -1,9 +1,8 @@
-"""Compile hard-decoded TELGEN plans and validate them through SeQUeNCe."""
+"""Compile discrete plans and validate them through SeQUeNCe."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
-from statistics import fmean
+from dataclasses import replace
 from typing import Iterable, Mapping, Sequence
 
 from qnet_core.scheduled_execution import (
@@ -14,33 +13,8 @@ from qnet_core.scheduled_execution import (
 )
 from qnet_core.spec import EpisodeSpec
 
-from .hard_decoder import HardDecoderSolution, validate_decoded_selection
+from .packing import validate_packing_selection
 from .time_expansion import TimeExpandedCandidate
-
-
-@dataclass(frozen=True)
-class PhysicalValidationTrial:
-    seed: int
-    evaluation: ScheduledConstructionEvaluation
-
-    @property
-    def completed_requests(self) -> int:
-        return int(self.evaluation.metrics["completed_requests"])
-
-    @property
-    def schedule_adherent(self) -> bool:
-        return bool(self.evaluation.metrics["schedule_adherence"])
-
-
-@dataclass(frozen=True)
-class PhysicalConsistencyReport:
-    planned_selected_requests: int
-    planned_total_completion_latency_slots: float
-    trials: tuple[PhysicalValidationTrial, ...]
-    mean_completed_requests: float
-    mean_completion_retention: float | None
-    mean_censored_latency_slots: float
-    schedule_adherence_rate: float
 
 
 def _compile_selected_schedule(
@@ -105,7 +79,7 @@ def compile_selected_schedule(
     unknown = sorted(selected_requests - set(declared_requests))
     if unknown:
         raise ValueError(f"selected variable belongs to unknown request: {unknown[0]}")
-    feasibility = validate_decoded_selection(
+    feasibility = validate_packing_selection(
         selected,
         resource_capacities,
     )
@@ -121,37 +95,6 @@ def compile_selected_schedule(
     )
 
 
-def compile_decoded_schedule(
-    decoded: HardDecoderSolution,
-    *,
-    horizon_slots: int,
-) -> ConstructionBatchSchedule:
-    """Translate hard-decoder output into the simulator-neutral schedule DTO."""
-
-    if not decoded.feasibility.feasible:
-        raise ValueError("cannot compile an infeasible hard-decoder solution")
-    return _compile_selected_schedule(
-        decoded.selected_variables,
-        decoded.rejected_request_ids,
-        horizon_slots=horizon_slots,
-    )
-
-
-def evaluate_decoded_physics(
-    spec: EpisodeSpec,
-    decoded: HardDecoderSolution,
-    *,
-    physical_seed: int | None = None,
-) -> ScheduledConstructionEvaluation:
-    """Run one decoded schedule with an optional independent physical seed."""
-
-    schedule = compile_decoded_schedule(decoded, horizon_slots=spec.horizon)
-    physical_spec = spec if physical_seed is None else replace(
-        spec, seed=int(physical_seed)
-    )
-    return run_scheduled_construction_plan(physical_spec, schedule)
-
-
 def evaluate_selected_physics(
     spec: EpisodeSpec,
     selected_variables: Sequence[TimeExpandedCandidate],
@@ -159,7 +102,7 @@ def evaluate_selected_physics(
     *,
     physical_seed: int | None = None,
 ) -> ScheduledConstructionEvaluation:
-    """Run one exact MILP selection through the same SeQUeNCe boundary."""
+    """Run one discrete selection through the shared SeQUeNCe boundary."""
 
     schedule = compile_selected_schedule(
         selected_variables,
@@ -171,48 +114,3 @@ def evaluate_selected_physics(
         spec, seed=int(physical_seed)
     )
     return run_scheduled_construction_plan(physical_spec, schedule)
-
-
-def validate_decoded_physics(
-    spec: EpisodeSpec,
-    decoded: HardDecoderSolution,
-    physical_seeds: Iterable[int],
-) -> PhysicalConsistencyReport:
-    """Repeat one fixed nominal plan under independent SeQUeNCe randomness."""
-
-    seeds = tuple(int(seed) for seed in physical_seeds)
-    if not seeds:
-        raise ValueError("at least one physical seed is required")
-    if any(seed < 0 for seed in seeds):
-        raise ValueError("physical seeds must be non-negative")
-    if len(set(seeds)) != len(seeds):
-        raise ValueError("physical seeds must be unique")
-
-    trials = tuple(
-        PhysicalValidationTrial(
-            seed,
-            evaluate_decoded_physics(spec, decoded, physical_seed=seed),
-        )
-        for seed in seeds
-    )
-    planned = decoded.completed_request_count
-    mean_completed = fmean(trial.completed_requests for trial in trials)
-    retention = None if planned == 0 else mean_completed / planned
-    slot_duration_ps = spec.physical.slot_duration_ps
-    return PhysicalConsistencyReport(
-        planned_selected_requests=planned,
-        planned_total_completion_latency_slots=(
-            decoded.total_completion_latency
-        ),
-        trials=trials,
-        mean_completed_requests=mean_completed,
-        mean_completion_retention=retention,
-        mean_censored_latency_slots=fmean(
-            trial.evaluation.metrics["mean_censored_latency_ps"]
-            / slot_duration_ps
-            for trial in trials
-        ),
-        schedule_adherence_rate=fmean(
-            float(trial.schedule_adherent) for trial in trials
-        ),
-    )

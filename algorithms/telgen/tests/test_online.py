@@ -15,7 +15,7 @@ from algorithms.telgen import (
     run_online_telgen,
     save_online_milp_dataset,
 )
-from algorithms.telgen.hard_decoder import validate_decoded_selection
+from algorithms.telgen.packing import validate_packing_selection
 from algorithms.telgen.milp_imitation import CONSTRAINT_FEATURE_NAMES
 from algorithms.telgen.milp_imitation import (
     AUTOREGRESSIVE_ARCHITECTURE,
@@ -59,7 +59,6 @@ class OnlineTELGENTests(unittest.TestCase):
     def _save_gnn_checkpoint(
         path,
         *,
-        legacy_decode_threshold=None,
         force_repeated_candidate=False,
     ):
         torch.manual_seed(7)
@@ -82,8 +81,6 @@ class OnlineTELGENTests(unittest.TestCase):
                 "global": list(GLOBAL_FEATURE_NAMES),
             },
         }
-        if legacy_decode_threshold is not None:
-            payload["decode_threshold"] = legacy_decode_threshold
         torch.save(payload, path)
 
     def test_default_controller_uses_periodic_decisions(self):
@@ -162,8 +159,8 @@ class OnlineTELGENTests(unittest.TestCase):
         )
         first = result.decisions[0]
         second = result.decisions[1]
-        self.assertEqual(first.decoded_request_count, 1)
-        self.assertAlmostEqual(first.decoded_expected_completed_mass, 1.0)
+        self.assertEqual(first.selected_request_count, 1)
+        self.assertAlmostEqual(first.selected_expected_completed_mass, 1.0)
         self.assertEqual(second.running_request_ids, ("r0",))
         self.assertGreater(second.reserved_resource_slot_count, 0)
         r1_attempt = next(item for item in result.attempts if item.request_id == "r1")
@@ -285,14 +282,14 @@ class OnlineTELGENTests(unittest.TestCase):
                 reserved.get((resource_id, slot)) == 1
                 for slot in range(2, 14)
             ))
-        _, decoded = controller._solve_decision(
+        problem = controller._build_decision_problem(
             2,
             14,
             ("a_new",),
             reserved,
         )
-        self.assertEqual(decoded.completed_request_count, 0)
-        self.assertEqual(decoded.selected_variables, ())
+        solution, _ = controller._solve_milp_decision(problem)
+        self.assertIsNone(solution)
 
     def test_plan_may_complete_after_the_next_decision_boundary(self):
         spec = EpisodeSpec(
@@ -480,7 +477,7 @@ class OnlineTELGENTests(unittest.TestCase):
             )
             if label > 0.5
         )
-        self.assertTrue(validate_decoded_selection(
+        self.assertTrue(validate_packing_selection(
             selected,
             sample.graph.resource_capacities,
             sample.graph.reserved_usage,
@@ -643,7 +640,7 @@ class OnlineTELGENTests(unittest.TestCase):
         ))
         gnn_decisions = [
             item for item in result.decisions
-            if item.decoder_search_strategy == "gnn_autoregressive_masked"
+            if item.selection_strategy == "gnn_autoregressive_masked"
         ]
         self.assertTrue(gnn_decisions)
         self.assertTrue(all(
@@ -687,7 +684,7 @@ class OnlineTELGENTests(unittest.TestCase):
                     checkpoint, device="cpu"
                 )
 
-    def test_gnn_policy_loads_new_checkpoint_without_decode_threshold(self):
+    def test_gnn_policy_loads_current_checkpoint(self):
         with TemporaryDirectory() as directory:
             checkpoint = f"{directory}/policy.pt"
             self._save_gnn_checkpoint(checkpoint)
@@ -695,19 +692,6 @@ class OnlineTELGENTests(unittest.TestCase):
                 checkpoint, device="cpu"
             )
         self.assertIsInstance(policy, OnlineGNNPolicy)
-
-    def test_gnn_policy_ignores_legacy_decode_threshold(self):
-        with TemporaryDirectory() as directory:
-            checkpoint = f"{directory}/policy.pt"
-            self._save_gnn_checkpoint(
-                checkpoint,
-                legacy_decode_threshold=0.99,
-            )
-            policy = OnlineGNNPolicy.from_checkpoint(
-                checkpoint, device="cpu"
-            )
-        self.assertIsInstance(policy, OnlineGNNPolicy)
-
 
 if __name__ == "__main__":
     unittest.main()

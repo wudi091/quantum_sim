@@ -12,9 +12,9 @@ from dataclasses import dataclass, replace
 from typing import Mapping
 
 from algorithms.telgen.fidelity import candidate_fidelity_estimate_map
-from algorithms.telgen.hard_decoder import (
-    HardDecoderSolution,
-    validate_decoded_selection,
+from algorithms.telgen.packing import (
+    PackingSolution,
+    validate_packing_selection,
 )
 from algorithms.telgen.time_expansion import (
     TimeExpandedCandidate,
@@ -26,9 +26,10 @@ from qnet_core.construction_catalog import (
     RouteConstructionCandidate,
     build_route_construction_catalogue,
 )
-from qnet_core.qcast_paper.ext import expected_throughput
 from qnet_core.resource_catalog import build_resource_capacities
 from qnet_core.spec import EpisodeSpec, PhysicalConfig
+
+from .expected_throughput import expected_throughput
 
 
 @dataclass(frozen=True)
@@ -38,7 +39,7 @@ class QCASTPlanningRecord:
     candidates: tuple[RouteConstructionCandidate, ...]
     expansion: TimeExpansionResult
     candidate_scores: tuple[tuple[str, float], ...]
-    solution: HardDecoderSolution
+    solution: PackingSolution
 
     @property
     def score_by_candidate(self) -> dict[str, float]:
@@ -103,7 +104,7 @@ def _greedy_qcast_solution(
     capacities: Mapping[str, int],
     request_ids: tuple[str, ...],
     reserved_usage: Mapping[tuple[str, int], int] | None,
-) -> HardDecoderSolution:
+) -> PackingSolution:
     variables = tuple(sorted(
         expansion.variables,
         key=lambda variable: variable.variable_id,
@@ -151,7 +152,7 @@ def _greedy_qcast_solution(
         selected,
         key=lambda variable: variable.variable_id,
     ))
-    feasibility = validate_decoded_selection(
+    feasibility = validate_packing_selection(
         selected_variables,
         capacities,
         reserved_usage,
@@ -161,17 +162,13 @@ def _greedy_qcast_solution(
             "Q-CAST greedy packing produced an infeasible selection: "
             + feasibility.violations[0]
         )
-    return HardDecoderSolution(
+    return PackingSolution(
         variables=variables,
         scores=tuple(normalized_scores[variable.variable_id] for variable in variables),
         request_ids=request_ids,
         selected_variables=selected_variables,
         feasibility=feasibility,
-        beam_width=1,
-        random_restarts=0,
-        local_search_iterations=0,
-        search_strategy="qcast_ext_greedy",
-        support_variable_count=0,
+        strategy="qcast_ext_greedy",
     )
 
 

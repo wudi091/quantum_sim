@@ -1,1 +1,1 @@
-"""Tests for the TELGEN-style LP teacher."""
+"""Tests for construction-aware MILP supervision and GNN planning."""

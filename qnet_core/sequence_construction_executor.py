@@ -23,7 +23,7 @@ from .construction_api import (
     OperationKind,
     ResourceDemand,
 )
-from .construction_decoder import CapacityFeasibilityOracle
+from .capacity_feasibility import CapacityFeasibilityOracle
 from .construction_repair import generate_repair_options
 from .sequence_backend import (
     PreparedGeneration,

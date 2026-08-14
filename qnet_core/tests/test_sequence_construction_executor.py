@@ -10,7 +10,7 @@ from qnet_core.construction_api import (
     OperationKind,
     ResourceDemand,
 )
-from qnet_core.construction_decoder import CapacityFeasibilityOracle
+from qnet_core.capacity_feasibility import CapacityFeasibilityOracle
 from qnet_core.construction_catalog import build_route_construction_catalogue
 from qnet_core.construction_metrics import execution_event_metrics
 from qnet_core.construction_plans import balanced_path_dag, left_deep_path_dag

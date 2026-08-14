@@ -33,8 +33,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--construction-plans", type=int, default=5)
     parser.add_argument(
         "--decision-backend",
-        choices=("lp_decoder", "milp_teacher", "gnn"),
-        default="lp_decoder",
+        choices=("milp_teacher", "gnn"),
+        default="milp_teacher",
     )
     parser.add_argument("--gnn-checkpoint")
     parser.add_argument(
@@ -132,36 +132,26 @@ def main(argv: list[str] | None = None) -> int:
     spec = make_episode(scenario, args.seed)
     result = run_online_telgen(
         spec,
-        (
-            OnlineTELGENConfig(
+        OnlineTELGENConfig(
+            decision_interval=args.decision_interval,
+            path_candidate_count=args.paths,
+            construction_kinds=(),
+            swap_tree_count=args.construction_plans,
+            purification_kinds=("none",),
+            decision_backend="milp_teacher",
+            milp_time_limit_seconds=args.milp_time_limit_seconds,
+        )
+        if args.decision_backend == "milp_teacher"
+        else OnlineTELGENConfig(
                 decision_interval=args.decision_interval,
                 path_candidate_count=args.paths,
                 construction_kinds=(),
                 swap_tree_count=args.construction_plans,
                 purification_kinds=("none",),
-                decision_backend="milp_teacher",
-                milp_time_limit_seconds=args.milp_time_limit_seconds,
-            )
-            if args.decision_backend == "milp_teacher"
-            else (
-                OnlineTELGENConfig(
-                    decision_interval=args.decision_interval,
-                    path_candidate_count=args.paths,
-                    construction_kinds=(),
-                    swap_tree_count=args.construction_plans,
-                    purification_kinds=("none",),
-                    decision_backend="gnn",
-                    gnn_checkpoint=args.gnn_checkpoint,
-                    gnn_device=args.gnn_device,
-                )
-                if args.decision_backend == "gnn"
-                else OnlineTELGENConfig(
-                    decision_interval=args.decision_interval,
-                    path_candidate_count=args.paths,
-                    decision_backend="lp_decoder",
-                )
-            )
-        ),
+                decision_backend="gnn",
+                gnn_checkpoint=args.gnn_checkpoint,
+                gnn_device=args.gnn_device,
+            ),
     )
     paths = save_online_result(result, args.output)
     dataset_paths = None

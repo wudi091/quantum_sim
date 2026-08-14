@@ -206,7 +206,6 @@ def main(argv: list[str] | None = None) -> int:
         construction_kinds=construction_kinds,
         swap_tree_count=swap_tree_count,
         purification_kinds=("none",),
-        teacher_solver_backend="highs_ipm",
     )
     gnn_config = OnlineTELGENConfig(
         **common,

@@ -13,7 +13,7 @@ from typing import Mapping
 from .gnn_policy import OnlineGNNPolicy, torch
 from .milp_oracle import has_numerically_zero_mip_gap
 from .online_milp_dataset import load_online_milp_dataset
-from .train_milp_imitation import _evaluate
+from .gnn_evaluation import evaluate_gnn
 from .train_online_milp_gnn import _random_feasible_baseline
 
 
@@ -107,7 +107,7 @@ def evaluate_frozen_checkpoint(
             f"{overlap[0]}"
         )
 
-    metrics = _evaluate(
+    metrics = evaluate_gnn(
         policy.model,
         loaded.samples,
         device=policy.device,

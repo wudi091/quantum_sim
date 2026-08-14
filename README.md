@@ -1,206 +1,107 @@
-# Quantum Resource-Graph Routing
+# 构造感知量子路由仿真
 
-This repository provides a shared SeQUeNCe-backed quantum-network routing
-environment and two planning-only baselines: Q-DDCA and Q-CAST.
-
-The only active research plan is documented in
-[`TELGEN_CONSTRUCTION_AWARE_ROUTING_PLAN.md`](TELGEN_CONSTRUCTION_AWARE_ROUTING_PLAN.md):
-a generalizable construction-aware planner that jointly selects a path and an
-entanglement-construction plan. The planning-only LP teacher, hard decoder,
-rolling SeQUeNCe physical validation, exact MILP label generator, and paired
-Q-CAST comparison are implemented. The learned policy is a candidate--constraint
-autoregressive GNN that directly emits candidate plans or STOP. Exact packing
-constraints define a dynamic feasible action mask before each categorical
-decision; the GNN chooses among feasible candidates without post-hoc repair or
-local search.
-
-## Repository scope
-
-- `qnet_core`: simulator-neutral planning contracts, scenario generation,
-  construction-plan execution, metrics, and the SeQUeNCe physical adapter.
-- `algorithms/qddca`: Q-DDCA planning adapter and reproduction utilities.
-- `algorithms/qcast`: Q-CAST planning adapter.
-- `QDDCA`: upstream Q-DDCA reference source.
-- `QCAST`: upstream Q-CAST reference source.
-
-Q-DDCA and Q-CAST are retained as comparison baselines. They are not part of
-the proposed TELGEN method.
-
-## Layer boundary
-
-The planning layer receives immutable, simulator-neutral snapshots and returns
-plan identifiers or construction plans. It cannot mutate the backend or
-advance physical time.
-
-SeQUeNCe exclusively owns:
-
-- elementary entanglement generation;
-- quantum memories and expiration;
-- entanglement swapping;
-- fidelity and decoherence;
-- stochastic physical outcomes;
-- physical event time.
+当前仓库只保留一条研究主链：
 
 ```text
-requests + topology
-        |
-        v
-planning layer  --->  neutral plan interface  --->  SeQUeNCe physical layer
-        ^                                                |
-        +---------------- neutral results ---------------+
+在线精确 MILP 标签
+        ↓
+可行性掩码自回归 GNN
+        ↓
+中性离散构造计划
+        ↓
+SeQUeNCe 物理执行
+        ↓
+与 Q-CAST 在线基线比较
 ```
 
-Optimization iterations and SeQUeNCe physical events are separate timelines.
+研究对象是多请求场景下的联合路径与交换构造计划选择。MILP 先最大化
+期望完成量，再在最优完成量下最小化期望完成延迟；GNN 学习 MILP 的离散
+选择集合，在线推理时不调用 LP/MILP，也不使用事后硬解码或局部搜索。
 
-## Environment
+## 目录
 
-SeQUeNCe 1.0 requires Python 3.12 or newer.
+- `algorithms/telgen/`：候选展开、MILP、约束图、自回归 GNN、训练与评估；
+- `algorithms/qcast/`：共享在线环境中的 Q-CAST 路径基线；
+- `qnet_core/`：规划层与 SeQUeNCe 之间的中性接口和持久执行器；
+- `QCAST/`：Q-CAST 上游源码参考，不参与物理仿真；
+- `results/`：实验数据、模型与评估结果；
+- `server_training_job.sh`：服务器固定配置训练任务。
+
+## 分层边界
+
+规划层只处理拓扑、请求、候选构造 DAG、资源—时隙容量和离散选择结果。
+它不能访问或修改 SeQUeNCe 内部对象。
+
+SeQUeNCe 是唯一物理后端，负责纠缠生成、量子内存、交换、纯化、退相干、
+保真度、随机失败和物理事件时间。规划时隙只是资源调度抽象，不替代真实
+物理时间。
+
+## 环境与检查
+
+项目使用 Python 3.12 和 SeQUeNCe 1.0：
 
 ```bash
-pip install -r requirements.txt
+conda env create -f environment.yml
+conda activate quantum-sim
 python -m qnet_core.sequence_smoke
 python -m pytest -q
 ```
 
-Generate a small set of simultaneous-request LP teacher records:
+## 基本流程
+
+生成在线精确 MILP 标签：
 
 ```bash
-python -m algorithms.telgen.generate_teacher_data \
-  --output results/telgen_teacher \
-  --samples 10 \
-  --requests 8 \
-  --min-hops 2 \
-  --max-hops 5 \
-  --ttl 12 \
-  --horizon 12 \
-  --paths 3
+python -m algorithms.telgen.generate_online_milp_data \
+  --output results/milp_data \
+  --episodes 20 \
+  --requests 20 \
+  --requests-per-batch 5 \
+  --decision-interval 4 \
+  --nodes 64 \
+  --min-hops 4 \
+  --max-hops 4 \
+  --paths 4 \
+  --construction-plans 5
 ```
 
-Each NPZ record contains both LP stages, their complete primal interior-point
-trajectories, constraint violations, topology/request provenance, and the
-same opaque resource-capacity catalogue used by the SeQUeNCe construction
-executor.
-
-Calibrate low, medium, and high static loads before large-scale generation:
+训练自回归 GNN：
 
 ```bash
-python -m algorithms.telgen.calibrate_static_load \
-  --output results/telgen_load_calibration \
-  --samples 1 \
-  --seed-start 100
+python -m algorithms.telgen.train_online_milp_gnn \
+  --dataset results/milp_data/online_milp_dataset.json \
+  --output results/gnn_model \
+  --device auto
 ```
 
-The default profiles use `8 requests / 12 slots`, `24 / 6`, and `40 / 5`.
-For each seed they share one topology and a nested request pool. The command
-writes self-contained NPZ records, `calibration.json`, and `calibration.csv`
-with completion, latency, fractionality, utilization, violation, and solver
-statistics.
-
-Audit the continuous relaxation against an exact small-instance binary MILP:
+在相同 EpisodeSpec 和独立同配置 SeQUeNCe 执行器上比较 GNN、MILP 与
+Q-CAST：
 
 ```bash
-python -m algorithms.telgen.validate_discrete_gap \
-  --seed 100 \
-  --requests 8 \
-  --horizon 6 \
-  --paths 1
-```
-
-The MILP reuses exactly the same variables, lexicographic objectives, and
-resource--time constraints as the LP teacher. It is a validation oracle only,
-not a second teacher or a production planner.
-
-Decode continuous LP scores into one executable, capacity-feasible plan:
-
-```bash
-python -m algorithms.telgen.evaluate_hard_decoder \
-  --seed 100 \
-  --requests 8 \
-  --horizon 6 \
-  --paths 1
-```
-
-The decoder enforces one candidate per request and all resource--time
-capacities. It combines bounded beam search, deterministic multi-start greedy
-rounding, one-request augmentation, and pair exchange, then reports its gap to
-the small-instance MILP optimum.
-
-Run TELGEN on one periodic micro-batch episode:
-
-```bash
-python -m algorithms.telgen.run_online \
-  --output results/telgen_periodic
-```
-
-The default episode contains 100 requests. Ten requests arrive every four
-slots at `0, 4, ..., 36`; every request has TTL 16, so the episode drains
-through slot 52. At each boundary the planner sees all currently pending
-requests, may start new plans only in the next four slots, and may let an
-accepted construction complete after the next boundary. Already running plans
-remain fixed and expose their future resource reservations. Results are written
-as versioned JSON/CSV files plus fixed-name latest copies.
-
-Compare TELGEN against the Q-CAST expected-throughput path baseline on the
-exact same generated episodes and the same persistent SeQUeNCe execution
-contract:
-
-```bash
-python -m algorithms.telgen.compare_online \
-  --seeds 100
-```
-
-The primary benchmark uses a 64-node Waxman graph and the same periodic
-100-request protocol: ten new requests every four slots, TTL 16, and automatic
-drain to slot 52. Every request endpoint pair has shortest-path distance
-exactly four. The
-generator retries Waxman topology generation when that endpoint contract is
-unavailable and fails explicitly after the configured attempt limit; it does
-not silently relax the hop constraint. Yen supplies up to four real paths, and
-TELGEN builds up to five valid order-preserving swap trees per path. Q-CAST
-sees the same paths but always uses left-deep construction.
-
-Pass `--uniform-random-endpoints` to disable the fixed shortest-hop endpoint
-contract.
-
-Both methods use the identical `EpisodeSpec`, arrival schedule, pending-request
-queue, decision interval, topology, physical parameters, path limit, TTL, and
-metrics. Q-CAST is an adaptation to this common rolling environment: it does
-not use the TELGEN LP teacher or its hard decoder; only neutral construction
-plans are submitted to an independent persistent SeQUeNCe scheduler.
-
-Analyze multiple paired comparison reports with balanced per-scenario
-bootstrap confidence intervals and paired randomization tests:
-
-```bash
-python -m algorithms.telgen.analyze_online_benchmark \
-  results/telgen_qcast_waxman_fixed4_periodic/online_comparison.json \
-  --output results/telgen_qcast_waxman_fixed4_periodic
-```
-
-The current sanity result and the frozen 100-episode protocol are recorded in
-`refine-logs/EXPERIMENT_RESULTS.md` and `refine-logs/EXPERIMENT_PLAN.md`.
-
-Run the Q-DDCA/Q-CAST comparison on identical seeded episodes:
-
-```bash
-python -m qnet_core.evaluate \
+python -m algorithms.telgen.compare_online_gnn \
+  --checkpoint results/gnn_model/online_milp_gnn.pt \
+  --output results/online_comparison \
   --seeds 20 \
-  --requests 100 \
-  --min-hops 2 \
-  --max-hops 50 \
-  --ttl 64
+  --seed-start 30000
 ```
 
-Run the Q-DDCA reproduction utility:
+验证构造方式选择本身是否优于固定交换树：
 
 ```bash
-python -m algorithms.qddca.reproduce --experiment exp1 --quick
+python -m algorithms.telgen.validate_construction_milp \
+  --output results/construction_milp
+
+python -m algorithms.telgen.validate_construction_physics \
+  --output results/construction_physics
 ```
 
-## Current research boundary
+服务器固定任务：
 
-The repository already contains a simulator-neutral construction DAG, the LP
-teacher data pipeline, hard decoding, and rolling physical validation.
-These are foundations for the TELGEN plan, not an
-implemented learning method. No alternative learned planning scheme is
-retained in the current tree.
+```bash
+bash server_training_job.sh check
+bash server_training_job.sh start
+bash server_training_job.sh status
+bash server_training_job.sh log
+```
+
+实验协议见 [`refine-logs/EXPERIMENT_PLAN.md`](refine-logs/EXPERIMENT_PLAN.md)。
