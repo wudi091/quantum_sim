@@ -100,7 +100,7 @@ class OnlineTELGENConfig:
             and self.milp_relative_gap != 0.0
         ):
             raise ValueError(
-                "milp_teacher labels require an exact zero relative gap"
+                "milp_teacher labels require a zero requested relative gap"
             )
 
 

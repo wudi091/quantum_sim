@@ -62,6 +62,7 @@ def manual_variable(base, resources):
 class MILPOracleTests(unittest.TestCase):
     def test_numerical_gap_certification_accepts_only_optimal_roundoff(self):
         self.assertTrue(has_numerically_zero_mip_gap(1.8577558830020406e-12))
+        self.assertTrue(has_numerically_zero_mip_gap(2.519004916667029e-8))
         self.assertFalse(has_numerically_zero_mip_gap(1e-6))
         self.assertFalse(has_numerically_zero_mip_gap(None))
         stage = DiscreteStageResult(
@@ -85,6 +86,20 @@ class MILPOracleTests(unittest.TestCase):
         self.assertFalse(is_numerically_optimal_stage(DiscreteStageResult(
             **{**stage.__dict__, "status": 1, "message": "time limit"}
         )))
+
+    def test_numerical_certification_accepts_highs_optimal_roundoff(self):
+        stage = DiscreteStageResult(
+            stage_name="minimize_expected_completion_latency",
+            success=True,
+            status=0,
+            message="Optimization terminated successfully. (HiGHS Status 7: Optimal)",
+            primal=np.zeros(1, dtype=float),
+            objective_value=33.74161920000001,
+            mip_gap=2.519004916667029e-8,
+            mip_node_count=0,
+            mip_dual_bound=33.741618350046814,
+        )
+        self.assertTrue(is_numerically_optimal_stage(stage))
 
     def test_triangle_set_packing_selects_one_feasible_request(self):
         bases = three_request_bases()

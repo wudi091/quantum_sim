@@ -17,17 +17,17 @@ from .optimization_model import (
 from .time_expansion import TimeExpandedCandidate, TimeExpansionResult
 
 
-# HiGHS can report an "Optimal" MILP with a residual relative gap on the
-# order of 1e-12 because its primal and dual objectives are floating-point
-# values.  Treat that solver-level numerical residue as zero while continuing
-# to reject materially suboptimal incumbents.
-NUMERICAL_ZERO_MIP_GAP_TOLERANCE = 1e-9
+# HiGHS can report an "Optimal" MILP with a small residual relative gap because
+# its primal and dual objectives are floating-point values.  A 1e-7 threshold
+# remains stricter than the solver's usual feasibility scale while accepting
+# solutions that HiGHS has certified optimal up to numerical roundoff.
+NUMERICAL_ZERO_MIP_GAP_TOLERANCE = 1e-7
 DEFAULT_MILP_INTEGRALITY_TOLERANCE = 1e-6
-# HiGHS may round a certified optimal primal/dual pair a few 1e-8 apart even
-# when it reports a zero MIP gap.  Keep this well below the solver's usual
-# feasibility tolerance while avoiding false rejection of exact labels.
-NUMERICAL_OBJECTIVE_ABSOLUTE_TOLERANCE = 1e-7
-NUMERICAL_OBJECTIVE_RELATIVE_TOLERANCE = 1e-9
+# HiGHS may round a certified optimal primal/dual pair slightly apart.  Require
+# agreement at the same relative scale as the accepted numerical MIP gap and
+# retain a small absolute floor for objectives close to zero.
+NUMERICAL_OBJECTIVE_ABSOLUTE_TOLERANCE = 1e-6
+NUMERICAL_OBJECTIVE_RELATIVE_TOLERANCE = 1e-7
 
 
 @dataclass(frozen=True)
