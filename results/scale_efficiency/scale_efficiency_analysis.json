@@ -1,0 +1,110 @@
+{
+  "n48": {
+    "nodes": 48,
+    "trials": 10,
+    "violations": 0,
+    "gnn_decision_mean": 0.08855064857218947,
+    "gnn_decision_ci": [
+      0.08045610944723844,
+      0.09927080552729811
+    ],
+    "milp_decision_mean": 0.10173645428647952,
+    "milp_decision_ci": [
+      0.09343575931075196,
+      0.11043682577608185
+    ],
+    "milp_vs_gnn_speedup": 1.1489069354872148,
+    "gnn_completed": 19.9,
+    "milp_completed": 19.9
+  },
+  "n64": {
+    "nodes": 64,
+    "trials": 10,
+    "violations": 0,
+    "gnn_decision_mean": 0.07771524428556273,
+    "gnn_decision_ci": [
+      0.07284394229047135,
+      0.08202856354049538
+    ],
+    "milp_decision_mean": 0.11302013715030627,
+    "milp_decision_ci": [
+      0.09997095586561565,
+      0.13151997843445445
+    ],
+    "milp_vs_gnn_speedup": 1.4542852974252594,
+    "gnn_completed": 20.0,
+    "milp_completed": 20.0
+  },
+  "n96": {
+    "nodes": 96,
+    "trials": 10,
+    "violations": 0,
+    "gnn_decision_mean": 0.08189227999454099,
+    "gnn_decision_ci": [
+      0.0775358631747908,
+      0.08595183695666493
+    ],
+    "milp_decision_mean": 0.11870867857277126,
+    "milp_decision_ci": [
+      0.11139191496967606,
+      0.12571887754174113
+    ],
+    "milp_vs_gnn_speedup": 1.4495710533481847,
+    "gnn_completed": 20.0,
+    "milp_completed": 20.0
+  },
+  "n128": {
+    "nodes": 128,
+    "trials": 10,
+    "violations": 0,
+    "gnn_decision_mean": 0.09497435570894075,
+    "gnn_decision_ci": [
+      0.09077490620988621,
+      0.10117510924880792
+    ],
+    "milp_decision_mean": 0.1433910071434054,
+    "milp_decision_ci": [
+      0.13473161289509983,
+      0.1522426181393842
+    ],
+    "milp_vs_gnn_speedup": 1.509786574207913,
+    "gnn_completed": 20.0,
+    "milp_completed": 20.0
+  },
+  "n192": {
+    "nodes": 192,
+    "trials": 10,
+    "violations": 0,
+    "gnn_decision_mean": 0.09698951000547303,
+    "gnn_decision_ci": [
+      0.08890412983052168,
+      0.10582622461906535
+    ],
+    "milp_decision_mean": 0.14303942284812884,
+    "milp_decision_ci": [
+      0.1353259907762237,
+      0.15271147320745512
+    ],
+    "milp_vs_gnn_speedup": 1.4747927156251976,
+    "gnn_completed": 19.9,
+    "milp_completed": 19.9
+  },
+  "n256": {
+    "nodes": 256,
+    "trials": 10,
+    "violations": 0,
+    "gnn_decision_mean": 0.08547711284897688,
+    "gnn_decision_ci": [
+      0.0810908867118165,
+      0.08934138555961127
+    ],
+    "milp_decision_mean": 0.13248712571637172,
+    "milp_decision_ci": [
+      0.1285233785714289,
+      0.1365355818965223
+    ],
+    "milp_vs_gnn_speedup": 1.5499719316731406,
+    "gnn_completed": 20.0,
+    "milp_completed": 20.0
+  }
+}

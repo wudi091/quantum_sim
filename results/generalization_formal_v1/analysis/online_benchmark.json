@@ -1,0 +1,309 @@
+{
+  "schema_version": 1,
+  "analysis_contract": {
+    "paired_trials": true,
+    "balanced_case_weighting": true,
+    "primary_metric": "completed_requests",
+    "secondary_metric": "mean_censored_latency_ps",
+    "runtime_metric": "mean_decision_seconds",
+    "positive_advantage_means": "telgen_better",
+    "quality_rule": "compare throughput first; use latency only when every paired throughput difference is zero",
+    "non_fatal_schedule_codes": [
+      "slot_completion_overrun"
+    ],
+    "confidence_level": 0.95,
+    "bootstrap_samples": 20000,
+    "randomization_samples": 20000,
+    "random_seed": 20260814
+  },
+  "case_count": 2,
+  "paired_trial_count": 40,
+  "cases": {
+    "waxman192": {
+      "trial_count": 20,
+      "scenario": {
+        "request_count": 60,
+        "min_hops": 3,
+        "max_hops": 5,
+        "ttl": 24,
+        "horizon": 44,
+        "physical": {
+          "generation_probability": 0.8,
+          "swap_probability": 0.9,
+          "memory_capacity": 2,
+          "memory_lifetime": 100,
+          "initial_fidelity": 0.99,
+          "swap_degradation": 0.95,
+          "classical_delay_ps": 0,
+          "node_memory_capacity": null,
+          "max_width": 1,
+          "quantum_distance_m": 1000.0,
+          "quantum_attenuation_db_per_m": 0.0,
+          "quantum_polarization_fidelity": 1.0,
+          "memory_frequency_hz": 200000000.0,
+          "slot_duration_ps": 50000000,
+          "detector_efficiency": 1.0,
+          "bsm_success_probability": 1.0,
+          "memory_wavelength_nm": 500
+        },
+        "topology_nodes": 192,
+        "waxman_alpha": 0.13,
+        "waxman_beta": 0.48,
+        "topology_attempts": 128,
+        "waxman_add_mst": false,
+        "endpoint_mode": "distance_stratified",
+        "demand_pairs": 1,
+        "topology_mode": "waxman",
+        "parallel_corridors": 2,
+        "barabasi_attachment": 2,
+        "arrival_batch_size": 10,
+        "arrival_interval": 4
+      },
+      "hard_gates": {
+        "telgen_physical_backend_rejection_count": 0.0,
+        "telgen_post_completion_validation_failure_count": 0.0,
+        "qcast_physical_backend_rejection_count": 0.0,
+        "qcast_post_completion_validation_failure_count": 0.0,
+        "telgen_unsafe_schedule_violation_count": 0.0,
+        "telgen_nominal_completion_overrun_count": 0.0,
+        "qcast_unsafe_schedule_violation_count": 0.0,
+        "qcast_nominal_completion_overrun_count": 0.0
+      },
+      "valid": true,
+      "quality_verdict": "telgen_better_throughput",
+      "runtime_verdict": "qcast_faster",
+      "metrics": {
+        "completed_requests": {
+          "label": "完成请求数",
+          "role": "primary",
+          "advantage_definition": "positive_means_telgen_better",
+          "telgen_mean": 40.25,
+          "qcast_mean": 38.6,
+          "telgen_advantage_mean": 1.65,
+          "ci95_low": 0.3,
+          "ci95_high": 3.0,
+          "paired_randomization_p": 0.03689815509224539,
+          "telgen_wins": 14,
+          "ties": 2,
+          "qcast_wins": 4,
+          "all_paired_advantages_zero": false
+        },
+        "mean_censored_latency_ps": {
+          "label": "平均删失完成延迟（ps）",
+          "role": "secondary",
+          "advantage_definition": "positive_means_telgen_better",
+          "telgen_mean": 866695835.725,
+          "qcast_mean": 902766671.45,
+          "telgen_advantage_mean": 36070835.72500001,
+          "ci95_low": 3483335.6416666745,
+          "ci95_high": 68275002.20000002,
+          "paired_randomization_p": 0.04939753012349383,
+          "telgen_wins": 14,
+          "ties": 0,
+          "qcast_wins": 6,
+          "all_paired_advantages_zero": false
+        },
+        "mean_decision_seconds": {
+          "label": "平均决策时间（秒）",
+          "role": "runtime",
+          "advantage_definition": "positive_means_telgen_better",
+          "telgen_mean": 0.48472588272945194,
+          "qcast_mean": 0.05455782545746346,
+          "telgen_advantage_mean": -0.4301680572719885,
+          "ci95_low": -0.44812965909130237,
+          "ci95_high": -0.4125329650004542,
+          "paired_randomization_p": 4.999750012499375e-05,
+          "telgen_wins": 0,
+          "ties": 0,
+          "qcast_wins": 20,
+          "all_paired_advantages_zero": false
+        }
+      }
+    },
+    "ba128": {
+      "trial_count": 20,
+      "scenario": {
+        "request_count": 50,
+        "min_hops": 3,
+        "max_hops": 4,
+        "ttl": 20,
+        "horizon": 36,
+        "physical": {
+          "generation_probability": 0.8,
+          "swap_probability": 0.9,
+          "memory_capacity": 2,
+          "memory_lifetime": 100,
+          "initial_fidelity": 0.99,
+          "swap_degradation": 0.95,
+          "classical_delay_ps": 0,
+          "node_memory_capacity": null,
+          "max_width": 1,
+          "quantum_distance_m": 1000.0,
+          "quantum_attenuation_db_per_m": 0.0,
+          "quantum_polarization_fidelity": 1.0,
+          "memory_frequency_hz": 200000000.0,
+          "slot_duration_ps": 50000000,
+          "detector_efficiency": 1.0,
+          "bsm_success_probability": 1.0,
+          "memory_wavelength_nm": 500
+        },
+        "topology_nodes": 128,
+        "waxman_alpha": 0.15,
+        "waxman_beta": 0.45,
+        "topology_attempts": 128,
+        "waxman_add_mst": false,
+        "endpoint_mode": "distance_stratified",
+        "demand_pairs": 1,
+        "topology_mode": "barabasi_albert",
+        "parallel_corridors": 2,
+        "barabasi_attachment": 2,
+        "arrival_batch_size": 10,
+        "arrival_interval": 4
+      },
+      "hard_gates": {
+        "telgen_physical_backend_rejection_count": 0.0,
+        "telgen_post_completion_validation_failure_count": 0.0,
+        "qcast_physical_backend_rejection_count": 0.0,
+        "qcast_post_completion_validation_failure_count": 0.0,
+        "telgen_unsafe_schedule_violation_count": 0.0,
+        "telgen_nominal_completion_overrun_count": 0.0,
+        "qcast_unsafe_schedule_violation_count": 0.0,
+        "qcast_nominal_completion_overrun_count": 0.0
+      },
+      "valid": true,
+      "quality_verdict": "telgen_better_throughput",
+      "runtime_verdict": "qcast_faster",
+      "metrics": {
+        "completed_requests": {
+          "label": "完成请求数",
+          "role": "primary",
+          "advantage_definition": "positive_means_telgen_better",
+          "telgen_mean": 36.4,
+          "qcast_mean": 32.05,
+          "telgen_advantage_mean": 4.35,
+          "ci95_low": 3.05,
+          "ci95_high": 5.65,
+          "paired_randomization_p": 4.999750012499375e-05,
+          "telgen_wins": 18,
+          "ties": 2,
+          "qcast_wins": 0,
+          "all_paired_advantages_zero": false
+        },
+        "mean_censored_latency_ps": {
+          "label": "平均删失完成延迟（ps）",
+          "role": "secondary",
+          "advantage_definition": "positive_means_telgen_better",
+          "telgen_mean": 694455006.46,
+          "qcast_mean": 786490005.8199999,
+          "telgen_advantage_mean": 92034999.35999998,
+          "ci95_low": 62609999.69999999,
+          "ci95_high": 121624999.4,
+          "paired_randomization_p": 9.99950002499875e-05,
+          "telgen_wins": 18,
+          "ties": 0,
+          "qcast_wins": 2,
+          "all_paired_advantages_zero": false
+        },
+        "mean_decision_seconds": {
+          "label": "平均决策时间（秒）",
+          "role": "runtime",
+          "advantage_definition": "positive_means_telgen_better",
+          "telgen_mean": 0.4184114811091503,
+          "qcast_mean": 0.043061636667375246,
+          "telgen_advantage_mean": -0.375349844441775,
+          "ci95_low": -0.3948268072162237,
+          "ci95_high": -0.35594961332972164,
+          "paired_randomization_p": 4.999750012499375e-05,
+          "telgen_wins": 0,
+          "ties": 0,
+          "qcast_wins": 20,
+          "all_paired_advantages_zero": false
+        }
+      }
+    }
+  },
+  "overall": {
+    "hard_gates": {
+      "telgen_physical_backend_rejection_count": 0.0,
+      "telgen_post_completion_validation_failure_count": 0.0,
+      "qcast_physical_backend_rejection_count": 0.0,
+      "qcast_post_completion_validation_failure_count": 0.0,
+      "telgen_unsafe_schedule_violation_count": 0.0,
+      "telgen_nominal_completion_overrun_count": 0.0,
+      "qcast_unsafe_schedule_violation_count": 0.0,
+      "qcast_nominal_completion_overrun_count": 0.0
+    },
+    "valid": true,
+    "quality_verdict": "telgen_better_throughput",
+    "runtime_verdict": "qcast_faster",
+    "metrics": {
+      "completed_requests": {
+        "label": "完成请求数",
+        "role": "primary",
+        "advantage_definition": "positive_means_telgen_better",
+        "telgen_mean": 38.325,
+        "qcast_mean": 35.325,
+        "telgen_advantage_mean": 3.0,
+        "ci95_low": 2.075,
+        "ci95_high": 3.95,
+        "paired_randomization_p": 4.999750012499375e-05,
+        "telgen_wins": 32,
+        "ties": 4,
+        "qcast_wins": 4,
+        "all_paired_advantages_zero": false
+      },
+      "mean_censored_latency_ps": {
+        "label": "平均删失完成延迟（ps）",
+        "role": "secondary",
+        "advantage_definition": "positive_means_telgen_better",
+        "telgen_mean": 780575421.0925,
+        "qcast_mean": 844628338.635,
+        "telgen_advantage_mean": 64052917.5425,
+        "ci95_low": 41949167.8275,
+        "ci95_high": 85958750.68500003,
+        "paired_randomization_p": 4.999750012499375e-05,
+        "telgen_wins": 32,
+        "ties": 0,
+        "qcast_wins": 8,
+        "all_paired_advantages_zero": false
+      },
+      "mean_decision_seconds": {
+        "label": "平均决策时间（秒）",
+        "role": "runtime",
+        "advantage_definition": "positive_means_telgen_better",
+        "telgen_mean": 0.4515686819193011,
+        "qcast_mean": 0.048809731062419356,
+        "telgen_advantage_mean": -0.40275895085688174,
+        "ci95_low": -0.41588351865970197,
+        "ci95_high": -0.38957421396561487,
+        "paired_randomization_p": 4.999750012499375e-05,
+        "telgen_wins": 0,
+        "ties": 0,
+        "qcast_wins": 40,
+        "all_paired_advantages_zero": false
+      }
+    }
+  },
+  "experiment": "paired_online_gnn_qcast_generalization",
+  "method_aliases": {
+    "telgen": "gnn",
+    "qcast": "qcast"
+  },
+  "inputs": [
+    "results\\generalization_formal_v1\\online_ood\\waxman192\\online_gnn_comparison.json",
+    "results\\generalization_formal_v1\\online_ood\\ba128\\online_gnn_comparison.json"
+  ],
+  "checkpoint_sha256": [
+    "d01f3c9cba8313ac11f5da05102bdbb413767631d3d39bc5f9074c8a1afbcf12"
+  ],
+  "additional_hard_gates": {
+    "gnn_invalid_decision_count": 0.0,
+    "gnn_schedule_violation_count": 0.0,
+    "qcast_schedule_violation_count": 0.0,
+    "gnn_physical_backend_rejection_count": 0.0,
+    "qcast_physical_backend_rejection_count": 0.0,
+    "gnn_post_completion_validation_failure_count": 0.0,
+    "qcast_post_completion_validation_failure_count": 0.0
+  },
+  "additional_hard_gates_valid": true
+}

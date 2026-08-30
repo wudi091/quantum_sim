@@ -12,13 +12,10 @@
   with Generalizable Graph Neural Networks*，arXiv:2503.24203；
 - 官方源码：<https://github.com/aelitazhou/TELGEN>；
 - 核对提交：`64684ebb3a7e856de86346da46232f8ceca6666c`；
-- 本地适配：`algorithms/telgen/ipm_trajectory_pilot.py`。
+- 本地适配：`algorithms/telgen/`（MILP 自回归 GNN 单一范式）。
 
-本地 pilot 复用 TELGEN 的 IPM callback 教师轨迹、三部 LP 图、六类有向消息、
-双循环共享参数和三项训练损失，并将 TE 的连续路径变量替换为量子网络的
-“请求 + 路径 + 交换树 + 开始时隙”候选变量。官方公开仓库中的部分异构聚合
-代码不完整，因此本地用纯 PyTorch 实现其论文所述 GCN 关系；这属于论文对齐
-的量子网络适配，不声称是逐行或逐字节复现。
+本项目的在线 GNN 学习精确 MILP 的 0/1 离散选择，采用带可行性掩码的自回归
+候选—约束图模型；这是面向量子网络多请求规划的适配，不声称逐行复现官方仓库。
 
 ## Q-CAST
 

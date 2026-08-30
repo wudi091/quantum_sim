@@ -1,0 +1,4172 @@
+{
+  "schema_version": 1,
+  "experiment": "paired_online_gnn_milp_routing_baselines",
+  "comparison_contract": {
+    "paired_episode_spec": true,
+    "independent_persistent_executors": true,
+    "future_requests_hidden": true,
+    "gnn_calls_milp_online": false,
+    "comparison_profile": "scalable",
+    "formal_method_order": [
+      "gnn",
+      "milp",
+      "qpass",
+      "greedy"
+    ],
+    "active_method_order": [
+      "gnn",
+      "qpass",
+      "greedy"
+    ],
+    "fixed_construction_role": "separate_paired_ablation",
+    "qcast_included": false,
+    "qpass_uses_gnn_or_milp": false,
+    "qpass_included": true,
+    "greedy_uses_gnn_or_milp": false,
+    "greedy_included": true,
+    "primary_metric": "completed_requests",
+    "secondary_metric": "mean_censored_latency_ps",
+    "gnn_construction_policy": "adaptive_swap_tree_selection"
+  },
+  "configuration": {
+    "checkpoint": "results\\server_generalization_v2\\20260815_072912_pid1297\\models\\seed_20260821\\online_milp_gnn.pt",
+    "output": "results\\p1_suite\\_smoke_waxman128",
+    "seeds": 1,
+    "seed_start": 90000,
+    "requests": 150,
+    "arrival_rounds": null,
+    "requests_per_batch": 15,
+    "decision_interval": 4,
+    "ttl": 16,
+    "horizon": null,
+    "nodes": 128,
+    "min_hops": 3,
+    "max_hops": 5,
+    "endpoint_mode": "distance_stratified",
+    "topology_mode": "waxman",
+    "waxman_alpha": 0.15,
+    "waxman_beta": 0.45,
+    "topology_attempts": 128,
+    "waxman_add_mst": false,
+    "barabasi_attachment": 2,
+    "erdos_renyi_mean_degree": 6.0,
+    "random_regular_degree": 4,
+    "parallel_corridors": 2,
+    "paths": 4,
+    "construction_plans": 5,
+    "fixed_swap_tree_index": null,
+    "gnn_device": "cpu",
+    "milp_time_limit_seconds": 300.0,
+    "comparison_profile": "scalable",
+    "generation_probability": 1.0,
+    "swap_probability": 1.0,
+    "memory_capacity": 1,
+    "node_memory_capacity": null,
+    "max_width": 1,
+    "quantum_distance_m": 1000.0,
+    "slot_duration_ps": 50000000,
+    "workload": {
+      "mode": "fixed_request_count",
+      "request_count": 150,
+      "arrival_rounds": 10,
+      "requests_per_round": 15,
+      "arrival_interval_slots": 4,
+      "arrival_phase_slots": 40,
+      "last_arrival_slot": 36,
+      "final_round_request_count": 15,
+      "offered_load_requests_per_slot": 3.75,
+      "drain_slots": 16,
+      "horizon_slots": 52
+    },
+    "resolved_request_count": 150,
+    "resolved_horizon": 52
+  },
+  "checkpoint_sha256": "f395b698230f5c752e3815bf240d9eac29c39e389025b2da95b43f393b98b76d",
+  "scenario": {
+    "request_count": 150,
+    "min_hops": 3,
+    "max_hops": 5,
+    "ttl": 16,
+    "horizon": 52,
+    "physical": {
+      "generation_probability": 1.0,
+      "swap_probability": 1.0,
+      "memory_capacity": 1,
+      "memory_lifetime": 100,
+      "initial_fidelity": 0.99,
+      "swap_degradation": 0.95,
+      "classical_delay_ps": 0,
+      "node_memory_capacity": null,
+      "max_width": 1,
+      "quantum_distance_m": 1000.0,
+      "quantum_attenuation_db_per_m": 0.0,
+      "quantum_polarization_fidelity": 1.0,
+      "memory_frequency_hz": 200000000.0,
+      "slot_duration_ps": 50000000,
+      "detector_efficiency": 1.0,
+      "bsm_success_probability": 1.0,
+      "memory_wavelength_nm": 500
+    },
+    "topology_nodes": 128,
+    "waxman_alpha": 0.15,
+    "waxman_beta": 0.45,
+    "topology_attempts": 128,
+    "waxman_add_mst": false,
+    "endpoint_mode": "distance_stratified",
+    "demand_pairs": 1,
+    "topology_mode": "waxman",
+    "parallel_corridors": 2,
+    "barabasi_attachment": 2,
+    "erdos_renyi_mean_degree": 6.0,
+    "random_regular_degree": 4,
+    "arrival_batch_size": 15,
+    "arrival_interval": 4
+  },
+  "gnn_config": {
+    "decision_interval": 4,
+    "path_candidate_count": 4,
+    "construction_kinds": [],
+    "swap_tree_count": 5,
+    "purification_kinds": [
+      "none"
+    ],
+    "decision_backend": "gnn",
+    "gnn_checkpoint": "results\\server_generalization_v2\\20260815_072912_pid1297\\models\\seed_20260821\\online_milp_gnn.pt",
+    "gnn_device": "cpu",
+    "ipm_gnn_checkpoint": null,
+    "ipm_gnn_device": "auto",
+    "ipm_steps": 16,
+    "milp_time_limit_seconds": 60.0,
+    "milp_relative_gap": 0.0
+  },
+  "milp_config": null,
+  "qcast_config": null,
+  "qpass_config": {
+    "algorithm": "qpass",
+    "decision_interval": 4,
+    "path_candidate_count": 4,
+    "construction_kind": "left_deep"
+  },
+  "greedy_config": {
+    "algorithm": "greedy",
+    "decision_interval": 4,
+    "path_candidate_count": 4,
+    "construction_kind": "left_deep"
+  },
+  "elapsed_seconds": 16.26756479998585,
+  "aggregate": {
+    "gnn": {
+      "attempted_request_count": 111.0,
+      "censored_flow_time_ps": 81960000410.0,
+      "completed_requests": 111.0,
+      "completion_rate": 0.74,
+      "construction_attempt_count": 111.0,
+      "decision_count": 13.0,
+      "expiration_count": 0.0,
+      "fidelity_check_count": 713.0,
+      "fidelity_violation_count": 0.0,
+      "generation_event_count": 412.0,
+      "generation_physical_failure_count": 0.0,
+      "generation_protocol_attempt_count": 412.0,
+      "gnn_invalid_decision_count": 0.0,
+      "gnn_invalid_decision_rate": 0.0,
+      "gnn_policy_decision_count": 10.0,
+      "makespan_ps": 2110000000.0,
+      "mean_censored_latency_ps": 546400002.7333333,
+      "mean_decision_seconds": 0.4045682769232931,
+      "mean_planner_seconds": 0.10170017001219094,
+      "mean_policy_inference_seconds": 0.0,
+      "mean_success_latency_ps": 174414418.1081081,
+      "p95_completion_latency_ps": 280000010.0,
+      "p95_decision_seconds": 0.538874699966982,
+      "peak_memory_usage": 94.0,
+      "peak_physical_memory_usage": 94.0,
+      "peak_reserved_memory_units": 94.0,
+      "physical_backend_rejection_count": 0.0,
+      "physical_failure_count": 0.0,
+      "physical_memory_time_unit_ps": 95380003460.0,
+      "physical_memory_time_unit_slots": 1907.6000692,
+      "physical_protocol_attempt_count": 713.0,
+      "post_completion_validation_failure_count": 0.0,
+      "purification_physical_failure_count": 0.0,
+      "purification_protocol_attempt_count": 0.0,
+      "request_count": 150.0,
+      "retry_count": 0.0,
+      "schedule_adherence": 1.0,
+      "schedule_violation_count": 0.0,
+      "swap_physical_failure_count": 0.0,
+      "swap_protocol_attempt_count": 301.0,
+      "throughput_per_slot": 2.1346153846153846,
+      "wall_seconds": 8.909485499956645
+    },
+    "qpass": {
+      "attempted_request_count": 112.0,
+      "censored_flow_time_ps": 83600000740.0,
+      "completed_requests": 112.0,
+      "completion_rate": 0.7466666666666667,
+      "construction_attempt_count": 112.0,
+      "decision_count": 13.0,
+      "expiration_count": 0.0,
+      "fidelity_check_count": 708.0,
+      "fidelity_violation_count": 0.0,
+      "generation_event_count": 410.0,
+      "generation_physical_failure_count": 0.0,
+      "generation_protocol_attempt_count": 410.0,
+      "gnn_invalid_decision_count": 0.0,
+      "gnn_invalid_decision_rate": 0.0,
+      "gnn_policy_decision_count": 0.0,
+      "makespan_ps": 2165000000.0,
+      "mean_baseline_planning_seconds": 0.07937901539620586,
+      "mean_censored_latency_ps": 557333338.2666667,
+      "mean_decision_seconds": 0.08104538460835241,
+      "mean_planner_seconds": 0.09002040909730237,
+      "mean_policy_inference_seconds": 0.0,
+      "mean_success_latency_ps": 200000006.60714287,
+      "p95_completion_latency_ps": 365000000.0,
+      "p95_decision_seconds": 0.12624130002222955,
+      "peak_memory_usage": 96.0,
+      "peak_physical_memory_usage": 96.0,
+      "peak_reserved_memory_units": 96.0,
+      "physical_backend_rejection_count": 0.0,
+      "physical_failure_count": 0.0,
+      "physical_memory_time_unit_ps": 97330005700.0,
+      "physical_memory_time_unit_slots": 1946.600114,
+      "physical_protocol_attempt_count": 708.0,
+      "post_completion_validation_failure_count": 0.0,
+      "purification_physical_failure_count": 0.0,
+      "purification_protocol_attempt_count": 0.0,
+      "request_count": 150.0,
+      "retry_count": 0.0,
+      "schedule_adherence": 1.0,
+      "schedule_violation_count": 0.0,
+      "swap_physical_failure_count": 0.0,
+      "swap_protocol_attempt_count": 298.0,
+      "throughput_per_slot": 2.1538461538461537,
+      "wall_seconds": 3.664702899986878
+    },
+    "greedy": {
+      "attempted_request_count": 112.0,
+      "censored_flow_time_ps": 84090000900.0,
+      "completed_requests": 112.0,
+      "completion_rate": 0.7466666666666667,
+      "construction_attempt_count": 112.0,
+      "decision_count": 13.0,
+      "expiration_count": 0.0,
+      "fidelity_check_count": 708.0,
+      "fidelity_violation_count": 0.0,
+      "generation_event_count": 410.0,
+      "generation_physical_failure_count": 0.0,
+      "generation_protocol_attempt_count": 410.0,
+      "gnn_invalid_decision_count": 0.0,
+      "gnn_invalid_decision_rate": 0.0,
+      "gnn_policy_decision_count": 0.0,
+      "makespan_ps": 2165000000.0,
+      "mean_baseline_planning_seconds": 0.08175524616112503,
+      "mean_censored_latency_ps": 560600006.0,
+      "mean_decision_seconds": 0.08340659999073698,
+      "mean_planner_seconds": 0.09276842728087847,
+      "mean_policy_inference_seconds": 0.0,
+      "mean_success_latency_ps": 204375008.0357143,
+      "p95_completion_latency_ps": 365000000.0,
+      "p95_decision_seconds": 0.11503220000304282,
+      "peak_memory_usage": 96.0,
+      "peak_physical_memory_usage": 96.0,
+      "peak_reserved_memory_units": 96.0,
+      "physical_backend_rejection_count": 0.0,
+      "physical_failure_count": 0.0,
+      "physical_memory_time_unit_ps": 98110006220.0,
+      "physical_memory_time_unit_slots": 1962.2001244,
+      "physical_protocol_attempt_count": 708.0,
+      "post_completion_validation_failure_count": 0.0,
+      "purification_physical_failure_count": 0.0,
+      "purification_protocol_attempt_count": 0.0,
+      "request_count": 150.0,
+      "retry_count": 0.0,
+      "schedule_adherence": 1.0,
+      "schedule_violation_count": 0.0,
+      "swap_physical_failure_count": 0.0,
+      "swap_protocol_attempt_count": 298.0,
+      "throughput_per_slot": 2.1538461538461537,
+      "wall_seconds": 3.646500700036995
+    }
+  },
+  "trials": [
+    {
+      "seed": 90000,
+      "episode": {
+        "seed": 90000,
+        "nodes": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35,
+          36,
+          37,
+          38,
+          39,
+          40,
+          41,
+          42,
+          43,
+          44,
+          45,
+          46,
+          47,
+          48,
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          58,
+          59,
+          60,
+          61,
+          62,
+          63,
+          64,
+          65,
+          66,
+          67,
+          68,
+          69,
+          70,
+          71,
+          72,
+          73,
+          74,
+          75,
+          76,
+          77,
+          78,
+          79,
+          80,
+          81,
+          82,
+          83,
+          84,
+          85,
+          86,
+          87,
+          88,
+          89,
+          90,
+          91,
+          92,
+          93,
+          94,
+          95,
+          96,
+          97,
+          98,
+          99,
+          100,
+          101,
+          102,
+          103,
+          104,
+          105,
+          106,
+          107,
+          108,
+          109,
+          110,
+          111,
+          112,
+          113,
+          114,
+          115,
+          116,
+          117,
+          118,
+          119,
+          120,
+          121,
+          122,
+          123,
+          124,
+          125,
+          126,
+          127
+        ],
+        "edges": [
+          [
+            0,
+            3
+          ],
+          [
+            0,
+            43
+          ],
+          [
+            0,
+            62
+          ],
+          [
+            0,
+            93
+          ],
+          [
+            0,
+            114
+          ],
+          [
+            1,
+            14
+          ],
+          [
+            1,
+            46
+          ],
+          [
+            1,
+            49
+          ],
+          [
+            1,
+            78
+          ],
+          [
+            1,
+            82
+          ],
+          [
+            1,
+            99
+          ],
+          [
+            1,
+            102
+          ],
+          [
+            2,
+            15
+          ],
+          [
+            2,
+            27
+          ],
+          [
+            2,
+            33
+          ],
+          [
+            2,
+            34
+          ],
+          [
+            2,
+            36
+          ],
+          [
+            2,
+            41
+          ],
+          [
+            2,
+            57
+          ],
+          [
+            2,
+            85
+          ],
+          [
+            2,
+            97
+          ],
+          [
+            2,
+            126
+          ],
+          [
+            3,
+            7
+          ],
+          [
+            3,
+            21
+          ],
+          [
+            3,
+            36
+          ],
+          [
+            3,
+            91
+          ],
+          [
+            3,
+            110
+          ],
+          [
+            3,
+            111
+          ],
+          [
+            4,
+            19
+          ],
+          [
+            4,
+            20
+          ],
+          [
+            4,
+            36
+          ],
+          [
+            4,
+            63
+          ],
+          [
+            4,
+            97
+          ],
+          [
+            4,
+            110
+          ],
+          [
+            5,
+            63
+          ],
+          [
+            5,
+            108
+          ],
+          [
+            6,
+            22
+          ],
+          [
+            6,
+            25
+          ],
+          [
+            6,
+            44
+          ],
+          [
+            6,
+            93
+          ],
+          [
+            6,
+            102
+          ],
+          [
+            6,
+            114
+          ],
+          [
+            7,
+            55
+          ],
+          [
+            7,
+            124
+          ],
+          [
+            8,
+            9
+          ],
+          [
+            8,
+            14
+          ],
+          [
+            8,
+            45
+          ],
+          [
+            8,
+            46
+          ],
+          [
+            8,
+            62
+          ],
+          [
+            8,
+            64
+          ],
+          [
+            8,
+            82
+          ],
+          [
+            8,
+            94
+          ],
+          [
+            8,
+            106
+          ],
+          [
+            8,
+            118
+          ],
+          [
+            8,
+            122
+          ],
+          [
+            9,
+            23
+          ],
+          [
+            9,
+            65
+          ],
+          [
+            9,
+            97
+          ],
+          [
+            9,
+            100
+          ],
+          [
+            9,
+            102
+          ],
+          [
+            9,
+            117
+          ],
+          [
+            9,
+            123
+          ],
+          [
+            9,
+            124
+          ],
+          [
+            10,
+            24
+          ],
+          [
+            10,
+            31
+          ],
+          [
+            10,
+            68
+          ],
+          [
+            10,
+            69
+          ],
+          [
+            10,
+            72
+          ],
+          [
+            10,
+            115
+          ],
+          [
+            10,
+            122
+          ],
+          [
+            10,
+            125
+          ],
+          [
+            11,
+            33
+          ],
+          [
+            11,
+            39
+          ],
+          [
+            11,
+            51
+          ],
+          [
+            11,
+            91
+          ],
+          [
+            11,
+            92
+          ],
+          [
+            11,
+            107
+          ],
+          [
+            11,
+            111
+          ],
+          [
+            11,
+            112
+          ],
+          [
+            11,
+            117
+          ],
+          [
+            12,
+            13
+          ],
+          [
+            12,
+            15
+          ],
+          [
+            12,
+            27
+          ],
+          [
+            12,
+            60
+          ],
+          [
+            12,
+            86
+          ],
+          [
+            12,
+            95
+          ],
+          [
+            12,
+            98
+          ],
+          [
+            12,
+            111
+          ],
+          [
+            13,
+            25
+          ],
+          [
+            13,
+            27
+          ],
+          [
+            13,
+            36
+          ],
+          [
+            13,
+            37
+          ],
+          [
+            13,
+            49
+          ],
+          [
+            13,
+            70
+          ],
+          [
+            13,
+            78
+          ],
+          [
+            13,
+            91
+          ],
+          [
+            13,
+            95
+          ],
+          [
+            13,
+            104
+          ],
+          [
+            13,
+            107
+          ],
+          [
+            13,
+            117
+          ],
+          [
+            13,
+            123
+          ],
+          [
+            14,
+            24
+          ],
+          [
+            14,
+            42
+          ],
+          [
+            14,
+            45
+          ],
+          [
+            14,
+            83
+          ],
+          [
+            14,
+            88
+          ],
+          [
+            14,
+            92
+          ],
+          [
+            14,
+            113
+          ],
+          [
+            15,
+            21
+          ],
+          [
+            15,
+            23
+          ],
+          [
+            15,
+            33
+          ],
+          [
+            15,
+            60
+          ],
+          [
+            15,
+            70
+          ],
+          [
+            15,
+            85
+          ],
+          [
+            15,
+            105
+          ],
+          [
+            16,
+            17
+          ],
+          [
+            16,
+            30
+          ],
+          [
+            16,
+            36
+          ],
+          [
+            16,
+            46
+          ],
+          [
+            16,
+            48
+          ],
+          [
+            16,
+            51
+          ],
+          [
+            16,
+            53
+          ],
+          [
+            16,
+            61
+          ],
+          [
+            16,
+            65
+          ],
+          [
+            16,
+            68
+          ],
+          [
+            16,
+            80
+          ],
+          [
+            16,
+            89
+          ],
+          [
+            16,
+            97
+          ],
+          [
+            16,
+            110
+          ],
+          [
+            16,
+            111
+          ],
+          [
+            17,
+            48
+          ],
+          [
+            17,
+            61
+          ],
+          [
+            17,
+            65
+          ],
+          [
+            17,
+            72
+          ],
+          [
+            17,
+            75
+          ],
+          [
+            17,
+            81
+          ],
+          [
+            17,
+            106
+          ],
+          [
+            18,
+            19
+          ],
+          [
+            18,
+            36
+          ],
+          [
+            18,
+            53
+          ],
+          [
+            18,
+            59
+          ],
+          [
+            19,
+            82
+          ],
+          [
+            19,
+            88
+          ],
+          [
+            19,
+            127
+          ],
+          [
+            20,
+            28
+          ],
+          [
+            20,
+            33
+          ],
+          [
+            20,
+            68
+          ],
+          [
+            20,
+            69
+          ],
+          [
+            20,
+            71
+          ],
+          [
+            20,
+            98
+          ],
+          [
+            20,
+            103
+          ],
+          [
+            20,
+            118
+          ],
+          [
+            20,
+            126
+          ],
+          [
+            21,
+            35
+          ],
+          [
+            21,
+            70
+          ],
+          [
+            21,
+            86
+          ],
+          [
+            21,
+            87
+          ],
+          [
+            21,
+            91
+          ],
+          [
+            21,
+            98
+          ],
+          [
+            21,
+            100
+          ],
+          [
+            21,
+            104
+          ],
+          [
+            21,
+            107
+          ],
+          [
+            22,
+            44
+          ],
+          [
+            22,
+            77
+          ],
+          [
+            22,
+            93
+          ],
+          [
+            22,
+            112
+          ],
+          [
+            22,
+            121
+          ],
+          [
+            23,
+            26
+          ],
+          [
+            23,
+            32
+          ],
+          [
+            23,
+            37
+          ],
+          [
+            23,
+            46
+          ],
+          [
+            23,
+            56
+          ],
+          [
+            23,
+            58
+          ],
+          [
+            23,
+            80
+          ],
+          [
+            23,
+            95
+          ],
+          [
+            23,
+            97
+          ],
+          [
+            23,
+            117
+          ],
+          [
+            24,
+            57
+          ],
+          [
+            24,
+            60
+          ],
+          [
+            24,
+            68
+          ],
+          [
+            24,
+            72
+          ],
+          [
+            24,
+            106
+          ],
+          [
+            24,
+            114
+          ],
+          [
+            25,
+            34
+          ],
+          [
+            25,
+            41
+          ],
+          [
+            25,
+            54
+          ],
+          [
+            25,
+            60
+          ],
+          [
+            25,
+            74
+          ],
+          [
+            25,
+            87
+          ],
+          [
+            25,
+            100
+          ],
+          [
+            26,
+            36
+          ],
+          [
+            26,
+            69
+          ],
+          [
+            26,
+            89
+          ],
+          [
+            26,
+            91
+          ],
+          [
+            26,
+            99
+          ],
+          [
+            26,
+            105
+          ],
+          [
+            26,
+            124
+          ],
+          [
+            27,
+            33
+          ],
+          [
+            27,
+            41
+          ],
+          [
+            27,
+            70
+          ],
+          [
+            27,
+            79
+          ],
+          [
+            27,
+            99
+          ],
+          [
+            27,
+            100
+          ],
+          [
+            27,
+            105
+          ],
+          [
+            27,
+            111
+          ],
+          [
+            28,
+            30
+          ],
+          [
+            28,
+            46
+          ],
+          [
+            28,
+            47
+          ],
+          [
+            28,
+            48
+          ],
+          [
+            28,
+            50
+          ],
+          [
+            28,
+            53
+          ],
+          [
+            28,
+            89
+          ],
+          [
+            28,
+            90
+          ],
+          [
+            28,
+            115
+          ],
+          [
+            28,
+            117
+          ],
+          [
+            29,
+            40
+          ],
+          [
+            29,
+            43
+          ],
+          [
+            29,
+            64
+          ],
+          [
+            29,
+            74
+          ],
+          [
+            29,
+            79
+          ],
+          [
+            29,
+            104
+          ],
+          [
+            29,
+            114
+          ],
+          [
+            29,
+            120
+          ],
+          [
+            30,
+            51
+          ],
+          [
+            30,
+            61
+          ],
+          [
+            30,
+            81
+          ],
+          [
+            30,
+            82
+          ],
+          [
+            31,
+            42
+          ],
+          [
+            31,
+            73
+          ],
+          [
+            32,
+            65
+          ],
+          [
+            32,
+            82
+          ],
+          [
+            32,
+            108
+          ],
+          [
+            33,
+            41
+          ],
+          [
+            33,
+            52
+          ],
+          [
+            33,
+            103
+          ],
+          [
+            34,
+            57
+          ],
+          [
+            34,
+            58
+          ],
+          [
+            34,
+            60
+          ],
+          [
+            34,
+            74
+          ],
+          [
+            34,
+            79
+          ],
+          [
+            35,
+            77
+          ],
+          [
+            35,
+            90
+          ],
+          [
+            35,
+            91
+          ],
+          [
+            35,
+            93
+          ],
+          [
+            35,
+            112
+          ],
+          [
+            35,
+            114
+          ],
+          [
+            35,
+            116
+          ],
+          [
+            35,
+            117
+          ],
+          [
+            35,
+            119
+          ],
+          [
+            35,
+            124
+          ],
+          [
+            36,
+            37
+          ],
+          [
+            36,
+            53
+          ],
+          [
+            36,
+            55
+          ],
+          [
+            36,
+            72
+          ],
+          [
+            36,
+            82
+          ],
+          [
+            36,
+            97
+          ],
+          [
+            36,
+            104
+          ],
+          [
+            36,
+            127
+          ],
+          [
+            37,
+            53
+          ],
+          [
+            37,
+            80
+          ],
+          [
+            37,
+            110
+          ],
+          [
+            37,
+            116
+          ],
+          [
+            37,
+            122
+          ],
+          [
+            37,
+            126
+          ],
+          [
+            38,
+            63
+          ],
+          [
+            38,
+            71
+          ],
+          [
+            38,
+            108
+          ],
+          [
+            38,
+            110
+          ],
+          [
+            39,
+            42
+          ],
+          [
+            39,
+            43
+          ],
+          [
+            39,
+            46
+          ],
+          [
+            39,
+            51
+          ],
+          [
+            39,
+            54
+          ],
+          [
+            39,
+            72
+          ],
+          [
+            39,
+            90
+          ],
+          [
+            39,
+            103
+          ],
+          [
+            39,
+            117
+          ],
+          [
+            40,
+            91
+          ],
+          [
+            41,
+            46
+          ],
+          [
+            41,
+            66
+          ],
+          [
+            41,
+            70
+          ],
+          [
+            41,
+            79
+          ],
+          [
+            41,
+            87
+          ],
+          [
+            41,
+            127
+          ],
+          [
+            42,
+            45
+          ],
+          [
+            42,
+            50
+          ],
+          [
+            42,
+            52
+          ],
+          [
+            42,
+            67
+          ],
+          [
+            42,
+            68
+          ],
+          [
+            42,
+            81
+          ],
+          [
+            42,
+            89
+          ],
+          [
+            42,
+            113
+          ],
+          [
+            42,
+            115
+          ],
+          [
+            43,
+            44
+          ],
+          [
+            43,
+            56
+          ],
+          [
+            43,
+            87
+          ],
+          [
+            43,
+            92
+          ],
+          [
+            44,
+            75
+          ],
+          [
+            44,
+            97
+          ],
+          [
+            44,
+            99
+          ],
+          [
+            44,
+            115
+          ],
+          [
+            44,
+            118
+          ],
+          [
+            45,
+            46
+          ],
+          [
+            45,
+            48
+          ],
+          [
+            45,
+            69
+          ],
+          [
+            45,
+            73
+          ],
+          [
+            45,
+            82
+          ],
+          [
+            45,
+            83
+          ],
+          [
+            45,
+            89
+          ],
+          [
+            45,
+            94
+          ],
+          [
+            45,
+            107
+          ],
+          [
+            46,
+            52
+          ],
+          [
+            46,
+            80
+          ],
+          [
+            46,
+            92
+          ],
+          [
+            46,
+            99
+          ],
+          [
+            46,
+            101
+          ],
+          [
+            46,
+            105
+          ],
+          [
+            46,
+            117
+          ],
+          [
+            46,
+            125
+          ],
+          [
+            47,
+            62
+          ],
+          [
+            47,
+            73
+          ],
+          [
+            47,
+            91
+          ],
+          [
+            47,
+            112
+          ],
+          [
+            48,
+            54
+          ],
+          [
+            48,
+            68
+          ],
+          [
+            48,
+            78
+          ],
+          [
+            48,
+            115
+          ],
+          [
+            48,
+            127
+          ],
+          [
+            49,
+            52
+          ],
+          [
+            49,
+            57
+          ],
+          [
+            49,
+            73
+          ],
+          [
+            49,
+            124
+          ],
+          [
+            50,
+            71
+          ],
+          [
+            50,
+            73
+          ],
+          [
+            50,
+            84
+          ],
+          [
+            50,
+            97
+          ],
+          [
+            50,
+            124
+          ],
+          [
+            50,
+            126
+          ],
+          [
+            51,
+            54
+          ],
+          [
+            51,
+            77
+          ],
+          [
+            51,
+            85
+          ],
+          [
+            51,
+            90
+          ],
+          [
+            51,
+            118
+          ],
+          [
+            51,
+            121
+          ],
+          [
+            52,
+            53
+          ],
+          [
+            52,
+            57
+          ],
+          [
+            52,
+            73
+          ],
+          [
+            52,
+            105
+          ],
+          [
+            52,
+            107
+          ],
+          [
+            52,
+            111
+          ],
+          [
+            52,
+            124
+          ],
+          [
+            53,
+            65
+          ],
+          [
+            53,
+            102
+          ],
+          [
+            53,
+            104
+          ],
+          [
+            54,
+            96
+          ],
+          [
+            54,
+            113
+          ],
+          [
+            54,
+            114
+          ],
+          [
+            55,
+            56
+          ],
+          [
+            55,
+            99
+          ],
+          [
+            55,
+            107
+          ],
+          [
+            55,
+            112
+          ],
+          [
+            55,
+            115
+          ],
+          [
+            55,
+            122
+          ],
+          [
+            56,
+            94
+          ],
+          [
+            56,
+            123
+          ],
+          [
+            57,
+            60
+          ],
+          [
+            57,
+            70
+          ],
+          [
+            57,
+            79
+          ],
+          [
+            57,
+            86
+          ],
+          [
+            57,
+            99
+          ],
+          [
+            57,
+            105
+          ],
+          [
+            57,
+            110
+          ],
+          [
+            57,
+            116
+          ],
+          [
+            58,
+            63
+          ],
+          [
+            58,
+            84
+          ],
+          [
+            58,
+            96
+          ],
+          [
+            58,
+            97
+          ],
+          [
+            58,
+            103
+          ],
+          [
+            58,
+            115
+          ],
+          [
+            58,
+            118
+          ],
+          [
+            60,
+            64
+          ],
+          [
+            60,
+            90
+          ],
+          [
+            60,
+            94
+          ],
+          [
+            60,
+            97
+          ],
+          [
+            60,
+            117
+          ],
+          [
+            61,
+            77
+          ],
+          [
+            61,
+            80
+          ],
+          [
+            61,
+            81
+          ],
+          [
+            61,
+            92
+          ],
+          [
+            61,
+            102
+          ],
+          [
+            61,
+            106
+          ],
+          [
+            61,
+            117
+          ],
+          [
+            61,
+            122
+          ],
+          [
+            63,
+            97
+          ],
+          [
+            63,
+            100
+          ],
+          [
+            65,
+            69
+          ],
+          [
+            65,
+            79
+          ],
+          [
+            65,
+            101
+          ],
+          [
+            65,
+            115
+          ],
+          [
+            65,
+            118
+          ],
+          [
+            66,
+            70
+          ],
+          [
+            66,
+            95
+          ],
+          [
+            66,
+            121
+          ],
+          [
+            67,
+            68
+          ],
+          [
+            67,
+            81
+          ],
+          [
+            67,
+            83
+          ],
+          [
+            67,
+            99
+          ],
+          [
+            67,
+            102
+          ],
+          [
+            68,
+            88
+          ],
+          [
+            68,
+            89
+          ],
+          [
+            68,
+            106
+          ],
+          [
+            68,
+            113
+          ],
+          [
+            69,
+            82
+          ],
+          [
+            69,
+            115
+          ],
+          [
+            69,
+            120
+          ],
+          [
+            70,
+            75
+          ],
+          [
+            70,
+            86
+          ],
+          [
+            71,
+            84
+          ],
+          [
+            71,
+            122
+          ],
+          [
+            72,
+            94
+          ],
+          [
+            72,
+            115
+          ],
+          [
+            73,
+            82
+          ],
+          [
+            73,
+            90
+          ],
+          [
+            73,
+            96
+          ],
+          [
+            73,
+            124
+          ],
+          [
+            74,
+            87
+          ],
+          [
+            75,
+            76
+          ],
+          [
+            75,
+            97
+          ],
+          [
+            75,
+            127
+          ],
+          [
+            77,
+            80
+          ],
+          [
+            77,
+            90
+          ],
+          [
+            77,
+            104
+          ],
+          [
+            77,
+            114
+          ],
+          [
+            77,
+            123
+          ],
+          [
+            77,
+            124
+          ],
+          [
+            78,
+            81
+          ],
+          [
+            79,
+            82
+          ],
+          [
+            79,
+            109
+          ],
+          [
+            80,
+            84
+          ],
+          [
+            80,
+            90
+          ],
+          [
+            80,
+            96
+          ],
+          [
+            81,
+            83
+          ],
+          [
+            81,
+            89
+          ],
+          [
+            81,
+            92
+          ],
+          [
+            81,
+            122
+          ],
+          [
+            82,
+            89
+          ],
+          [
+            82,
+            124
+          ],
+          [
+            82,
+            125
+          ],
+          [
+            83,
+            106
+          ],
+          [
+            84,
+            108
+          ],
+          [
+            84,
+            116
+          ],
+          [
+            84,
+            126
+          ],
+          [
+            85,
+            100
+          ],
+          [
+            85,
+            105
+          ],
+          [
+            85,
+            126
+          ],
+          [
+            86,
+            100
+          ],
+          [
+            86,
+            109
+          ],
+          [
+            87,
+            93
+          ],
+          [
+            87,
+            105
+          ],
+          [
+            88,
+            125
+          ],
+          [
+            89,
+            117
+          ],
+          [
+            90,
+            93
+          ],
+          [
+            90,
+            98
+          ],
+          [
+            90,
+            102
+          ],
+          [
+            90,
+            112
+          ],
+          [
+            90,
+            117
+          ],
+          [
+            90,
+            124
+          ],
+          [
+            91,
+            99
+          ],
+          [
+            91,
+            102
+          ],
+          [
+            91,
+            121
+          ],
+          [
+            91,
+            124
+          ],
+          [
+            92,
+            117
+          ],
+          [
+            92,
+            118
+          ],
+          [
+            92,
+            122
+          ],
+          [
+            93,
+            121
+          ],
+          [
+            94,
+            101
+          ],
+          [
+            94,
+            113
+          ],
+          [
+            94,
+            118
+          ],
+          [
+            95,
+            111
+          ],
+          [
+            95,
+            120
+          ],
+          [
+            96,
+            99
+          ],
+          [
+            96,
+            101
+          ],
+          [
+            97,
+            106
+          ],
+          [
+            97,
+            112
+          ],
+          [
+            98,
+            110
+          ],
+          [
+            99,
+            102
+          ],
+          [
+            99,
+            117
+          ],
+          [
+            101,
+            110
+          ],
+          [
+            101,
+            112
+          ],
+          [
+            102,
+            112
+          ],
+          [
+            103,
+            117
+          ],
+          [
+            104,
+            117
+          ],
+          [
+            104,
+            119
+          ],
+          [
+            106,
+            113
+          ],
+          [
+            106,
+            115
+          ],
+          [
+            106,
+            118
+          ],
+          [
+            107,
+            117
+          ],
+          [
+            107,
+            121
+          ],
+          [
+            108,
+            125
+          ],
+          [
+            109,
+            116
+          ],
+          [
+            109,
+            119
+          ],
+          [
+            111,
+            116
+          ],
+          [
+            111,
+            120
+          ],
+          [
+            112,
+            117
+          ],
+          [
+            114,
+            124
+          ],
+          [
+            117,
+            123
+          ],
+          [
+            118,
+            127
+          ],
+          [
+            120,
+            123
+          ],
+          [
+            121,
+            124
+          ],
+          [
+            125,
+            127
+          ]
+        ],
+        "requests": [
+          {
+            "id": "r0",
+            "source": 105,
+            "destination": 5,
+            "arrival": 0,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r1",
+            "source": 64,
+            "destination": 26,
+            "arrival": 0,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r2",
+            "source": 70,
+            "destination": 30,
+            "arrival": 0,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r3",
+            "source": 5,
+            "destination": 54,
+            "arrival": 0,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r4",
+            "source": 22,
+            "destination": 108,
+            "arrival": 0,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r5",
+            "source": 5,
+            "destination": 64,
+            "arrival": 0,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r6",
+            "source": 79,
+            "destination": 35,
+            "arrival": 0,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r7",
+            "source": 19,
+            "destination": 123,
+            "arrival": 0,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r8",
+            "source": 87,
+            "destination": 10,
+            "arrival": 0,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r9",
+            "source": 64,
+            "destination": 126,
+            "arrival": 0,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r10",
+            "source": 38,
+            "destination": 62,
+            "arrival": 0,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r11",
+            "source": 6,
+            "destination": 116,
+            "arrival": 0,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r12",
+            "source": 5,
+            "destination": 62,
+            "arrival": 0,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r13",
+            "source": 80,
+            "destination": 4,
+            "arrival": 0,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r14",
+            "source": 93,
+            "destination": 126,
+            "arrival": 0,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r15",
+            "source": 66,
+            "destination": 59,
+            "arrival": 4,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r16",
+            "source": 74,
+            "destination": 88,
+            "arrival": 4,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r17",
+            "source": 104,
+            "destination": 71,
+            "arrival": 4,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r18",
+            "source": 76,
+            "destination": 56,
+            "arrival": 4,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r19",
+            "source": 59,
+            "destination": 108,
+            "arrival": 4,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r20",
+            "source": 1,
+            "destination": 98,
+            "arrival": 4,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r21",
+            "source": 4,
+            "destination": 31,
+            "arrival": 4,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r22",
+            "source": 59,
+            "destination": 121,
+            "arrival": 4,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r23",
+            "source": 98,
+            "destination": 89,
+            "arrival": 4,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r24",
+            "source": 48,
+            "destination": 116,
+            "arrival": 4,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r25",
+            "source": 95,
+            "destination": 67,
+            "arrival": 4,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r26",
+            "source": 102,
+            "destination": 109,
+            "arrival": 4,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r27",
+            "source": 76,
+            "destination": 40,
+            "arrival": 4,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r28",
+            "source": 98,
+            "destination": 8,
+            "arrival": 4,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r29",
+            "source": 59,
+            "destination": 71,
+            "arrival": 4,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r30",
+            "source": 76,
+            "destination": 8,
+            "arrival": 8,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r31",
+            "source": 95,
+            "destination": 31,
+            "arrival": 8,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r32",
+            "source": 71,
+            "destination": 29,
+            "arrival": 8,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r33",
+            "source": 33,
+            "destination": 83,
+            "arrival": 8,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r34",
+            "source": 62,
+            "destination": 79,
+            "arrival": 8,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r35",
+            "source": 86,
+            "destination": 59,
+            "arrival": 8,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r36",
+            "source": 38,
+            "destination": 13,
+            "arrival": 8,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r37",
+            "source": 82,
+            "destination": 67,
+            "arrival": 8,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r38",
+            "source": 115,
+            "destination": 29,
+            "arrival": 8,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r39",
+            "source": 83,
+            "destination": 22,
+            "arrival": 8,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r40",
+            "source": 119,
+            "destination": 83,
+            "arrival": 8,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r41",
+            "source": 76,
+            "destination": 120,
+            "arrival": 8,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r42",
+            "source": 40,
+            "destination": 97,
+            "arrival": 8,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r43",
+            "source": 59,
+            "destination": 77,
+            "arrival": 8,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r44",
+            "source": 41,
+            "destination": 38,
+            "arrival": 8,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r45",
+            "source": 19,
+            "destination": 37,
+            "arrival": 12,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r46",
+            "source": 34,
+            "destination": 121,
+            "arrival": 12,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r47",
+            "source": 105,
+            "destination": 59,
+            "arrival": 12,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r48",
+            "source": 101,
+            "destination": 74,
+            "arrival": 12,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r49",
+            "source": 68,
+            "destination": 22,
+            "arrival": 12,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r50",
+            "source": 86,
+            "destination": 56,
+            "arrival": 12,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r51",
+            "source": 104,
+            "destination": 83,
+            "arrival": 12,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r52",
+            "source": 49,
+            "destination": 74,
+            "arrival": 12,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r53",
+            "source": 83,
+            "destination": 74,
+            "arrival": 12,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r54",
+            "source": 48,
+            "destination": 59,
+            "arrival": 12,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r55",
+            "source": 121,
+            "destination": 96,
+            "arrival": 12,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r56",
+            "source": 14,
+            "destination": 98,
+            "arrival": 12,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r57",
+            "source": 0,
+            "destination": 84,
+            "arrival": 12,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r58",
+            "source": 114,
+            "destination": 105,
+            "arrival": 12,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r59",
+            "source": 117,
+            "destination": 38,
+            "arrival": 12,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r60",
+            "source": 81,
+            "destination": 90,
+            "arrival": 16,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r61",
+            "source": 113,
+            "destination": 109,
+            "arrival": 16,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r62",
+            "source": 120,
+            "destination": 5,
+            "arrival": 16,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r63",
+            "source": 24,
+            "destination": 91,
+            "arrival": 16,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r64",
+            "source": 98,
+            "destination": 85,
+            "arrival": 16,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r65",
+            "source": 76,
+            "destination": 62,
+            "arrival": 16,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r66",
+            "source": 108,
+            "destination": 120,
+            "arrival": 16,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r67",
+            "source": 62,
+            "destination": 59,
+            "arrival": 16,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r68",
+            "source": 62,
+            "destination": 75,
+            "arrival": 16,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r69",
+            "source": 59,
+            "destination": 92,
+            "arrival": 16,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r70",
+            "source": 47,
+            "destination": 59,
+            "arrival": 16,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r71",
+            "source": 104,
+            "destination": 111,
+            "arrival": 16,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r72",
+            "source": 5,
+            "destination": 0,
+            "arrival": 16,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r73",
+            "source": 95,
+            "destination": 76,
+            "arrival": 16,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r74",
+            "source": 100,
+            "destination": 10,
+            "arrival": 16,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r75",
+            "source": 76,
+            "destination": 54,
+            "arrival": 20,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r76",
+            "source": 79,
+            "destination": 10,
+            "arrival": 20,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r77",
+            "source": 1,
+            "destination": 107,
+            "arrival": 20,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r78",
+            "source": 100,
+            "destination": 59,
+            "arrival": 20,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r79",
+            "source": 109,
+            "destination": 74,
+            "arrival": 20,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r80",
+            "source": 68,
+            "destination": 75,
+            "arrival": 20,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r81",
+            "source": 110,
+            "destination": 6,
+            "arrival": 20,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r82",
+            "source": 88,
+            "destination": 56,
+            "arrival": 20,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r83",
+            "source": 5,
+            "destination": 68,
+            "arrival": 20,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r84",
+            "source": 0,
+            "destination": 125,
+            "arrival": 20,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r85",
+            "source": 88,
+            "destination": 90,
+            "arrival": 20,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r86",
+            "source": 83,
+            "destination": 108,
+            "arrival": 20,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r87",
+            "source": 5,
+            "destination": 40,
+            "arrival": 20,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r88",
+            "source": 49,
+            "destination": 5,
+            "arrival": 20,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r89",
+            "source": 12,
+            "destination": 22,
+            "arrival": 20,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r90",
+            "source": 76,
+            "destination": 14,
+            "arrival": 24,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r91",
+            "source": 122,
+            "destination": 40,
+            "arrival": 24,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r92",
+            "source": 93,
+            "destination": 10,
+            "arrival": 24,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r93",
+            "source": 68,
+            "destination": 7,
+            "arrival": 24,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r94",
+            "source": 34,
+            "destination": 28,
+            "arrival": 24,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r95",
+            "source": 59,
+            "destination": 90,
+            "arrival": 24,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r96",
+            "source": 43,
+            "destination": 59,
+            "arrival": 24,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r97",
+            "source": 50,
+            "destination": 21,
+            "arrival": 24,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r98",
+            "source": 106,
+            "destination": 5,
+            "arrival": 24,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r99",
+            "source": 83,
+            "destination": 59,
+            "arrival": 24,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r100",
+            "source": 63,
+            "destination": 59,
+            "arrival": 24,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r101",
+            "source": 43,
+            "destination": 27,
+            "arrival": 24,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r102",
+            "source": 59,
+            "destination": 46,
+            "arrival": 24,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r103",
+            "source": 120,
+            "destination": 62,
+            "arrival": 24,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r104",
+            "source": 40,
+            "destination": 59,
+            "arrival": 24,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r105",
+            "source": 43,
+            "destination": 7,
+            "arrival": 28,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r106",
+            "source": 108,
+            "destination": 40,
+            "arrival": 28,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r107",
+            "source": 93,
+            "destination": 19,
+            "arrival": 28,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r108",
+            "source": 25,
+            "destination": 76,
+            "arrival": 28,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r109",
+            "source": 100,
+            "destination": 66,
+            "arrival": 28,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r110",
+            "source": 35,
+            "destination": 59,
+            "arrival": 28,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r111",
+            "source": 15,
+            "destination": 22,
+            "arrival": 28,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r112",
+            "source": 7,
+            "destination": 5,
+            "arrival": 28,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r113",
+            "source": 116,
+            "destination": 42,
+            "arrival": 28,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r114",
+            "source": 21,
+            "destination": 68,
+            "arrival": 28,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r115",
+            "source": 67,
+            "destination": 5,
+            "arrival": 28,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r116",
+            "source": 7,
+            "destination": 14,
+            "arrival": 28,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r117",
+            "source": 127,
+            "destination": 49,
+            "arrival": 28,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r118",
+            "source": 59,
+            "destination": 38,
+            "arrival": 28,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r119",
+            "source": 108,
+            "destination": 6,
+            "arrival": 28,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r120",
+            "source": 13,
+            "destination": 108,
+            "arrival": 32,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r121",
+            "source": 10,
+            "destination": 85,
+            "arrival": 32,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r122",
+            "source": 119,
+            "destination": 38,
+            "arrival": 32,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r123",
+            "source": 44,
+            "destination": 59,
+            "arrival": 32,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r124",
+            "source": 99,
+            "destination": 85,
+            "arrival": 32,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r125",
+            "source": 47,
+            "destination": 109,
+            "arrival": 32,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r126",
+            "source": 37,
+            "destination": 76,
+            "arrival": 32,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r127",
+            "source": 22,
+            "destination": 88,
+            "arrival": 32,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r128",
+            "source": 79,
+            "destination": 121,
+            "arrival": 32,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r129",
+            "source": 38,
+            "destination": 14,
+            "arrival": 32,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r130",
+            "source": 121,
+            "destination": 48,
+            "arrival": 32,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r131",
+            "source": 5,
+            "destination": 78,
+            "arrival": 32,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r132",
+            "source": 26,
+            "destination": 109,
+            "arrival": 32,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r133",
+            "source": 100,
+            "destination": 28,
+            "arrival": 32,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r134",
+            "source": 31,
+            "destination": 59,
+            "arrival": 32,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r135",
+            "source": 79,
+            "destination": 80,
+            "arrival": 36,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r136",
+            "source": 83,
+            "destination": 95,
+            "arrival": 36,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r137",
+            "source": 59,
+            "destination": 87,
+            "arrival": 36,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r138",
+            "source": 62,
+            "destination": 33,
+            "arrival": 36,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r139",
+            "source": 59,
+            "destination": 120,
+            "arrival": 36,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r140",
+            "source": 126,
+            "destination": 119,
+            "arrival": 36,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r141",
+            "source": 78,
+            "destination": 84,
+            "arrival": 36,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r142",
+            "source": 5,
+            "destination": 93,
+            "arrival": 36,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r143",
+            "source": 72,
+            "destination": 52,
+            "arrival": 36,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r144",
+            "source": 6,
+            "destination": 125,
+            "arrival": 36,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r145",
+            "source": 59,
+            "destination": 12,
+            "arrival": 36,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r146",
+            "source": 29,
+            "destination": 85,
+            "arrival": 36,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r147",
+            "source": 29,
+            "destination": 5,
+            "arrival": 36,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r148",
+            "source": 8,
+            "destination": 5,
+            "arrival": 36,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          },
+          {
+            "id": "r149",
+            "source": 123,
+            "destination": 38,
+            "arrival": 36,
+            "ttl": 16,
+            "demand_pairs": 1,
+            "required_fidelity": 0.7,
+            "max_storage_slots": 10
+          }
+        ],
+        "horizon": 52,
+        "physical": {
+          "generation_probability": 1.0,
+          "swap_probability": 1.0,
+          "memory_capacity": 1,
+          "memory_lifetime": 100,
+          "initial_fidelity": 0.99,
+          "swap_degradation": 0.95,
+          "classical_delay_ps": 0,
+          "node_memory_capacity": null,
+          "max_width": 1,
+          "quantum_distance_m": 1000.0,
+          "quantum_attenuation_db_per_m": 0.0,
+          "quantum_polarization_fidelity": 1.0,
+          "memory_frequency_hz": 200000000.0,
+          "slot_duration_ps": 50000000,
+          "detector_efficiency": 1.0,
+          "bsm_success_probability": 1.0,
+          "memory_wavelength_nm": 500
+        }
+      },
+      "methods": {
+        "gnn": {
+          "metrics": {
+            "request_count": 150.0,
+            "completed_requests": 111.0,
+            "completion_rate": 0.74,
+            "throughput_per_slot": 2.1346153846153846,
+            "censored_flow_time_ps": 81960000410.0,
+            "mean_censored_latency_ps": 546400002.7333333,
+            "mean_success_latency_ps": 174414418.1081081,
+            "p95_completion_latency_ps": 280000010.0,
+            "decision_count": 13.0,
+            "attempted_request_count": 111.0,
+            "construction_attempt_count": 111.0,
+            "retry_count": 0.0,
+            "mean_decision_seconds": 0.4045682769232931,
+            "mean_planner_seconds": 0.10170017001219094,
+            "mean_policy_inference_seconds": 0.0,
+            "gnn_policy_decision_count": 10.0,
+            "gnn_invalid_decision_count": 0.0,
+            "gnn_invalid_decision_rate": 0.0,
+            "schedule_violation_count": 0.0,
+            "schedule_adherence": 1.0,
+            "makespan_ps": 2110000000.0,
+            "peak_memory_usage": 94.0,
+            "peak_physical_memory_usage": 94.0,
+            "peak_reserved_memory_units": 94.0,
+            "physical_memory_time_unit_ps": 95380003460.0,
+            "physical_memory_time_unit_slots": 1907.6000692,
+            "expiration_count": 0.0,
+            "fidelity_violation_count": 0.0,
+            "physical_failure_count": 0.0,
+            "physical_backend_rejection_count": 0.0,
+            "post_completion_validation_failure_count": 0.0,
+            "generation_event_count": 412.0,
+            "generation_protocol_attempt_count": 412.0,
+            "swap_protocol_attempt_count": 301.0,
+            "purification_protocol_attempt_count": 0.0,
+            "physical_protocol_attempt_count": 713.0,
+            "fidelity_check_count": 713.0,
+            "generation_physical_failure_count": 0.0,
+            "swap_physical_failure_count": 0.0,
+            "purification_physical_failure_count": 0.0,
+            "p95_decision_seconds": 0.538874699966982
+          },
+          "wall_seconds": 8.909485499956645,
+          "violations": [],
+          "construction_usage": {
+            "attempt_counts": {
+              "swap_tree_0": 39,
+              "swap_tree_1": 43,
+              "swap_tree_2": 9,
+              "swap_tree_3": 16,
+              "swap_tree_4": 4
+            },
+            "successful_attempt_counts": {
+              "swap_tree_0": 39,
+              "swap_tree_1": 43,
+              "swap_tree_2": 9,
+              "swap_tree_3": 16,
+              "swap_tree_4": 4
+            }
+          }
+        },
+        "qpass": {
+          "metrics": {
+            "request_count": 150.0,
+            "completed_requests": 112.0,
+            "completion_rate": 0.7466666666666667,
+            "throughput_per_slot": 2.1538461538461537,
+            "censored_flow_time_ps": 83600000740.0,
+            "mean_censored_latency_ps": 557333338.2666667,
+            "mean_success_latency_ps": 200000006.60714287,
+            "p95_completion_latency_ps": 365000000.0,
+            "decision_count": 13.0,
+            "attempted_request_count": 112.0,
+            "construction_attempt_count": 112.0,
+            "retry_count": 0.0,
+            "mean_decision_seconds": 0.08104538460835241,
+            "mean_planner_seconds": 0.09002040909730237,
+            "mean_policy_inference_seconds": 0.0,
+            "gnn_policy_decision_count": 0.0,
+            "gnn_invalid_decision_count": 0.0,
+            "gnn_invalid_decision_rate": 0.0,
+            "schedule_violation_count": 0.0,
+            "schedule_adherence": 1.0,
+            "makespan_ps": 2165000000.0,
+            "peak_memory_usage": 96.0,
+            "peak_physical_memory_usage": 96.0,
+            "peak_reserved_memory_units": 96.0,
+            "physical_memory_time_unit_ps": 97330005700.0,
+            "physical_memory_time_unit_slots": 1946.600114,
+            "expiration_count": 0.0,
+            "fidelity_violation_count": 0.0,
+            "physical_failure_count": 0.0,
+            "physical_backend_rejection_count": 0.0,
+            "post_completion_validation_failure_count": 0.0,
+            "generation_event_count": 410.0,
+            "generation_protocol_attempt_count": 410.0,
+            "swap_protocol_attempt_count": 298.0,
+            "purification_protocol_attempt_count": 0.0,
+            "physical_protocol_attempt_count": 708.0,
+            "fidelity_check_count": 708.0,
+            "generation_physical_failure_count": 0.0,
+            "swap_physical_failure_count": 0.0,
+            "purification_physical_failure_count": 0.0,
+            "mean_baseline_planning_seconds": 0.07937901539620586,
+            "p95_decision_seconds": 0.12624130002222955
+          },
+          "wall_seconds": 3.664702899986878,
+          "violations": [],
+          "construction_usage": {
+            "attempt_counts": {
+              "left_deep": 112
+            },
+            "successful_attempt_counts": {
+              "left_deep": 112
+            }
+          }
+        },
+        "greedy": {
+          "metrics": {
+            "request_count": 150.0,
+            "completed_requests": 112.0,
+            "completion_rate": 0.7466666666666667,
+            "throughput_per_slot": 2.1538461538461537,
+            "censored_flow_time_ps": 84090000900.0,
+            "mean_censored_latency_ps": 560600006.0,
+            "mean_success_latency_ps": 204375008.0357143,
+            "p95_completion_latency_ps": 365000000.0,
+            "decision_count": 13.0,
+            "attempted_request_count": 112.0,
+            "construction_attempt_count": 112.0,
+            "retry_count": 0.0,
+            "mean_decision_seconds": 0.08340659999073698,
+            "mean_planner_seconds": 0.09276842728087847,
+            "mean_policy_inference_seconds": 0.0,
+            "gnn_policy_decision_count": 0.0,
+            "gnn_invalid_decision_count": 0.0,
+            "gnn_invalid_decision_rate": 0.0,
+            "schedule_violation_count": 0.0,
+            "schedule_adherence": 1.0,
+            "makespan_ps": 2165000000.0,
+            "peak_memory_usage": 96.0,
+            "peak_physical_memory_usage": 96.0,
+            "peak_reserved_memory_units": 96.0,
+            "physical_memory_time_unit_ps": 98110006220.0,
+            "physical_memory_time_unit_slots": 1962.2001244,
+            "expiration_count": 0.0,
+            "fidelity_violation_count": 0.0,
+            "physical_failure_count": 0.0,
+            "physical_backend_rejection_count": 0.0,
+            "post_completion_validation_failure_count": 0.0,
+            "generation_event_count": 410.0,
+            "generation_protocol_attempt_count": 410.0,
+            "swap_protocol_attempt_count": 298.0,
+            "purification_protocol_attempt_count": 0.0,
+            "physical_protocol_attempt_count": 708.0,
+            "fidelity_check_count": 708.0,
+            "generation_physical_failure_count": 0.0,
+            "swap_physical_failure_count": 0.0,
+            "purification_physical_failure_count": 0.0,
+            "mean_baseline_planning_seconds": 0.08175524616112503,
+            "p95_decision_seconds": 0.11503220000304282
+          },
+          "wall_seconds": 3.646500700036995,
+          "violations": [],
+          "construction_usage": {
+            "attempt_counts": {
+              "left_deep": 112
+            },
+            "successful_attempt_counts": {
+              "left_deep": 112
+            }
+          }
+        }
+      }
+    }
+  ]
+}

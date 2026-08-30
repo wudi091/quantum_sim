@@ -17,7 +17,6 @@ from typing import Mapping
 
 import numpy as np
 import scipy
-from scipy.optimize import linprog
 
 from qnet_core.construction_api import ExecutionEvent
 from qnet_core.construction_metrics import (
@@ -52,9 +51,6 @@ from .milp_oracle import (
     is_numerically_optimal_stage,
 )
 from .gnn_policy import OnlineGNNPolicy
-from .ipm_gnn_policy import IPMGNNDecision, IPMGNNDecoderPolicy
-from .optimization_model import build_stage_one_model
-from .packing import PackingSolution, decode_continuous_primal
 from .physical_validation import (
     compile_selected_schedule,
 )
@@ -73,9 +69,6 @@ class OnlineTELGENConfig:
     decision_backend: str = "milp_teacher"
     gnn_checkpoint: str | None = None
     gnn_device: str = "auto"
-    ipm_gnn_checkpoint: str | None = None
-    ipm_gnn_device: str = "auto"
-    ipm_steps: int = 16
     milp_time_limit_seconds: float = 60.0
     milp_relative_gap: float = 0.0
 
@@ -91,29 +84,19 @@ class OnlineTELGENConfig:
         if not self.purification_kinds:
             raise ValueError("at least one purification kind is required")
         if self.decision_backend not in {
-            "milp_teacher", "gnn", "lp_teacher", "ipm_gnn",
+            "milp_teacher", "gnn",
         }:
             raise ValueError(
                 f"unknown online decision backend: {self.decision_backend}"
             )
-        if self.ipm_steps < 1:
-            raise ValueError("ipm_steps must be positive")
         if self.milp_time_limit_seconds <= 0:
             raise ValueError("milp_time_limit_seconds must be positive")
         if self.milp_relative_gap < 0:
             raise ValueError("milp_relative_gap cannot be negative")
         if self.gnn_device not in {"auto", "cpu", "cuda"}:
             raise ValueError(f"unknown GNN device: {self.gnn_device}")
-        if self.ipm_gnn_device not in {"auto", "cpu", "cuda"}:
-            raise ValueError(
-                f"unknown IPM GNN device: {self.ipm_gnn_device}"
-            )
         if self.decision_backend == "gnn" and not self.gnn_checkpoint:
             raise ValueError("GNN decision backend requires a checkpoint")
-        if self.decision_backend == "ipm_gnn" and not self.ipm_gnn_checkpoint:
-            raise ValueError(
-                "IPM GNN decision backend requires a checkpoint"
-            )
         if (
             self.decision_backend == "milp_teacher"
             and self.milp_relative_gap != 0.0
@@ -241,7 +224,6 @@ class OnlineTELGENController:
         *,
         milp_oracle: ConstructionAwareMILPOracle | None = None,
         gnn_policy: OnlineGNNPolicy | None = None,
-        ipm_gnn_policy: IPMGNNDecoderPolicy | None = None,
         scheduler: PersistentConstructionScheduler | None = None,
     ):
         self.spec = spec
@@ -251,7 +233,6 @@ class OnlineTELGENController:
             mip_relative_gap=self.config.milp_relative_gap,
         )
         self.gnn_policy = gnn_policy
-        self.ipm_gnn_policy = ipm_gnn_policy
         if self.config.decision_backend == "gnn":
             if self.gnn_policy is None:
                 self.gnn_policy = OnlineGNNPolicy.from_checkpoint(
@@ -260,17 +241,6 @@ class OnlineTELGENController:
                 )
         elif self.gnn_policy is not None:
             raise ValueError("a GNN policy requires the GNN decision backend")
-        if self.config.decision_backend == "ipm_gnn":
-            if self.ipm_gnn_policy is None:
-                self.ipm_gnn_policy = IPMGNNDecoderPolicy.from_checkpoint(
-                    self.config.ipm_gnn_checkpoint,
-                    steps=self.config.ipm_steps,
-                    device=self.config.ipm_gnn_device,
-                )
-        elif self.ipm_gnn_policy is not None:
-            raise ValueError(
-                "an IPM GNN policy requires the ipm_gnn decision backend"
-            )
         self.capacities = build_resource_capacities(spec)
         self.scheduler = scheduler or PersistentConstructionScheduler(spec)
         self.requests = {request.id: request for request in spec.requests}
@@ -425,49 +395,6 @@ class OnlineTELGENController:
         )
         return self.gnn_policy.decide(graph)
 
-    def _solve_lp_decision(
-        self,
-        problem: PlanningBatchProblem | None,
-    ) -> tuple[PackingSolution | None, float]:
-        if problem is None or not problem.expansion.variables:
-            return None, 0.0
-        started = perf_counter()
-        variables = tuple(sorted(
-            problem.expansion.variables,
-            key=lambda item: item.variable_id,
-        ))
-        stage = build_stage_one_model(
-            variables,
-            problem.capacities,
-            reserved_usage=problem.reserved_usage_map,
-        )
-        result = linprog(
-            stage.objective,
-            A_ub=stage.a_ub,
-            b_ub=stage.b_ub,
-            bounds=(0.0, 1.0),
-            method="highs",
-        )
-        if not result.success or result.x is None:
-            raise RuntimeError(f"LP teacher failed: {result.message}")
-        selection = decode_continuous_primal(
-            variables,
-            result.x,
-            problem.capacities,
-            reserved_usage=problem.reserved_usage_map,
-        )
-        return selection, perf_counter() - started
-
-    def _solve_ipm_gnn_decision(
-        self,
-        problem: PlanningBatchProblem | None,
-    ) -> IPMGNNDecision | None:
-        if problem is None or not problem.expansion.variables:
-            return None
-        if self.ipm_gnn_policy is None:
-            raise RuntimeError("IPM GNN decision backend has no loaded policy")
-        return self.ipm_gnn_policy.decide(problem)
-
     def _register_selected_variables(
         self,
         slot: int,
@@ -545,10 +472,7 @@ class OnlineTELGENController:
         )
         milp_solution: DiscreteOracleSolution | None = None
         gnn_decision = None
-        lp_solution: PackingSolution | None = None
-        ipm_gnn_decision: IPMGNNDecision | None = None
         milp_solve_seconds = 0.0
-        lp_solve_seconds = 0.0
         if self.config.decision_backend == "milp_teacher":
             milp_solution, milp_solve_seconds = self._solve_milp_decision(
                 problem
@@ -561,10 +485,6 @@ class OnlineTELGENController:
                 running_request_ids=running,
                 attempt_counts=attempt_counts_before,
             )
-        elif self.config.decision_backend == "lp_teacher":
-            lp_solution, lp_solve_seconds = self._solve_lp_decision(problem)
-        elif self.config.decision_backend == "ipm_gnn":
-            ipm_gnn_decision = self._solve_ipm_gnn_decision(problem)
         selected_ids: tuple[str, ...] = ()
         selected_count = 0
         expected_completed_mass = 0.0
@@ -628,32 +548,6 @@ class OnlineTELGENController:
                     selected_variables,
                     eligible,
                 )
-        elif lp_solution is not None:
-            selected_variables = lp_solution.selected_variables
-            selected_ids = tuple(
-                variable.variable_id for variable in selected_variables
-            )
-            selected_count = lp_solution.completed_request_count
-            expected_completed_mass = lp_solution.expected_completed_request_mass
-            self._register_selected_variables(
-                slot,
-                selected_variables,
-                eligible,
-            )
-        elif ipm_gnn_decision is not None:
-            selected_variables = ipm_gnn_decision.selection.selected_variables
-            selected_ids = tuple(
-                variable.variable_id for variable in selected_variables
-            )
-            selected_count = ipm_gnn_decision.selection.completed_request_count
-            expected_completed_mass = (
-                ipm_gnn_decision.selection.expected_completed_request_mass
-            )
-            self._register_selected_variables(
-                slot,
-                selected_variables,
-                eligible,
-            )
         elif self.config.decision_backend == "milp_teacher":
             reason = (
                 "no_eligible_requests"
@@ -706,15 +600,7 @@ class OnlineTELGENController:
                 else (
                     "gnn_autoregressive_masked"
                     if gnn_decision is not None
-                    else (
-                        "lp_decoded"
-                        if lp_solution is not None
-                        else (
-                            "ipm_gnn_decoded"
-                            if ipm_gnn_decision is not None
-                            else "none"
-                        )
-                    )
+                    else "none"
                 )
             ),
             selected_expected_completion_latency=(
@@ -723,15 +609,7 @@ class OnlineTELGENController:
                 else (
                     gnn_decision.selection.total_completion_latency
                     if gnn_decision is not None
-                    else (
-                        lp_solution.total_completion_latency
-                        if lp_solution is not None
-                        else (
-                            ipm_gnn_decision.selection.total_completion_latency
-                            if ipm_gnn_decision is not None
-                            else 0.0
-                        )
-                    )
+                    else 0.0
                 )
             ),
             planner_seconds=(
@@ -740,23 +618,15 @@ class OnlineTELGENController:
                 else (
                     gnn_decision.inference_seconds
                     if gnn_decision is not None
-                    else (
-                        lp_solve_seconds
-                        if lp_solution is not None
-                        else (
-                            ipm_gnn_decision.inference_seconds
-                            if ipm_gnn_decision is not None
-                            else 0.0
-                        )
-                    )
+                    else 0.0
                 )
             ),
             decision_seconds=decision_seconds,
             decision_backend=self.config.decision_backend,
             policy_inference_seconds=(
                 0.0
-                if ipm_gnn_decision is None
-                else ipm_gnn_decision.inference_seconds
+                if gnn_decision is None
+                else gnn_decision.inference_seconds
             ),
             milp_stage_one_mip_gap=(
                 None
@@ -957,14 +827,12 @@ def run_online_telgen(
     *,
     milp_oracle: ConstructionAwareMILPOracle | None = None,
     gnn_policy: OnlineGNNPolicy | None = None,
-    ipm_gnn_policy: IPMGNNDecoderPolicy | None = None,
 ) -> OnlineTELGENResult:
     return OnlineTELGENController(
         spec,
         config,
         milp_oracle=milp_oracle,
         gnn_policy=gnn_policy,
-        ipm_gnn_policy=ipm_gnn_policy,
     ).run()
 
 

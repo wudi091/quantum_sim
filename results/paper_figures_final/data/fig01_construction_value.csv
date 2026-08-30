@@ -1,0 +1,401 @@
+metric,seed,strategy,value
+planned_requests,3101,Construction-aware,11.0
+planned_requests,3101,Best fixed,9.0
+planned_requests,3102,Construction-aware,9.0
+planned_requests,3102,Best fixed,8.0
+planned_requests,3103,Construction-aware,10.0
+planned_requests,3103,Best fixed,9.0
+planned_requests,3104,Construction-aware,11.0
+planned_requests,3104,Best fixed,9.0
+planned_requests,3105,Construction-aware,9.0
+planned_requests,3105,Best fixed,8.0
+planned_requests,3106,Construction-aware,11.0
+planned_requests,3106,Best fixed,10.0
+planned_requests,3107,Construction-aware,10.0
+planned_requests,3107,Best fixed,9.0
+planned_requests,3108,Construction-aware,10.0
+planned_requests,3108,Best fixed,8.0
+planned_requests,3109,Construction-aware,10.0
+planned_requests,3109,Best fixed,9.0
+planned_requests,3110,Construction-aware,10.0
+planned_requests,3110,Best fixed,9.0
+planned_requests,3111,Construction-aware,10.0
+planned_requests,3111,Best fixed,9.0
+planned_requests,3112,Construction-aware,11.0
+planned_requests,3112,Best fixed,10.0
+planned_requests,3113,Construction-aware,12.0
+planned_requests,3113,Best fixed,10.0
+planned_requests,3114,Construction-aware,9.0
+planned_requests,3114,Best fixed,9.0
+planned_requests,3115,Construction-aware,11.0
+planned_requests,3115,Best fixed,10.0
+planned_requests,3116,Construction-aware,9.0
+planned_requests,3116,Best fixed,8.0
+planned_requests,3117,Construction-aware,10.0
+planned_requests,3117,Best fixed,10.0
+planned_requests,3118,Construction-aware,10.0
+planned_requests,3118,Best fixed,8.0
+planned_requests,3119,Construction-aware,11.0
+planned_requests,3119,Best fixed,9.0
+planned_requests,3120,Construction-aware,11.0
+planned_requests,3120,Best fixed,9.0
+planned_requests,3121,Construction-aware,10.0
+planned_requests,3121,Best fixed,8.0
+planned_requests,3122,Construction-aware,10.0
+planned_requests,3122,Best fixed,9.0
+planned_requests,3123,Construction-aware,10.0
+planned_requests,3123,Best fixed,9.0
+planned_requests,3124,Construction-aware,11.0
+planned_requests,3124,Best fixed,10.0
+planned_requests,3125,Construction-aware,9.0
+planned_requests,3125,Best fixed,8.0
+planned_requests,3126,Construction-aware,10.0
+planned_requests,3126,Best fixed,9.0
+planned_requests,3127,Construction-aware,11.0
+planned_requests,3127,Best fixed,9.0
+planned_requests,3128,Construction-aware,10.0
+planned_requests,3128,Best fixed,10.0
+planned_requests,3129,Construction-aware,9.0
+planned_requests,3129,Best fixed,8.0
+planned_requests,3130,Construction-aware,11.0
+planned_requests,3130,Best fixed,10.0
+planned_requests,3131,Construction-aware,12.0
+planned_requests,3131,Best fixed,10.0
+planned_requests,3132,Construction-aware,10.0
+planned_requests,3132,Best fixed,9.0
+planned_requests,3133,Construction-aware,12.0
+planned_requests,3133,Best fixed,10.0
+planned_requests,3134,Construction-aware,10.0
+planned_requests,3134,Best fixed,8.0
+planned_requests,3135,Construction-aware,10.0
+planned_requests,3135,Best fixed,9.0
+planned_requests,3136,Construction-aware,9.0
+planned_requests,3136,Best fixed,8.0
+planned_requests,3137,Construction-aware,12.0
+planned_requests,3137,Best fixed,10.0
+planned_requests,3138,Construction-aware,10.0
+planned_requests,3138,Best fixed,9.0
+planned_requests,3139,Construction-aware,12.0
+planned_requests,3139,Best fixed,9.0
+planned_requests,3140,Construction-aware,10.0
+planned_requests,3140,Best fixed,8.0
+planned_requests,3141,Construction-aware,9.0
+planned_requests,3141,Best fixed,8.0
+planned_requests,3142,Construction-aware,10.0
+planned_requests,3142,Best fixed,9.0
+planned_requests,3143,Construction-aware,11.0
+planned_requests,3143,Best fixed,9.0
+planned_requests,3144,Construction-aware,10.0
+planned_requests,3144,Best fixed,9.0
+planned_requests,3145,Construction-aware,11.0
+planned_requests,3145,Best fixed,10.0
+planned_requests,3146,Construction-aware,11.0
+planned_requests,3146,Best fixed,9.0
+planned_requests,3147,Construction-aware,11.0
+planned_requests,3147,Best fixed,10.0
+planned_requests,3148,Construction-aware,11.0
+planned_requests,3148,Best fixed,10.0
+planned_requests,3149,Construction-aware,9.0
+planned_requests,3149,Best fixed,8.0
+planned_requests,3150,Construction-aware,10.0
+planned_requests,3150,Best fixed,9.0
+planned_requests,3151,Construction-aware,11.0
+planned_requests,3151,Best fixed,9.0
+planned_requests,3152,Construction-aware,12.0
+planned_requests,3152,Best fixed,11.0
+planned_requests,3153,Construction-aware,10.0
+planned_requests,3153,Best fixed,8.0
+planned_requests,3154,Construction-aware,10.0
+planned_requests,3154,Best fixed,9.0
+planned_requests,3155,Construction-aware,9.0
+planned_requests,3155,Best fixed,8.0
+planned_requests,3156,Construction-aware,11.0
+planned_requests,3156,Best fixed,10.0
+planned_requests,3157,Construction-aware,10.0
+planned_requests,3157,Best fixed,9.0
+planned_requests,3158,Construction-aware,11.0
+planned_requests,3158,Best fixed,9.0
+planned_requests,3159,Construction-aware,9.0
+planned_requests,3159,Best fixed,8.0
+planned_requests,3160,Construction-aware,12.0
+planned_requests,3160,Best fixed,10.0
+planned_requests,3161,Construction-aware,12.0
+planned_requests,3161,Best fixed,10.0
+planned_requests,3162,Construction-aware,9.0
+planned_requests,3162,Best fixed,8.0
+planned_requests,3163,Construction-aware,10.0
+planned_requests,3163,Best fixed,8.0
+planned_requests,3164,Construction-aware,9.0
+planned_requests,3164,Best fixed,8.0
+planned_requests,3165,Construction-aware,13.0
+planned_requests,3165,Best fixed,10.0
+planned_requests,3166,Construction-aware,10.0
+planned_requests,3166,Best fixed,9.0
+planned_requests,3167,Construction-aware,10.0
+planned_requests,3167,Best fixed,9.0
+planned_requests,3168,Construction-aware,11.0
+planned_requests,3168,Best fixed,9.0
+planned_requests,3169,Construction-aware,10.0
+planned_requests,3169,Best fixed,8.0
+planned_requests,3170,Construction-aware,10.0
+planned_requests,3170,Best fixed,10.0
+planned_requests,3171,Construction-aware,9.0
+planned_requests,3171,Best fixed,8.0
+planned_requests,3172,Construction-aware,8.0
+planned_requests,3172,Best fixed,8.0
+planned_requests,3173,Construction-aware,10.0
+planned_requests,3173,Best fixed,8.0
+planned_requests,3174,Construction-aware,12.0
+planned_requests,3174,Best fixed,10.0
+planned_requests,3175,Construction-aware,10.0
+planned_requests,3175,Best fixed,9.0
+planned_requests,3176,Construction-aware,11.0
+planned_requests,3176,Best fixed,10.0
+planned_requests,3177,Construction-aware,10.0
+planned_requests,3177,Best fixed,9.0
+planned_requests,3178,Construction-aware,8.0
+planned_requests,3178,Best fixed,7.0
+planned_requests,3179,Construction-aware,12.0
+planned_requests,3179,Best fixed,9.0
+planned_requests,3180,Construction-aware,10.0
+planned_requests,3180,Best fixed,9.0
+planned_requests,3181,Construction-aware,12.0
+planned_requests,3181,Best fixed,11.0
+planned_requests,3182,Construction-aware,11.0
+planned_requests,3182,Best fixed,9.0
+planned_requests,3183,Construction-aware,9.0
+planned_requests,3183,Best fixed,8.0
+planned_requests,3184,Construction-aware,10.0
+planned_requests,3184,Best fixed,9.0
+planned_requests,3185,Construction-aware,10.0
+planned_requests,3185,Best fixed,9.0
+planned_requests,3186,Construction-aware,10.0
+planned_requests,3186,Best fixed,9.0
+planned_requests,3187,Construction-aware,11.0
+planned_requests,3187,Best fixed,9.0
+planned_requests,3188,Construction-aware,11.0
+planned_requests,3188,Best fixed,10.0
+planned_requests,3189,Construction-aware,9.0
+planned_requests,3189,Best fixed,8.0
+planned_requests,3190,Construction-aware,10.0
+planned_requests,3190,Best fixed,9.0
+planned_requests,3191,Construction-aware,9.0
+planned_requests,3191,Best fixed,8.0
+planned_requests,3192,Construction-aware,9.0
+planned_requests,3192,Best fixed,8.0
+planned_requests,3193,Construction-aware,11.0
+planned_requests,3193,Best fixed,9.0
+planned_requests,3194,Construction-aware,10.0
+planned_requests,3194,Best fixed,10.0
+planned_requests,3195,Construction-aware,9.0
+planned_requests,3195,Best fixed,9.0
+planned_requests,3196,Construction-aware,11.0
+planned_requests,3196,Best fixed,9.0
+planned_requests,3197,Construction-aware,10.0
+planned_requests,3197,Best fixed,9.0
+planned_requests,3198,Construction-aware,9.0
+planned_requests,3198,Best fixed,8.0
+planned_requests,3199,Construction-aware,8.0
+planned_requests,3199,Best fixed,7.0
+planned_requests,3200,Construction-aware,10.0
+planned_requests,3200,Best fixed,8.0
+completed_requests,3101,Construction-aware,2.0
+completed_requests,3101,Best fixed,1.0
+completed_requests,3102,Construction-aware,2.0
+completed_requests,3102,Best fixed,1.0
+completed_requests,3103,Construction-aware,4.0
+completed_requests,3103,Best fixed,4.0
+completed_requests,3104,Construction-aware,2.0
+completed_requests,3104,Best fixed,3.0
+completed_requests,3105,Construction-aware,4.0
+completed_requests,3105,Best fixed,2.0
+completed_requests,3106,Construction-aware,1.0
+completed_requests,3106,Best fixed,1.0
+completed_requests,3107,Construction-aware,3.0
+completed_requests,3107,Best fixed,2.0
+completed_requests,3108,Construction-aware,3.0
+completed_requests,3108,Best fixed,2.0
+completed_requests,3109,Construction-aware,1.0
+completed_requests,3109,Best fixed,1.0
+completed_requests,3110,Construction-aware,3.0
+completed_requests,3110,Best fixed,2.0
+completed_requests,3111,Construction-aware,1.0
+completed_requests,3111,Best fixed,4.0
+completed_requests,3112,Construction-aware,3.0
+completed_requests,3112,Best fixed,1.0
+completed_requests,3113,Construction-aware,6.0
+completed_requests,3113,Best fixed,2.0
+completed_requests,3114,Construction-aware,3.0
+completed_requests,3114,Best fixed,0.0
+completed_requests,3115,Construction-aware,5.0
+completed_requests,3115,Best fixed,6.0
+completed_requests,3116,Construction-aware,1.0
+completed_requests,3116,Best fixed,2.0
+completed_requests,3117,Construction-aware,3.0
+completed_requests,3117,Best fixed,4.0
+completed_requests,3118,Construction-aware,3.0
+completed_requests,3118,Best fixed,4.0
+completed_requests,3119,Construction-aware,4.0
+completed_requests,3119,Best fixed,2.0
+completed_requests,3120,Construction-aware,3.0
+completed_requests,3120,Best fixed,2.0
+completed_requests,3121,Construction-aware,2.0
+completed_requests,3121,Best fixed,1.0
+completed_requests,3122,Construction-aware,5.0
+completed_requests,3122,Best fixed,5.0
+completed_requests,3123,Construction-aware,2.0
+completed_requests,3123,Best fixed,3.0
+completed_requests,3124,Construction-aware,6.0
+completed_requests,3124,Best fixed,4.0
+completed_requests,3125,Construction-aware,4.0
+completed_requests,3125,Best fixed,5.0
+completed_requests,3126,Construction-aware,3.0
+completed_requests,3126,Best fixed,4.0
+completed_requests,3127,Construction-aware,2.0
+completed_requests,3127,Best fixed,2.0
+completed_requests,3128,Construction-aware,4.0
+completed_requests,3128,Best fixed,3.0
+completed_requests,3129,Construction-aware,1.0
+completed_requests,3129,Best fixed,0.0
+completed_requests,3130,Construction-aware,5.0
+completed_requests,3130,Best fixed,4.0
+completed_requests,3131,Construction-aware,8.0
+completed_requests,3131,Best fixed,6.0
+completed_requests,3132,Construction-aware,3.0
+completed_requests,3132,Best fixed,6.0
+completed_requests,3133,Construction-aware,2.0
+completed_requests,3133,Best fixed,1.0
+completed_requests,3134,Construction-aware,3.0
+completed_requests,3134,Best fixed,2.0
+completed_requests,3135,Construction-aware,2.0
+completed_requests,3135,Best fixed,2.0
+completed_requests,3136,Construction-aware,1.0
+completed_requests,3136,Best fixed,1.0
+completed_requests,3137,Construction-aware,6.0
+completed_requests,3137,Best fixed,5.0
+completed_requests,3138,Construction-aware,2.0
+completed_requests,3138,Best fixed,1.0
+completed_requests,3139,Construction-aware,4.0
+completed_requests,3139,Best fixed,2.0
+completed_requests,3140,Construction-aware,4.0
+completed_requests,3140,Best fixed,4.0
+completed_requests,3141,Construction-aware,5.0
+completed_requests,3141,Best fixed,2.0
+completed_requests,3142,Construction-aware,3.0
+completed_requests,3142,Best fixed,1.0
+completed_requests,3143,Construction-aware,5.0
+completed_requests,3143,Best fixed,4.0
+completed_requests,3144,Construction-aware,2.0
+completed_requests,3144,Best fixed,2.0
+completed_requests,3145,Construction-aware,6.0
+completed_requests,3145,Best fixed,5.0
+completed_requests,3146,Construction-aware,3.0
+completed_requests,3146,Best fixed,3.0
+completed_requests,3147,Construction-aware,5.0
+completed_requests,3147,Best fixed,4.0
+completed_requests,3148,Construction-aware,3.0
+completed_requests,3148,Best fixed,3.0
+completed_requests,3149,Construction-aware,5.0
+completed_requests,3149,Best fixed,4.0
+completed_requests,3150,Construction-aware,4.0
+completed_requests,3150,Best fixed,3.0
+completed_requests,3151,Construction-aware,3.0
+completed_requests,3151,Best fixed,3.0
+completed_requests,3152,Construction-aware,5.0
+completed_requests,3152,Best fixed,3.0
+completed_requests,3153,Construction-aware,2.0
+completed_requests,3153,Best fixed,3.0
+completed_requests,3154,Construction-aware,2.0
+completed_requests,3154,Best fixed,3.0
+completed_requests,3155,Construction-aware,2.0
+completed_requests,3155,Best fixed,2.0
+completed_requests,3156,Construction-aware,3.0
+completed_requests,3156,Best fixed,1.0
+completed_requests,3157,Construction-aware,3.0
+completed_requests,3157,Best fixed,3.0
+completed_requests,3158,Construction-aware,1.0
+completed_requests,3158,Best fixed,1.0
+completed_requests,3159,Construction-aware,5.0
+completed_requests,3159,Best fixed,3.0
+completed_requests,3160,Construction-aware,3.0
+completed_requests,3160,Best fixed,2.0
+completed_requests,3161,Construction-aware,5.0
+completed_requests,3161,Best fixed,4.0
+completed_requests,3162,Construction-aware,0.0
+completed_requests,3162,Best fixed,1.0
+completed_requests,3163,Construction-aware,2.0
+completed_requests,3163,Best fixed,3.0
+completed_requests,3164,Construction-aware,6.0
+completed_requests,3164,Best fixed,3.0
+completed_requests,3165,Construction-aware,3.0
+completed_requests,3165,Best fixed,1.0
+completed_requests,3166,Construction-aware,2.0
+completed_requests,3166,Best fixed,1.0
+completed_requests,3167,Construction-aware,1.0
+completed_requests,3167,Best fixed,2.0
+completed_requests,3168,Construction-aware,3.0
+completed_requests,3168,Best fixed,0.0
+completed_requests,3169,Construction-aware,4.0
+completed_requests,3169,Best fixed,3.0
+completed_requests,3170,Construction-aware,2.0
+completed_requests,3170,Best fixed,1.0
+completed_requests,3171,Construction-aware,2.0
+completed_requests,3171,Best fixed,1.0
+completed_requests,3172,Construction-aware,3.0
+completed_requests,3172,Best fixed,2.0
+completed_requests,3173,Construction-aware,2.0
+completed_requests,3173,Best fixed,3.0
+completed_requests,3174,Construction-aware,3.0
+completed_requests,3174,Best fixed,2.0
+completed_requests,3175,Construction-aware,2.0
+completed_requests,3175,Best fixed,2.0
+completed_requests,3176,Construction-aware,3.0
+completed_requests,3176,Best fixed,5.0
+completed_requests,3177,Construction-aware,5.0
+completed_requests,3177,Best fixed,2.0
+completed_requests,3178,Construction-aware,2.0
+completed_requests,3178,Best fixed,2.0
+completed_requests,3179,Construction-aware,5.0
+completed_requests,3179,Best fixed,3.0
+completed_requests,3180,Construction-aware,3.0
+completed_requests,3180,Best fixed,3.0
+completed_requests,3181,Construction-aware,5.0
+completed_requests,3181,Best fixed,4.0
+completed_requests,3182,Construction-aware,4.0
+completed_requests,3182,Best fixed,3.0
+completed_requests,3183,Construction-aware,2.0
+completed_requests,3183,Best fixed,0.0
+completed_requests,3184,Construction-aware,2.0
+completed_requests,3184,Best fixed,2.0
+completed_requests,3185,Construction-aware,2.0
+completed_requests,3185,Best fixed,3.0
+completed_requests,3186,Construction-aware,3.0
+completed_requests,3186,Best fixed,4.0
+completed_requests,3187,Construction-aware,5.0
+completed_requests,3187,Best fixed,2.0
+completed_requests,3188,Construction-aware,1.0
+completed_requests,3188,Best fixed,4.0
+completed_requests,3189,Construction-aware,3.0
+completed_requests,3189,Best fixed,4.0
+completed_requests,3190,Construction-aware,1.0
+completed_requests,3190,Best fixed,2.0
+completed_requests,3191,Construction-aware,4.0
+completed_requests,3191,Best fixed,0.0
+completed_requests,3192,Construction-aware,3.0
+completed_requests,3192,Best fixed,5.0
+completed_requests,3193,Construction-aware,1.0
+completed_requests,3193,Best fixed,0.0
+completed_requests,3194,Construction-aware,4.0
+completed_requests,3194,Best fixed,4.0
+completed_requests,3195,Construction-aware,0.0
+completed_requests,3195,Best fixed,1.0
+completed_requests,3196,Construction-aware,4.0
+completed_requests,3196,Best fixed,0.0
+completed_requests,3197,Construction-aware,3.0
+completed_requests,3197,Best fixed,2.0
+completed_requests,3198,Construction-aware,4.0
+completed_requests,3198,Best fixed,3.0
+completed_requests,3199,Construction-aware,2.0
+completed_requests,3199,Best fixed,3.0
+completed_requests,3200,Construction-aware,5.0
+completed_requests,3200,Best fixed,3.0

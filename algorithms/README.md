@@ -4,17 +4,7 @@
 
 ## TELGEN 主方法
 
-这里目前存在两条必须分开表述的学习路线：
-
-- `ipm_trajectory_pilot.py`：参考 TELGEN 论文与官方提交
-  `64684ebb3a7e856de86346da46232f8ceca6666c` 的连续 LP 轨迹学习试验。它用
-  SciPy `interior-point` callback 记录教师原变量轨迹，使用变量—约束—目标
-  三部图、六类有向关系、共享外层 IPM 循环和三项论文损失。默认在同一拓扑
-  族的多张、多规模图上训练，再测试更大未见图；不使用解码器、投影、贪心
-  修复或量子语义人工特征。它只输出连续 LP 松弛解，尚不是在线离散调度器。
-- 以下 `milp_imitation.py` 到 `online.py` 的现有主链：自回归 GNN 学习精确
-  0/1 MILP 的离散选择。它是本项目此前的量子网络方法，不是原始 TELGEN
-  IPM 轨迹复现，也不能与上面的 pilot 共用实验口径或 checkpoint。
+这里只保留 MILP 自回归 GNN 单一范式：自回归 GNN 学习精确 0/1 MILP 的离散选择。
 
 - `dataset.py`：生成路径—构造候选并建立在线规划问题；
 - `time_expansion.py`：把构造 DAG 映射为资源—时隙占用；
@@ -35,20 +25,6 @@ GNN 每一步在当前可行候选和 `STOP` 中作一次模型决策。请求�
 资源—时隙容量在 softmax 前形成动态动作掩码，因此不会先输出任意连续分数
 再交给独立硬解码器修复。
 
-运行论文对齐的 IPM 轨迹 pilot：
-
-```bash
-python -m algorithms.telgen.ipm_trajectory_pilot \
-  --train-nodes 10 12 14 \
-  --test-nodes 18 20 \
-  --train-samples 24 \
-  --validation-samples 8 \
-  --test-samples 8
-```
-
-这里的“一个拓扑训练”指同一个拓扑生成族（例如 Waxman）中的多张随机图，
-不是固定一张邻接图反复生成请求。跨到 Barabasi--Albert 的结果只作为额外
-压力测试，不能冒充原论文的同分布规模泛化结论。
 
 正式主对比固定为 `GNN / MILP / Q-PASS / Greedy`。固定构造版本属于
 construction-awareness 消融，在相同 episode 上与自适应构造 GNN 配对比较；

@@ -1,0 +1,12 @@
+{
+  "seed": 42501,
+  "manifest": "episode_00042501/dataset/rollout_20260814_182453/manifest.json",
+  "sample_count": 8,
+  "skipped_boundary_count": 1,
+  "completed_requests": 42.0,
+  "request_count": 50.0,
+  "mean_decision_seconds": 4.9480519555638445,
+  "elapsed_seconds": 48.398466799990274,
+  "rollout_json": "episode_00042501/rollout/online_telgen_results_20260814_182455.json",
+  "resumed": false
+}

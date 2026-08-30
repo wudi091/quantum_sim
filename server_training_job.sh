@@ -2,6 +2,12 @@
 
 set -Eeuo pipefail
 
+# DISABLED: the IPM trajectory paradigm has been removed. This script is
+# retained for reference only and must not run any training or process
+# management commands.
+echo "server_training_job.sh is disabled (IPM paradigm removed); keeping file for reference only." >&2
+exit 1
+
 # 单文件固定任务：check | start | status | log | stop
 # 只训练论文对齐的 TELGEN/IPM 连续轨迹模型，不启动旧自回归模型。
 

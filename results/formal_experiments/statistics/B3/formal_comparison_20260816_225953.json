@@ -1,0 +1,1040 @@
+{
+  "schema_version": 1,
+  "experiment": "formal_paired_online_comparison",
+  "analysis_contract": {
+    "paired_episode_specs": true,
+    "balanced_case_weighting": true,
+    "reference_method": "gnn",
+    "positive_advantage_means": "reference_better",
+    "confidence_level": 0.95,
+    "bootstrap_samples": 20000,
+    "randomization_samples": 20000,
+    "random_seed": 20260830
+  },
+  "checkpoint_sha256": "034e5d46ad3a48fd4323eb798783ca1614196a7ebcd9f79382f1ab618d1ecfde",
+  "case_count": 2,
+  "paired_trial_count": 40,
+  "cases": {
+    "waxman192": {
+      "trial_count": 20,
+      "scenario": {
+        "request_count": 60,
+        "min_hops": 3,
+        "max_hops": 5,
+        "ttl": 24,
+        "horizon": 44,
+        "physical": {
+          "generation_probability": 0.8,
+          "swap_probability": 0.9,
+          "memory_capacity": 2,
+          "memory_lifetime": 100,
+          "initial_fidelity": 0.99,
+          "swap_degradation": 0.95,
+          "classical_delay_ps": 0,
+          "node_memory_capacity": null,
+          "max_width": 1,
+          "quantum_distance_m": 1000.0,
+          "quantum_attenuation_db_per_m": 0.0,
+          "quantum_polarization_fidelity": 1.0,
+          "memory_frequency_hz": 200000000.0,
+          "slot_duration_ps": 50000000,
+          "detector_efficiency": 1.0,
+          "bsm_success_probability": 1.0,
+          "memory_wavelength_nm": 500
+        },
+        "topology_nodes": 192,
+        "waxman_alpha": 0.15,
+        "waxman_beta": 0.45,
+        "topology_attempts": 128,
+        "waxman_add_mst": false,
+        "endpoint_mode": "distance_stratified",
+        "demand_pairs": 1,
+        "topology_mode": "waxman",
+        "parallel_corridors": 2,
+        "barabasi_attachment": 2,
+        "erdos_renyi_mean_degree": 6.0,
+        "random_regular_degree": 4,
+        "arrival_batch_size": 10,
+        "arrival_interval": 4
+      },
+      "method_means": {
+        "gnn": {
+          "completed_requests": 40.1,
+          "mean_censored_latency_ps": 869900003.2083334,
+          "mean_decision_seconds": 0.5696201504499185,
+          "p95_decision_seconds": 1.1198782349936665,
+          "mean_planner_seconds": 0.15206831506008373
+        },
+        "greedy": {
+          "completed_requests": 39.4,
+          "mean_censored_latency_ps": 906929171.6666666,
+          "mean_decision_seconds": 0.11141798999848437,
+          "p95_decision_seconds": 0.24434315001708456,
+          "mean_planner_seconds": 0.10818248722993302
+        },
+        "qcast": {
+          "completed_requests": 38.35,
+          "mean_censored_latency_ps": 902675004.8666666,
+          "mean_decision_seconds": 0.06577529727417807,
+          "p95_decision_seconds": 0.16282664001919328,
+          "mean_planner_seconds": 0.06223233937616272
+        },
+        "qpass": {
+          "completed_requests": 39.1,
+          "mean_censored_latency_ps": 893929171.5833334,
+          "mean_decision_seconds": 0.10924512772789141,
+          "p95_decision_seconds": 0.2281530549749732,
+          "mean_planner_seconds": 0.10533453950139864
+        }
+      },
+      "comparisons": {
+        "greedy": {
+          "metrics": {
+            "completed_requests": {
+              "label": "完成请求数",
+              "higher_is_better": true,
+              "advantage_definition": "positive_means_reference_better",
+              "reference_mean": 40.1,
+              "baseline_mean": 39.4,
+              "reference_advantage_mean": 0.7,
+              "reference_to_baseline_ratio": 1.017766497461929,
+              "baseline_to_reference_ratio": 0.9825436408977556,
+              "ci95_low": -0.35,
+              "ci95_high": 1.75,
+              "paired_randomization_p": 0.2542372881355932,
+              "reference_wins": 12,
+              "ties": 2,
+              "baseline_wins": 6
+            },
+            "mean_censored_latency_ps": {
+              "label": "平均截尾延迟（ps）",
+              "higher_is_better": false,
+              "advantage_definition": "positive_means_reference_better",
+              "reference_mean": 869900003.2083334,
+              "baseline_mean": 906929171.6666666,
+              "reference_advantage_mean": 37029168.45833333,
+              "reference_to_baseline_ratio": 0.959170826548357,
+              "baseline_to_reference_ratio": 1.0425671552152702,
+              "ci95_low": 9554167.708333343,
+              "ci95_high": 63245835.18333332,
+              "paired_randomization_p": 0.01664916754162292,
+              "reference_wins": 16,
+              "ties": 0,
+              "baseline_wins": 4
+            },
+            "mean_decision_seconds": {
+              "label": "平均决策时间（秒）",
+              "higher_is_better": false,
+              "advantage_definition": "positive_means_reference_better",
+              "reference_mean": 0.5696201504499185,
+              "baseline_mean": 0.11141798999848437,
+              "reference_advantage_mean": -0.4582021604514342,
+              "reference_to_baseline_ratio": 5.112461196416011,
+              "baseline_to_reference_ratio": 0.19560050660160122,
+              "ci95_low": -0.478699707278495,
+              "ci95_high": -0.43776329362828453,
+              "paired_randomization_p": 4.999750012499375e-05,
+              "reference_wins": 0,
+              "ties": 0,
+              "baseline_wins": 20
+            },
+            "p95_decision_seconds": {
+              "label": "P95 决策时间（秒）",
+              "higher_is_better": false,
+              "advantage_definition": "positive_means_reference_better",
+              "reference_mean": 1.1198782349936665,
+              "baseline_mean": 0.24434315001708456,
+              "reference_advantage_mean": -0.8755350849765818,
+              "reference_to_baseline_ratio": 4.583219275495811,
+              "baseline_to_reference_ratio": 0.21818724784705407,
+              "ci95_low": -0.9508558099798392,
+              "ci95_high": -0.8055018699960783,
+              "paired_randomization_p": 4.999750012499375e-05,
+              "reference_wins": 0,
+              "ties": 0,
+              "baseline_wins": 20
+            },
+            "mean_planner_seconds": {
+              "label": "平均规划核心时间（秒）",
+              "higher_is_better": false,
+              "advantage_definition": "positive_means_reference_better",
+              "reference_mean": 0.15206831506008373,
+              "baseline_mean": 0.10818248722993302,
+              "reference_advantage_mean": -0.04388582783015069,
+              "reference_to_baseline_ratio": 1.4056648072517963,
+              "baseline_to_reference_ratio": 0.7114071539964721,
+              "ci95_low": -0.05546163115820335,
+              "ci95_high": -0.03211195815174083,
+              "paired_randomization_p": 4.999750012499375e-05,
+              "reference_wins": 1,
+              "ties": 0,
+              "baseline_wins": 19
+            }
+          }
+        },
+        "qcast": {
+          "metrics": {
+            "completed_requests": {
+              "label": "完成请求数",
+              "higher_is_better": true,
+              "advantage_definition": "positive_means_reference_better",
+              "reference_mean": 40.1,
+              "baseline_mean": 38.35,
+              "reference_advantage_mean": 1.75,
+              "reference_to_baseline_ratio": 1.045632333767927,
+              "baseline_to_reference_ratio": 0.956359102244389,
+              "ci95_low": 0.3,
+              "ci95_high": 3.2,
+              "paired_randomization_p": 0.04329783510824459,
+              "reference_wins": 13,
+              "ties": 3,
+              "baseline_wins": 4
+            },
+            "mean_censored_latency_ps": {
+              "label": "平均截尾延迟（ps）",
+              "higher_is_better": false,
+              "advantage_definition": "positive_means_reference_better",
+              "reference_mean": 869900003.2083334,
+              "baseline_mean": 902675004.8666666,
+              "reference_advantage_mean": 32775001.658333324,
+              "reference_to_baseline_ratio": 0.9636912493625828,
+              "baseline_to_reference_ratio": 1.0376767462207768,
+              "ci95_low": 3941668.5916666626,
+              "ci95_high": 62258334.875,
+              "paired_randomization_p": 0.04269786510674466,
+              "reference_wins": 13,
+              "ties": 0,
+              "baseline_wins": 7
+            },
+            "mean_decision_seconds": {
+              "label": "平均决策时间（秒）",
+              "higher_is_better": false,
+              "advantage_definition": "positive_means_reference_better",
+              "reference_mean": 0.5696201504499185,
+              "baseline_mean": 0.06577529727417807,
+              "reference_advantage_mean": -0.5038448531757405,
+              "reference_to_baseline_ratio": 8.660092375949457,
+              "baseline_to_reference_ratio": 0.1154722093700951,
+              "ci95_low": -0.5245688468090851,
+              "ci95_high": -0.48364092590319074,
+              "paired_randomization_p": 4.999750012499375e-05,
+              "reference_wins": 0,
+              "ties": 0,
+              "baseline_wins": 20
+            },
+            "p95_decision_seconds": {
+              "label": "P95 决策时间（秒）",
+              "higher_is_better": false,
+              "advantage_definition": "positive_means_reference_better",
+              "reference_mean": 1.1198782349936665,
+              "baseline_mean": 0.16282664001919328,
+              "reference_advantage_mean": -0.9570515949744731,
+              "reference_to_baseline_ratio": 6.877733489198452,
+              "baseline_to_reference_ratio": 0.1453967359407732,
+              "ci95_low": -1.0314529700030106,
+              "ci95_high": -0.8844540299498476,
+              "paired_randomization_p": 4.999750012499375e-05,
+              "reference_wins": 0,
+              "ties": 0,
+              "baseline_wins": 20
+            },
+            "mean_planner_seconds": {
+              "label": "平均规划核心时间（秒）",
+              "higher_is_better": false,
+              "advantage_definition": "positive_means_reference_better",
+              "reference_mean": 0.15206831506008373,
+              "baseline_mean": 0.06223233937616272,
+              "reference_advantage_mean": -0.089835975683921,
+              "reference_to_baseline_ratio": 2.4435577480208224,
+              "baseline_to_reference_ratio": 0.40923935634832337,
+              "ci95_low": -0.10057419059688173,
+              "ci95_high": -0.0790849082445199,
+              "paired_randomization_p": 4.999750012499375e-05,
+              "reference_wins": 0,
+              "ties": 0,
+              "baseline_wins": 20
+            }
+          }
+        },
+        "qpass": {
+          "metrics": {
+            "completed_requests": {
+              "label": "完成请求数",
+              "higher_is_better": true,
+              "advantage_definition": "positive_means_reference_better",
+              "reference_mean": 40.1,
+              "baseline_mean": 39.1,
+              "reference_advantage_mean": 1.0,
+              "reference_to_baseline_ratio": 1.0255754475703325,
+              "baseline_to_reference_ratio": 0.9750623441396509,
+              "ci95_low": -0.25,
+              "ci95_high": 2.2,
+              "paired_randomization_p": 0.16019199040048,
+              "reference_wins": 11,
+              "ties": 4,
+              "baseline_wins": 5
+            },
+            "mean_censored_latency_ps": {
+              "label": "平均截尾延迟（ps）",
+              "higher_is_better": false,
+              "advantage_definition": "positive_means_reference_better",
+              "reference_mean": 869900003.2083334,
+              "baseline_mean": 893929171.5833334,
+              "reference_advantage_mean": 24029168.374999978,
+              "reference_to_baseline_ratio": 0.9731196059611307,
+              "baseline_to_reference_ratio": 1.02762290870948,
+              "ci95_low": -941664.9750000179,
+              "ci95_high": 50504168.29999998,
+              "paired_randomization_p": 0.09129543522823859,
+              "reference_wins": 11,
+              "ties": 0,
+              "baseline_wins": 9
+            },
+            "mean_decision_seconds": {
+              "label": "平均决策时间（秒）",
+              "higher_is_better": false,
+              "advantage_definition": "positive_means_reference_better",
+              "reference_mean": 0.5696201504499185,
+              "baseline_mean": 0.10924512772789141,
+              "reference_advantage_mean": -0.4603750227220272,
+              "reference_to_baseline_ratio": 5.214146958285707,
+              "baseline_to_reference_ratio": 0.19178592548315465,
+              "ci95_low": -0.4806512563626959,
+              "ci95_high": -0.44010458680250764,
+              "paired_randomization_p": 4.999750012499375e-05,
+              "reference_wins": 0,
+              "ties": 0,
+              "baseline_wins": 20
+            },
+            "p95_decision_seconds": {
+              "label": "P95 决策时间（秒）",
+              "higher_is_better": false,
+              "advantage_definition": "positive_means_reference_better",
+              "reference_mean": 1.1198782349936665,
+              "baseline_mean": 0.2281530549749732,
+              "reference_advantage_mean": -0.8917251800186932,
+              "reference_to_baseline_ratio": 4.908451631807031,
+              "baseline_to_reference_ratio": 0.2037302340966235,
+              "ci95_low": -0.9707280250266195,
+              "ci95_high": -0.8181503350206185,
+              "paired_randomization_p": 4.999750012499375e-05,
+              "reference_wins": 0,
+              "ties": 0,
+              "baseline_wins": 20
+            },
+            "mean_planner_seconds": {
+              "label": "平均规划核心时间（秒）",
+              "higher_is_better": false,
+              "advantage_definition": "positive_means_reference_better",
+              "reference_mean": 0.15206831506008373,
+              "baseline_mean": 0.10533453950139864,
+              "reference_advantage_mean": -0.04673377555868508,
+              "reference_to_baseline_ratio": 1.443670003969254,
+              "baseline_to_reference_ratio": 0.6926790729533624,
+              "ci95_low": -0.058108482687431864,
+              "ci95_high": -0.03542576975725365,
+              "paired_randomization_p": 0.00014999250037498125,
+              "reference_wins": 1,
+              "ties": 0,
+              "baseline_wins": 19
+            }
+          }
+        }
+      },
+      "hard_gates": {
+        "gnn": {
+          "gnn_invalid_decision_count": 0.0,
+          "schedule_violation_count": 0.0,
+          "fidelity_violation_count": 0.0,
+          "physical_backend_rejection_count": 0.0,
+          "post_completion_validation_failure_count": 0.0,
+          "violation_record_count": 0.0
+        },
+        "greedy": {
+          "gnn_invalid_decision_count": 0.0,
+          "schedule_violation_count": 0.0,
+          "fidelity_violation_count": 0.0,
+          "physical_backend_rejection_count": 0.0,
+          "post_completion_validation_failure_count": 0.0,
+          "violation_record_count": 0.0
+        },
+        "qcast": {
+          "gnn_invalid_decision_count": 0.0,
+          "schedule_violation_count": 0.0,
+          "fidelity_violation_count": 0.0,
+          "physical_backend_rejection_count": 0.0,
+          "post_completion_validation_failure_count": 0.0,
+          "violation_record_count": 0.0
+        },
+        "qpass": {
+          "gnn_invalid_decision_count": 0.0,
+          "schedule_violation_count": 0.0,
+          "fidelity_violation_count": 0.0,
+          "physical_backend_rejection_count": 0.0,
+          "post_completion_validation_failure_count": 0.0,
+          "violation_record_count": 0.0
+        }
+      },
+      "valid": true
+    },
+    "barabasi128": {
+      "trial_count": 20,
+      "scenario": {
+        "request_count": 50,
+        "min_hops": 3,
+        "max_hops": 4,
+        "ttl": 20,
+        "horizon": 36,
+        "physical": {
+          "generation_probability": 0.8,
+          "swap_probability": 0.9,
+          "memory_capacity": 2,
+          "memory_lifetime": 100,
+          "initial_fidelity": 0.99,
+          "swap_degradation": 0.95,
+          "classical_delay_ps": 0,
+          "node_memory_capacity": null,
+          "max_width": 1,
+          "quantum_distance_m": 1000.0,
+          "quantum_attenuation_db_per_m": 0.0,
+          "quantum_polarization_fidelity": 1.0,
+          "memory_frequency_hz": 200000000.0,
+          "slot_duration_ps": 50000000,
+          "detector_efficiency": 1.0,
+          "bsm_success_probability": 1.0,
+          "memory_wavelength_nm": 500
+        },
+        "topology_nodes": 128,
+        "waxman_alpha": 0.15,
+        "waxman_beta": 0.45,
+        "topology_attempts": 128,
+        "waxman_add_mst": false,
+        "endpoint_mode": "distance_stratified",
+        "demand_pairs": 1,
+        "topology_mode": "barabasi_albert",
+        "parallel_corridors": 2,
+        "barabasi_attachment": 2,
+        "erdos_renyi_mean_degree": 6.0,
+        "random_regular_degree": 4,
+        "arrival_batch_size": 10,
+        "arrival_interval": 4
+      },
+      "method_means": {
+        "gnn": {
+          "completed_requests": 36.95,
+          "mean_censored_latency_ps": 691430006.5699999,
+          "mean_decision_seconds": 0.4663816261105239,
+          "p95_decision_seconds": 0.9191552750009577,
+          "mean_planner_seconds": 0.14052480444079266
+        },
+        "greedy": {
+          "completed_requests": 32.55,
+          "mean_censored_latency_ps": 831485006.05,
+          "mean_decision_seconds": 0.09281581667148404,
+          "p95_decision_seconds": 0.1863243500061799,
+          "mean_planner_seconds": 0.09078744666767306
+        },
+        "qcast": {
+          "completed_requests": 32.05,
+          "mean_censored_latency_ps": 786490005.8199999,
+          "mean_decision_seconds": 0.049029255547146836,
+          "p95_decision_seconds": 0.12240981997456402,
+          "mean_planner_seconds": 0.04764950152295771
+        },
+        "qpass": {
+          "completed_requests": 33.6,
+          "mean_censored_latency_ps": 771320006.2,
+          "mean_decision_seconds": 0.08268017611763853,
+          "p95_decision_seconds": 0.18041681999457068,
+          "mean_planner_seconds": 0.08067329777922068
+        }
+      },
+      "comparisons": {
+        "greedy": {
+          "metrics": {
+            "completed_requests": {
+              "label": "完成请求数",
+              "higher_is_better": true,
+              "advantage_definition": "positive_means_reference_better",
+              "reference_mean": 36.95,
+              "baseline_mean": 32.55,
+              "reference_advantage_mean": 4.4,
+              "reference_to_baseline_ratio": 1.1351766513056838,
+              "baseline_to_reference_ratio": 0.8809201623815966,
+              "ci95_low": 2.1,
+              "ci95_high": 6.4,
+              "paired_randomization_p": 0.0016499175041247937,
+              "reference_wins": 17,
+              "ties": 0,
+              "baseline_wins": 3
+            },
+            "mean_censored_latency_ps": {
+              "label": "平均截尾延迟（ps）",
+              "higher_is_better": false,
+              "advantage_definition": "positive_means_reference_better",
+              "reference_mean": 691430006.5699999,
+              "baseline_mean": 831485006.05,
+              "reference_advantage_mean": 140054999.48,
+              "reference_to_baseline_ratio": 0.831560402820327,
+              "baseline_to_reference_ratio": 1.2025584631115094,
+              "ci95_low": 91589999.88999999,
+              "ci95_high": 184504999.01,
+              "paired_randomization_p": 4.999750012499375e-05,
+              "reference_wins": 19,
+              "ties": 0,
+              "baseline_wins": 1
+            },
+            "mean_decision_seconds": {
+              "label": "平均决策时间（秒）",
+              "higher_is_better": false,
+              "advantage_definition": "positive_means_reference_better",
+              "reference_mean": 0.4663816261105239,
+              "baseline_mean": 0.09281581667148404,
+              "reference_advantage_mean": -0.3735658094390399,
+              "reference_to_baseline_ratio": 5.024807654941543,
+              "baseline_to_reference_ratio": 0.19901259285349374,
+              "ci95_low": -0.39623528443690803,
+              "ci95_high": -0.35163034666135595,
+              "paired_randomization_p": 4.999750012499375e-05,
+              "reference_wins": 0,
+              "ties": 0,
+              "baseline_wins": 20
+            },
+            "p95_decision_seconds": {
+              "label": "P95 决策时间（秒）",
+              "higher_is_better": false,
+              "advantage_definition": "positive_means_reference_better",
+              "reference_mean": 0.9191552750009577,
+              "baseline_mean": 0.1863243500061799,
+              "reference_advantage_mean": -0.7328309249947779,
+              "reference_to_baseline_ratio": 4.933092614950605,
+              "baseline_to_reference_ratio": 0.2027125939150877,
+              "ci95_low": -0.7876017900067381,
+              "ci95_high": -0.6780598450044636,
+              "paired_randomization_p": 4.999750012499375e-05,
+              "reference_wins": 0,
+              "ties": 0,
+              "baseline_wins": 20
+            },
+            "mean_planner_seconds": {
+              "label": "平均规划核心时间（秒）",
+              "higher_is_better": false,
+              "advantage_definition": "positive_means_reference_better",
+              "reference_mean": 0.14052480444079266,
+              "baseline_mean": 0.09078744666767306,
+              "reference_advantage_mean": -0.049737357773119585,
+              "reference_to_baseline_ratio": 1.5478439982477192,
+              "baseline_to_reference_ratio": 0.6460599395882779,
+              "ci95_low": -0.05944700499983609,
+              "ci95_high": -0.03996231332485978,
+              "paired_randomization_p": 4.999750012499375e-05,
+              "reference_wins": 0,
+              "ties": 0,
+              "baseline_wins": 20
+            }
+          }
+        },
+        "qcast": {
+          "metrics": {
+            "completed_requests": {
+              "label": "完成请求数",
+              "higher_is_better": true,
+              "advantage_definition": "positive_means_reference_better",
+              "reference_mean": 36.95,
+              "baseline_mean": 32.05,
+              "reference_advantage_mean": 4.9,
+              "reference_to_baseline_ratio": 1.152886115444618,
+              "baseline_to_reference_ratio": 0.8673883626522326,
+              "ci95_low": 3.65,
+              "ci95_high": 6.15,
+              "paired_randomization_p": 4.999750012499375e-05,
+              "reference_wins": 18,
+              "ties": 1,
+              "baseline_wins": 1
+            },
+            "mean_censored_latency_ps": {
+              "label": "平均截尾延迟（ps）",
+              "higher_is_better": false,
+              "advantage_definition": "positive_means_reference_better",
+              "reference_mean": 691430006.5699999,
+              "baseline_mean": 786490005.8199999,
+              "reference_advantage_mean": 95059999.25,
+              "reference_to_baseline_ratio": 0.8791338751331115,
+              "baseline_to_reference_ratio": 1.1374831846271285,
+              "ci95_low": 65509999.36,
+              "ci95_high": 124864999.21999998,
+              "paired_randomization_p": 9.99950002499875e-05,
+              "reference_wins": 18,
+              "ties": 0,
+              "baseline_wins": 2
+            },
+            "mean_decision_seconds": {
+              "label": "平均决策时间（秒）",
+              "higher_is_better": false,
+              "advantage_definition": "positive_means_reference_better",
+              "reference_mean": 0.4663816261105239,
+              "baseline_mean": 0.049029255547146836,
+              "reference_advantage_mean": -0.41735237056337715,
+              "reference_to_baseline_ratio": 9.512313024252396,
+              "baseline_to_reference_ratio": 0.10512690209525492,
+              "ci95_low": -0.43841077055937305,
+              "ci95_high": -0.3963200350110937,
+              "paired_randomization_p": 4.999750012499375e-05,
+              "reference_wins": 0,
+              "ties": 0,
+              "baseline_wins": 20
+            },
+            "p95_decision_seconds": {
+              "label": "P95 决策时间（秒）",
+              "higher_is_better": false,
+              "advantage_definition": "positive_means_reference_better",
+              "reference_mean": 0.9191552750009577,
+              "baseline_mean": 0.12240981997456402,
+              "reference_advantage_mean": -0.7967454550263937,
+              "reference_to_baseline_ratio": 7.508836098214607,
+              "baseline_to_reference_ratio": 0.1331764319956021,
+              "ci95_low": -0.8466307250200771,
+              "ci95_high": -0.745574175042566,
+              "paired_randomization_p": 4.999750012499375e-05,
+              "reference_wins": 0,
+              "ties": 0,
+              "baseline_wins": 20
+            },
+            "mean_planner_seconds": {
+              "label": "平均规划核心时间（秒）",
+              "higher_is_better": false,
+              "advantage_definition": "positive_means_reference_better",
+              "reference_mean": 0.14052480444079266,
+              "baseline_mean": 0.04764950152295771,
+              "reference_advantage_mean": -0.09287530291783494,
+              "reference_to_baseline_ratio": 2.9491348272150817,
+              "baseline_to_reference_ratio": 0.33908249659250644,
+              "ci95_low": -0.10080871514178905,
+              "ci95_high": -0.08529864194941991,
+              "paired_randomization_p": 4.999750012499375e-05,
+              "reference_wins": 0,
+              "ties": 0,
+              "baseline_wins": 20
+            }
+          }
+        },
+        "qpass": {
+          "metrics": {
+            "completed_requests": {
+              "label": "完成请求数",
+              "higher_is_better": true,
+              "advantage_definition": "positive_means_reference_better",
+              "reference_mean": 36.95,
+              "baseline_mean": 33.6,
+              "reference_advantage_mean": 3.35,
+              "reference_to_baseline_ratio": 1.099702380952381,
+              "baseline_to_reference_ratio": 0.9093369418132611,
+              "ci95_low": 1.8,
+              "ci95_high": 4.95,
+              "paired_randomization_p": 0.0008999550022498875,
+              "reference_wins": 14,
+              "ties": 3,
+              "baseline_wins": 3
+            },
+            "mean_censored_latency_ps": {
+              "label": "平均截尾延迟（ps）",
+              "higher_is_better": false,
+              "advantage_definition": "positive_means_reference_better",
+              "reference_mean": 691430006.5699999,
+              "baseline_mean": 771320006.2,
+              "reference_advantage_mean": 79889999.63,
+              "reference_to_baseline_ratio": 0.8964243128820323,
+              "baseline_to_reference_ratio": 1.115543148071217,
+              "ci95_low": 45800000.06000002,
+              "ci95_high": 114599999.34,
+              "paired_randomization_p": 0.00024998750062496874,
+              "reference_wins": 16,
+              "ties": 0,
+              "baseline_wins": 4
+            },
+            "mean_decision_seconds": {
+              "label": "平均决策时间（秒）",
+              "higher_is_better": false,
+              "advantage_definition": "positive_means_reference_better",
+              "reference_mean": 0.4663816261105239,
+              "baseline_mean": 0.08268017611763853,
+              "reference_advantage_mean": -0.38370144999288536,
+              "reference_to_baseline_ratio": 5.640791396561003,
+              "baseline_to_reference_ratio": 0.17728008885591226,
+              "ci95_low": -0.40348847499375956,
+              "ci95_high": -0.3643655816629891,
+              "paired_randomization_p": 4.999750012499375e-05,
+              "reference_wins": 0,
+              "ties": 0,
+              "baseline_wins": 20
+            },
+            "p95_decision_seconds": {
+              "label": "P95 决策时间（秒）",
+              "higher_is_better": false,
+              "advantage_definition": "positive_means_reference_better",
+              "reference_mean": 0.9191552750009577,
+              "baseline_mean": 0.18041681999457068,
+              "reference_advantage_mean": -0.7387384550063871,
+              "reference_to_baseline_ratio": 5.094620751150686,
+              "baseline_to_reference_ratio": 0.19628546438400485,
+              "ci95_low": -0.788067420036532,
+              "ci95_high": -0.6901335550006479,
+              "paired_randomization_p": 9.99950002499875e-05,
+              "reference_wins": 0,
+              "ties": 0,
+              "baseline_wins": 20
+            },
+            "mean_planner_seconds": {
+              "label": "平均规划核心时间（秒）",
+              "higher_is_better": false,
+              "advantage_definition": "positive_means_reference_better",
+              "reference_mean": 0.14052480444079266,
+              "baseline_mean": 0.08067329777922068,
+              "reference_advantage_mean": -0.059851506661571977,
+              "reference_to_baseline_ratio": 1.7418998393417375,
+              "baseline_to_reference_ratio": 0.5740858213626675,
+              "ci95_low": -0.06773507499342991,
+              "ci95_high": -0.05195835389313288,
+              "paired_randomization_p": 4.999750012499375e-05,
+              "reference_wins": 0,
+              "ties": 0,
+              "baseline_wins": 20
+            }
+          }
+        }
+      },
+      "hard_gates": {
+        "gnn": {
+          "gnn_invalid_decision_count": 0.0,
+          "schedule_violation_count": 0.0,
+          "fidelity_violation_count": 0.0,
+          "physical_backend_rejection_count": 0.0,
+          "post_completion_validation_failure_count": 0.0,
+          "violation_record_count": 0.0
+        },
+        "greedy": {
+          "gnn_invalid_decision_count": 0.0,
+          "schedule_violation_count": 0.0,
+          "fidelity_violation_count": 0.0,
+          "physical_backend_rejection_count": 0.0,
+          "post_completion_validation_failure_count": 0.0,
+          "violation_record_count": 0.0
+        },
+        "qcast": {
+          "gnn_invalid_decision_count": 0.0,
+          "schedule_violation_count": 0.0,
+          "fidelity_violation_count": 0.0,
+          "physical_backend_rejection_count": 0.0,
+          "post_completion_validation_failure_count": 0.0,
+          "violation_record_count": 0.0
+        },
+        "qpass": {
+          "gnn_invalid_decision_count": 0.0,
+          "schedule_violation_count": 0.0,
+          "fidelity_violation_count": 0.0,
+          "physical_backend_rejection_count": 0.0,
+          "post_completion_validation_failure_count": 0.0,
+          "violation_record_count": 0.0
+        }
+      },
+      "valid": true
+    }
+  },
+  "overall": {
+    "common_methods": [
+      "gnn",
+      "greedy",
+      "qcast",
+      "qpass"
+    ],
+    "method_means": {
+      "gnn": {
+        "completed_requests": 38.525000000000006,
+        "mean_censored_latency_ps": 780665004.8891666,
+        "mean_decision_seconds": 0.5180008882802212,
+        "p95_decision_seconds": 1.019516754997312,
+        "mean_planner_seconds": 0.1462965597504382
+      },
+      "greedy": {
+        "completed_requests": 35.974999999999994,
+        "mean_censored_latency_ps": 869207088.8583333,
+        "mean_decision_seconds": 0.10211690333498422,
+        "p95_decision_seconds": 0.21533375001163224,
+        "mean_planner_seconds": 0.09948496694880304
+      },
+      "qcast": {
+        "completed_requests": 35.2,
+        "mean_censored_latency_ps": 844582505.3433332,
+        "mean_decision_seconds": 0.05740227641066245,
+        "p95_decision_seconds": 0.14261822999687865,
+        "mean_planner_seconds": 0.05494092044956021
+      },
+      "qpass": {
+        "completed_requests": 36.35,
+        "mean_censored_latency_ps": 832624588.8916667,
+        "mean_decision_seconds": 0.09596265192276497,
+        "p95_decision_seconds": 0.20428493748477194,
+        "mean_planner_seconds": 0.09300391864030966
+      }
+    },
+    "comparisons": {
+      "greedy": {
+        "metrics": {
+          "completed_requests": {
+            "label": "完成请求数",
+            "higher_is_better": true,
+            "advantage_definition": "positive_means_reference_better",
+            "reference_mean": 38.525000000000006,
+            "baseline_mean": 35.974999999999994,
+            "reference_advantage_mean": 2.5500000000000003,
+            "reference_to_baseline_ratio": 1.0708825573314804,
+            "baseline_to_reference_ratio": 0.933809214795587,
+            "ci95_low": 1.2999999999999998,
+            "ci95_high": 3.675,
+            "paired_randomization_p": 0.000599970001499925,
+            "reference_wins": 29,
+            "ties": 2,
+            "baseline_wins": 9
+          },
+          "mean_censored_latency_ps": {
+            "label": "平均截尾延迟（ps）",
+            "higher_is_better": false,
+            "advantage_definition": "positive_means_reference_better",
+            "reference_mean": 780665004.8891666,
+            "baseline_mean": 869207088.8583333,
+            "reference_advantage_mean": 88542083.96916667,
+            "reference_to_baseline_ratio": 0.8981346504140193,
+            "baseline_to_reference_ratio": 1.113418794764263,
+            "ci95_low": 61672500.84999998,
+            "ci95_high": 114362083.83833332,
+            "paired_randomization_p": 4.999750012499375e-05,
+            "reference_wins": 35,
+            "ties": 0,
+            "baseline_wins": 5
+          },
+          "mean_decision_seconds": {
+            "label": "平均决策时间（秒）",
+            "higher_is_better": false,
+            "advantage_definition": "positive_means_reference_better",
+            "reference_mean": 0.5180008882802212,
+            "baseline_mean": 0.10211690333498422,
+            "reference_advantage_mean": -0.41588398494523704,
+            "reference_to_baseline_ratio": 5.0726262877456385,
+            "baseline_to_reference_ratio": 0.19713654097006564,
+            "ci95_low": -0.43096474524683814,
+            "ci95_high": -0.400575024937985,
+            "paired_randomization_p": 4.999750012499375e-05,
+            "reference_wins": 0,
+            "ties": 0,
+            "baseline_wins": 40
+          },
+          "p95_decision_seconds": {
+            "label": "P95 决策时间（秒）",
+            "higher_is_better": false,
+            "advantage_definition": "positive_means_reference_better",
+            "reference_mean": 1.019516754997312,
+            "baseline_mean": 0.21533375001163224,
+            "reference_advantage_mean": -0.8041830049856799,
+            "reference_to_baseline_ratio": 4.734588771812306,
+            "baseline_to_reference_ratio": 0.21121158524971956,
+            "ci95_low": -0.8498143674980383,
+            "ci95_high": -0.75967742249195,
+            "paired_randomization_p": 4.999750012499375e-05,
+            "reference_wins": 0,
+            "ties": 0,
+            "baseline_wins": 40
+          },
+          "mean_planner_seconds": {
+            "label": "平均规划核心时间（秒）",
+            "higher_is_better": false,
+            "advantage_definition": "positive_means_reference_better",
+            "reference_mean": 0.1462965597504382,
+            "baseline_mean": 0.09948496694880304,
+            "reference_advantage_mean": -0.04681159280163513,
+            "reference_to_baseline_ratio": 1.4705393612456579,
+            "baseline_to_reference_ratio": 0.6800226001111079,
+            "ci95_low": -0.054430946941761475,
+            "ci95_high": -0.03905724614256266,
+            "paired_randomization_p": 4.999750012499375e-05,
+            "reference_wins": 1,
+            "ties": 0,
+            "baseline_wins": 39
+          }
+        }
+      },
+      "qcast": {
+        "metrics": {
+          "completed_requests": {
+            "label": "完成请求数",
+            "higher_is_better": true,
+            "advantage_definition": "positive_means_reference_better",
+            "reference_mean": 38.525000000000006,
+            "baseline_mean": 35.2,
+            "reference_advantage_mean": 3.325,
+            "reference_to_baseline_ratio": 1.0944602272727273,
+            "baseline_to_reference_ratio": 0.9136924075275794,
+            "ci95_low": 2.375,
+            "ci95_high": 4.300000000000001,
+            "paired_randomization_p": 4.999750012499375e-05,
+            "reference_wins": 31,
+            "ties": 4,
+            "baseline_wins": 5
+          },
+          "mean_censored_latency_ps": {
+            "label": "平均截尾延迟（ps）",
+            "higher_is_better": false,
+            "advantage_definition": "positive_means_reference_better",
+            "reference_mean": 780665004.8891666,
+            "baseline_mean": 844582505.3433332,
+            "reference_advantage_mean": 63917500.454166666,
+            "reference_to_baseline_ratio": 0.9243205962119907,
+            "baseline_to_reference_ratio": 1.0818757085995436,
+            "ci95_low": 43165833.85499999,
+            "ci95_high": 84798750.52250001,
+            "paired_randomization_p": 4.999750012499375e-05,
+            "reference_wins": 31,
+            "ties": 0,
+            "baseline_wins": 9
+          },
+          "mean_decision_seconds": {
+            "label": "平均决策时间（秒）",
+            "higher_is_better": false,
+            "advantage_definition": "positive_means_reference_better",
+            "reference_mean": 0.5180008882802212,
+            "baseline_mean": 0.05740227641066245,
+            "reference_advantage_mean": -0.4605986118695588,
+            "reference_to_baseline_ratio": 9.024047836960046,
+            "baseline_to_reference_ratio": 0.11081501539744414,
+            "ci95_low": -0.47538832954587906,
+            "ci95_high": -0.44641666557831516,
+            "paired_randomization_p": 4.999750012499375e-05,
+            "reference_wins": 0,
+            "ties": 0,
+            "baseline_wins": 40
+          },
+          "p95_decision_seconds": {
+            "label": "P95 决策时间（秒）",
+            "higher_is_better": false,
+            "advantage_definition": "positive_means_reference_better",
+            "reference_mean": 1.019516754997312,
+            "baseline_mean": 0.14261822999687865,
+            "reference_advantage_mean": -0.8768985250004334,
+            "reference_to_baseline_ratio": 7.148572486277703,
+            "baseline_to_reference_ratio": 0.13988806883046728,
+            "ci95_low": -0.9214005649992032,
+            "ci95_high": -0.832631917501567,
+            "paired_randomization_p": 4.999750012499375e-05,
+            "reference_wins": 0,
+            "ties": 0,
+            "baseline_wins": 40
+          },
+          "mean_planner_seconds": {
+            "label": "平均规划核心时间（秒）",
+            "higher_is_better": false,
+            "advantage_definition": "positive_means_reference_better",
+            "reference_mean": 0.1462965597504382,
+            "baseline_mean": 0.05494092044956021,
+            "reference_advantage_mean": -0.09135563930087798,
+            "reference_to_baseline_ratio": 2.662797757178989,
+            "baseline_to_reference_ratio": 0.37554485589600917,
+            "ci95_low": -0.09806962012019622,
+            "ci95_high": -0.08464788183822583,
+            "paired_randomization_p": 4.999750012499375e-05,
+            "reference_wins": 0,
+            "ties": 0,
+            "baseline_wins": 40
+          }
+        }
+      },
+      "qpass": {
+        "metrics": {
+          "completed_requests": {
+            "label": "完成请求数",
+            "higher_is_better": true,
+            "advantage_definition": "positive_means_reference_better",
+            "reference_mean": 38.525000000000006,
+            "baseline_mean": 36.35,
+            "reference_advantage_mean": 2.175,
+            "reference_to_baseline_ratio": 1.0598349381017882,
+            "baseline_to_reference_ratio": 0.9435431537962361,
+            "ci95_low": 1.175,
+            "ci95_high": 3.2,
+            "paired_randomization_p": 0.0002999850007499625,
+            "reference_wins": 25,
+            "ties": 7,
+            "baseline_wins": 8
+          },
+          "mean_censored_latency_ps": {
+            "label": "平均截尾延迟（ps）",
+            "higher_is_better": false,
+            "advantage_definition": "positive_means_reference_better",
+            "reference_mean": 780665004.8891666,
+            "baseline_mean": 832624588.8916667,
+            "reference_advantage_mean": 51959584.00249998,
+            "reference_to_baseline_ratio": 0.9375954245217942,
+            "baseline_to_reference_ratio": 1.0665581058163058,
+            "ci95_low": 30746667.54333333,
+            "ci95_high": 73419167.20749998,
+            "paired_randomization_p": 9.99950002499875e-05,
+            "reference_wins": 27,
+            "ties": 0,
+            "baseline_wins": 13
+          },
+          "mean_decision_seconds": {
+            "label": "平均决策时间（秒）",
+            "higher_is_better": false,
+            "advantage_definition": "positive_means_reference_better",
+            "reference_mean": 0.5180008882802212,
+            "baseline_mean": 0.09596265192276497,
+            "reference_advantage_mean": -0.4220382363574563,
+            "reference_to_baseline_ratio": 5.397942615186702,
+            "baseline_to_reference_ratio": 0.18525576711145017,
+            "ci95_low": -0.43625297989132417,
+            "ci95_high": -0.40787086988963317,
+            "paired_randomization_p": 4.999750012499375e-05,
+            "reference_wins": 0,
+            "ties": 0,
+            "baseline_wins": 40
+          },
+          "p95_decision_seconds": {
+            "label": "P95 决策时间（秒）",
+            "higher_is_better": false,
+            "advantage_definition": "positive_means_reference_better",
+            "reference_mean": 1.019516754997312,
+            "baseline_mean": 0.20428493748477194,
+            "reference_advantage_mean": -0.8152318175125401,
+            "reference_to_baseline_ratio": 4.990660435125376,
+            "baseline_to_reference_ratio": 0.2003742817206673,
+            "ci95_low": -0.8623685500118881,
+            "ci95_high": -0.7706127550191013,
+            "paired_randomization_p": 4.999750012499375e-05,
+            "reference_wins": 0,
+            "ties": 0,
+            "baseline_wins": 40
+          },
+          "mean_planner_seconds": {
+            "label": "平均规划核心时间（秒）",
+            "higher_is_better": false,
+            "advantage_definition": "positive_means_reference_better",
+            "reference_mean": 0.1462965597504382,
+            "baseline_mean": 0.09300391864030966,
+            "reference_advantage_mean": -0.05329264111012853,
+            "reference_to_baseline_ratio": 1.5730150072088522,
+            "baseline_to_reference_ratio": 0.635721843349984,
+            "ci95_low": -0.060149913844590744,
+            "ci95_high": -0.04643539960166579,
+            "paired_randomization_p": 4.999750012499375e-05,
+            "reference_wins": 1,
+            "ties": 0,
+            "baseline_wins": 39
+          }
+        }
+      }
+    },
+    "valid": true
+  },
+  "inputs": [
+    "results\\formal_experiments\\B3_waxman192\\online_gnn_comparison.json",
+    "results\\formal_experiments\\B3_barabasi128\\online_gnn_comparison.json"
+  ]
+}

@@ -14,12 +14,6 @@ SeQUeNCe 物理执行
 与 Q-PASS、Greedy 和 MILP 配对比较
 ```
 
-此外，`algorithms/telgen/ipm_trajectory_pilot.py` 保留一条隔离的研究试验：
-按原始 TELGEN 方法学习 LP 内点法的连续求解轨迹。它不接入上述在线主链，
-不使用自回归掩码或事后解码，也不输出可直接执行的离散计划。只有在大规模
-训练证明其原始可行率和同拓扑族泛化成立后，才考虑怎样把连续 LP 输出转换为
-量子调度决策；当前不能把它和现有自回归 GNN 的结果混为一谈。
-
 研究对象是多请求场景下的联合路径与交换构造计划选择。MILP 先最大化
 期望完成量，再在最优完成量下最小化期望完成延迟；GNN 学习 MILP 的离散
 选择集合，在线推理时不调用 LP/MILP，也不使用事后硬解码或局部搜索。
@@ -33,7 +27,7 @@ SeQUeNCe 物理执行
 - `qnet_core/`：规划层与 SeQUeNCe 之间的中性接口和持久执行器；
 - `QCAST/`：Q-CAST 上游源码参考，不参与物理仿真；
 - `results/`：实验数据、模型与评估结果；
-- `server_training_job.sh`：服务器固定配置训练任务。
+- `server_training_job.sh`：已标记失效，暂不删除，不再用于训练。
 
 ## 分层边界
 
@@ -135,13 +129,6 @@ python -m algorithms.telgen.validate_construction_physics \
 点状网格、顶部图例，以及颜色与线型/标记的双重编码。PDF 和 SVG 为正式
 矢量输出，PNG 只用于预览。
 
-服务器固定任务：
-
-```bash
-bash server_training_job.sh check
-bash server_training_job.sh start
-bash server_training_job.sh status
-bash server_training_job.sh log
-```
+服务器固定任务已随 IPM 范式删除而停用：`server_training_job.sh` 保留但标记失效，不再启动训练。
 
 实验协议见 [`refine-logs/EXPERIMENT_PLAN.md`](refine-logs/EXPERIMENT_PLAN.md)。

@@ -1,0 +1,241 @@
+case,method,metric,seed,value
+"Waxman
+(192 nodes)",TELGEN,completed_requests,43000,0.7166666666666667
+"Waxman
+(192 nodes)",TELGEN,completed_requests,43001,0.6833333333333333
+"Waxman
+(192 nodes)",TELGEN,completed_requests,43002,0.6833333333333333
+"Waxman
+(192 nodes)",TELGEN,completed_requests,43003,0.6833333333333333
+"Waxman
+(192 nodes)",TELGEN,completed_requests,43004,0.6333333333333333
+"Waxman
+(192 nodes)",TELGEN,completed_requests,43005,0.6833333333333333
+"Waxman
+(192 nodes)",TELGEN,completed_requests,43006,0.6666666666666666
+"Waxman
+(192 nodes)",TELGEN,completed_requests,43007,0.5333333333333333
+"Waxman
+(192 nodes)",TELGEN,completed_requests,43008,0.6666666666666666
+"Waxman
+(192 nodes)",TELGEN,completed_requests,43009,0.6666666666666666
+"Waxman
+(192 nodes)",TELGEN,completed_requests,43010,0.65
+"Waxman
+(192 nodes)",TELGEN,completed_requests,43011,0.7
+"Waxman
+(192 nodes)",TELGEN,completed_requests,43012,0.6666666666666666
+"Waxman
+(192 nodes)",TELGEN,completed_requests,43013,0.65
+"Waxman
+(192 nodes)",TELGEN,completed_requests,43014,0.7166666666666667
+"Waxman
+(192 nodes)",TELGEN,completed_requests,43015,0.6833333333333333
+"Waxman
+(192 nodes)",TELGEN,completed_requests,43016,0.7
+"Waxman
+(192 nodes)",TELGEN,completed_requests,43017,0.6666666666666666
+"Waxman
+(192 nodes)",TELGEN,completed_requests,43018,0.6833333333333333
+"Waxman
+(192 nodes)",TELGEN,completed_requests,43019,0.6333333333333333
+"Barabási–Albert
+(128 nodes)",TELGEN,completed_requests,43100,0.7
+"Barabási–Albert
+(128 nodes)",TELGEN,completed_requests,43101,0.72
+"Barabási–Albert
+(128 nodes)",TELGEN,completed_requests,43102,0.8
+"Barabási–Albert
+(128 nodes)",TELGEN,completed_requests,43103,0.68
+"Barabási–Albert
+(128 nodes)",TELGEN,completed_requests,43104,0.86
+"Barabási–Albert
+(128 nodes)",TELGEN,completed_requests,43105,0.66
+"Barabási–Albert
+(128 nodes)",TELGEN,completed_requests,43106,0.68
+"Barabási–Albert
+(128 nodes)",TELGEN,completed_requests,43107,0.7
+"Barabási–Albert
+(128 nodes)",TELGEN,completed_requests,43108,0.66
+"Barabási–Albert
+(128 nodes)",TELGEN,completed_requests,43109,0.86
+"Barabási–Albert
+(128 nodes)",TELGEN,completed_requests,43110,0.74
+"Barabási–Albert
+(128 nodes)",TELGEN,completed_requests,43111,0.76
+"Barabási–Albert
+(128 nodes)",TELGEN,completed_requests,43112,0.62
+"Barabási–Albert
+(128 nodes)",TELGEN,completed_requests,43113,0.66
+"Barabási–Albert
+(128 nodes)",TELGEN,completed_requests,43114,0.82
+"Barabási–Albert
+(128 nodes)",TELGEN,completed_requests,43115,0.78
+"Barabási–Albert
+(128 nodes)",TELGEN,completed_requests,43116,0.82
+"Barabási–Albert
+(128 nodes)",TELGEN,completed_requests,43117,0.8
+"Barabási–Albert
+(128 nodes)",TELGEN,completed_requests,43118,0.84
+"Barabási–Albert
+(128 nodes)",TELGEN,completed_requests,43119,0.62
+"Waxman
+(192 nodes)",Q-PASS,completed_requests,43000,0.6833333333333333
+"Waxman
+(192 nodes)",Q-PASS,completed_requests,43001,0.6666666666666666
+"Waxman
+(192 nodes)",Q-PASS,completed_requests,43002,0.6333333333333333
+"Waxman
+(192 nodes)",Q-PASS,completed_requests,43003,0.6833333333333333
+"Waxman
+(192 nodes)",Q-PASS,completed_requests,43004,0.6
+"Waxman
+(192 nodes)",Q-PASS,completed_requests,43005,0.7166666666666667
+"Waxman
+(192 nodes)",Q-PASS,completed_requests,43006,0.6666666666666666
+"Waxman
+(192 nodes)",Q-PASS,completed_requests,43007,0.6
+"Waxman
+(192 nodes)",Q-PASS,completed_requests,43008,0.5833333333333334
+"Waxman
+(192 nodes)",Q-PASS,completed_requests,43009,0.6166666666666667
+"Waxman
+(192 nodes)",Q-PASS,completed_requests,43010,0.6666666666666666
+"Waxman
+(192 nodes)",Q-PASS,completed_requests,43011,0.7
+"Waxman
+(192 nodes)",Q-PASS,completed_requests,43012,0.55
+"Waxman
+(192 nodes)",Q-PASS,completed_requests,43013,0.7
+"Waxman
+(192 nodes)",Q-PASS,completed_requests,43014,0.7166666666666667
+"Waxman
+(192 nodes)",Q-PASS,completed_requests,43015,0.65
+"Waxman
+(192 nodes)",Q-PASS,completed_requests,43016,0.65
+"Waxman
+(192 nodes)",Q-PASS,completed_requests,43017,0.7333333333333333
+"Waxman
+(192 nodes)",Q-PASS,completed_requests,43018,0.6333333333333333
+"Waxman
+(192 nodes)",Q-PASS,completed_requests,43019,0.5833333333333334
+"Barabási–Albert
+(128 nodes)",Q-PASS,completed_requests,43100,0.58
+"Barabási–Albert
+(128 nodes)",Q-PASS,completed_requests,43101,0.58
+"Barabási–Albert
+(128 nodes)",Q-PASS,completed_requests,43102,0.84
+"Barabási–Albert
+(128 nodes)",Q-PASS,completed_requests,43103,0.58
+"Barabási–Albert
+(128 nodes)",Q-PASS,completed_requests,43104,0.68
+"Barabási–Albert
+(128 nodes)",Q-PASS,completed_requests,43105,0.62
+"Barabási–Albert
+(128 nodes)",Q-PASS,completed_requests,43106,0.58
+"Barabási–Albert
+(128 nodes)",Q-PASS,completed_requests,43107,0.66
+"Barabási–Albert
+(128 nodes)",Q-PASS,completed_requests,43108,0.54
+"Barabási–Albert
+(128 nodes)",Q-PASS,completed_requests,43109,0.64
+"Barabási–Albert
+(128 nodes)",Q-PASS,completed_requests,43110,0.74
+"Barabási–Albert
+(128 nodes)",Q-PASS,completed_requests,43111,0.8
+"Barabási–Albert
+(128 nodes)",Q-PASS,completed_requests,43112,0.62
+"Barabási–Albert
+(128 nodes)",Q-PASS,completed_requests,43113,0.5
+"Barabási–Albert
+(128 nodes)",Q-PASS,completed_requests,43114,0.76
+"Barabási–Albert
+(128 nodes)",Q-PASS,completed_requests,43115,0.7
+"Barabási–Albert
+(128 nodes)",Q-PASS,completed_requests,43116,0.8
+"Barabási–Albert
+(128 nodes)",Q-PASS,completed_requests,43117,0.8
+"Barabási–Albert
+(128 nodes)",Q-PASS,completed_requests,43118,0.78
+"Barabási–Albert
+(128 nodes)",Q-PASS,completed_requests,43119,0.64
+"Waxman
+(192 nodes)",Greedy,completed_requests,43000,0.7
+"Waxman
+(192 nodes)",Greedy,completed_requests,43001,0.6666666666666666
+"Waxman
+(192 nodes)",Greedy,completed_requests,43002,0.6666666666666666
+"Waxman
+(192 nodes)",Greedy,completed_requests,43003,0.6833333333333333
+"Waxman
+(192 nodes)",Greedy,completed_requests,43004,0.6666666666666666
+"Waxman
+(192 nodes)",Greedy,completed_requests,43005,0.6
+"Waxman
+(192 nodes)",Greedy,completed_requests,43006,0.7
+"Waxman
+(192 nodes)",Greedy,completed_requests,43007,0.5833333333333334
+"Waxman
+(192 nodes)",Greedy,completed_requests,43008,0.7166666666666667
+"Waxman
+(192 nodes)",Greedy,completed_requests,43009,0.6166666666666667
+"Waxman
+(192 nodes)",Greedy,completed_requests,43010,0.7
+"Waxman
+(192 nodes)",Greedy,completed_requests,43011,0.65
+"Waxman
+(192 nodes)",Greedy,completed_requests,43012,0.6166666666666667
+"Waxman
+(192 nodes)",Greedy,completed_requests,43013,0.6833333333333333
+"Waxman
+(192 nodes)",Greedy,completed_requests,43014,0.6833333333333333
+"Waxman
+(192 nodes)",Greedy,completed_requests,43015,0.6833333333333333
+"Waxman
+(192 nodes)",Greedy,completed_requests,43016,0.6666666666666666
+"Waxman
+(192 nodes)",Greedy,completed_requests,43017,0.6166666666666667
+"Waxman
+(192 nodes)",Greedy,completed_requests,43018,0.6333333333333333
+"Waxman
+(192 nodes)",Greedy,completed_requests,43019,0.6
+"Barabási–Albert
+(128 nodes)",Greedy,completed_requests,43100,0.62
+"Barabási–Albert
+(128 nodes)",Greedy,completed_requests,43101,0.56
+"Barabási–Albert
+(128 nodes)",Greedy,completed_requests,43102,0.78
+"Barabási–Albert
+(128 nodes)",Greedy,completed_requests,43103,0.56
+"Barabási–Albert
+(128 nodes)",Greedy,completed_requests,43104,0.7
+"Barabási–Albert
+(128 nodes)",Greedy,completed_requests,43105,0.54
+"Barabási–Albert
+(128 nodes)",Greedy,completed_requests,43106,0.52
+"Barabási–Albert
+(128 nodes)",Greedy,completed_requests,43107,0.6
+"Barabási–Albert
+(128 nodes)",Greedy,completed_requests,43108,0.62
+"Barabási–Albert
+(128 nodes)",Greedy,completed_requests,43109,0.7
+"Barabási–Albert
+(128 nodes)",Greedy,completed_requests,43110,0.7
+"Barabási–Albert
+(128 nodes)",Greedy,completed_requests,43111,0.78
+"Barabási–Albert
+(128 nodes)",Greedy,completed_requests,43112,0.82
+"Barabási–Albert
+(128 nodes)",Greedy,completed_requests,43113,0.56
+"Barabási–Albert
+(128 nodes)",Greedy,completed_requests,43114,0.68
+"Barabási–Albert
+(128 nodes)",Greedy,completed_requests,43115,0.54
+"Barabási–Albert
+(128 nodes)",Greedy,completed_requests,43116,0.76
+"Barabási–Albert
+(128 nodes)",Greedy,completed_requests,43117,0.66
+"Barabási–Albert
+(128 nodes)",Greedy,completed_requests,43118,0.64
+"Barabási–Albert
+(128 nodes)",Greedy,completed_requests,43119,0.68
