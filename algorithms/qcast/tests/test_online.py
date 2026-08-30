@@ -91,6 +91,67 @@ class OnlineQCASTTests(unittest.TestCase):
             (0, 3),
         )
 
+    def test_global_reservation_recomputes_the_next_request_path(self):
+        spec = EpisodeSpec(
+            seed=1305,
+            nodes=(0, 1, 2, 3, 4, 5, 6, 7),
+            edges=(
+                (0, 1), (1, 2), (2, 3),
+                (0, 4), (4, 5), (5, 3),
+                (6, 1), (2, 7),
+                (6, 4), (5, 7),
+            ),
+            requests=(
+                RequestSpec("r0", 0, 3, ttl=6),
+                RequestSpec("r1", 6, 7, ttl=6),
+            ),
+            horizon=6,
+            physical=deterministic_physical(
+                memory_capacity=2,
+                node_memory_capacity=8,
+                max_width=1,
+            ),
+        )
+        record = plan_qcast_window(
+            spec,
+            window_start_slot=0,
+            window_end_slot=1,
+            path_candidate_count=4,
+            recovery_span_limit=0,
+        )
+        self.assertEqual(record.solution.completed_request_count, 2)
+        self.assertEqual(
+            {variable.route_nodes for variable in record.solution.selected_variables},
+            {(0, 1, 2, 3), (6, 4, 5, 7)},
+        )
+
+    def test_recovery_paths_are_predeclared_in_the_generation_round(self):
+        spec = EpisodeSpec(
+            seed=1306,
+            nodes=(0, 1, 2, 3),
+            edges=((0, 1), (1, 3), (0, 2), (2, 3), (1, 2)),
+            requests=(RequestSpec("r0", 0, 3, ttl=8),),
+            horizon=8,
+            physical=deterministic_physical(
+                memory_capacity=2,
+                node_memory_capacity=8,
+                max_width=1,
+            ),
+        )
+        record = plan_qcast_window(
+            spec,
+            window_start_slot=0,
+            window_end_slot=1,
+            path_candidate_count=4,
+        )
+        allocation = record.allocations[0]
+        self.assertTrue(allocation.recovery_paths)
+        slots = dict(record.solution.selected_variables[0].nominal_schedule.operation_slots)
+        self.assertTrue(all(
+            slots[operation_id] == 0
+            for operation_id in allocation.all_generation_operation_ids
+        ))
+
     def test_qcast_moves_to_the_earliest_unreserved_start(self):
         spec = EpisodeSpec(
             seed=1301,
@@ -154,6 +215,46 @@ class OnlineQCASTTests(unittest.TestCase):
             for decision in result.decisions
         ))
         self.assertEqual(result.metrics["completed_requests"], 2.0)
+
+    def test_sequence_execution_repairs_a_broken_major_edge(self):
+        spec = EpisodeSpec(
+            seed=3,
+            nodes=(0, 1, 2, 3),
+            edges=((0, 1), (1, 3), (0, 2), (2, 3), (1, 2)),
+            requests=(RequestSpec("r0", 0, 3, ttl=8),),
+            horizon=8,
+            physical=PhysicalConfig(
+                generation_probability=0.7,
+                swap_probability=1.0,
+                detector_efficiency=1.0,
+                bsm_success_probability=1.0,
+                memory_capacity=2,
+                node_memory_capacity=8,
+                max_width=1,
+                quantum_distance_m=1.0,
+                slot_duration_ps=50_000_000,
+            ),
+        )
+        result = run_online_qcast(
+            spec,
+            OnlineQCASTConfig(
+                decision_interval=4,
+                path_candidate_count=4,
+            ),
+        )
+        self.assertEqual(result.metrics["completed_requests"], 1.0)
+        self.assertEqual(result.metrics["qcast_repaired_request_count"], 1.0)
+        self.assertEqual(result.metrics["schedule_violation_count"], 0.0)
+        self.assertEqual(result.violations, ())
+        self.assertEqual(
+            result.recovery_decisions[0].repaired_route_nodes,
+            (0, 2, 1, 3),
+        )
+        self.assertTrue(any(
+            event.operation_id.startswith("r0:qcast:repair:v1:swap:")
+            and event.success
+            for event in result.event_trace
+        ))
 
     def test_qcast_planning_time_includes_rejected_windows(self):
         spec = EpisodeSpec(

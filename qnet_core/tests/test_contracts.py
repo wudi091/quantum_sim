@@ -153,6 +153,48 @@ class SharedContractTests(unittest.TestCase):
                 make_episode(config, 7)
         self.assertEqual(generator.call_count, 2)
 
+    def test_qcast_random_uses_disjoint_endpoints_within_each_batch(self):
+        config = ScenarioConfig(
+            request_count=30,
+            topology_nodes=100,
+            waxman_alpha=0.15,
+            waxman_beta=0.45,
+            waxman_add_mst=False,
+            endpoint_mode="qcast_random",
+            arrival_batch_size=10,
+            arrival_interval=4,
+            ttl=16,
+            horizon=24,
+        )
+        first = make_episode(config, 19900111)
+        second = make_episode(config, 19900111)
+        self.assertEqual(first, second)
+        for arrival in (0, 4, 8):
+            batch = [
+                request
+                for request in first.requests
+                if request.arrival == arrival
+            ]
+            self.assertEqual(len(batch), 10)
+            endpoints = [
+                node
+                for request in batch
+                for node in (request.source, request.destination)
+            ]
+            self.assertEqual(len(endpoints), len(set(endpoints)))
+
+    def test_qcast_random_rejects_an_oversized_batch(self):
+        config = ScenarioConfig(
+            request_count=6,
+            topology_nodes=10,
+            endpoint_mode="qcast_random",
+            arrival_batch_size=6,
+            ttl=8,
+            horizon=8,
+        )
+        with self.assertRaisesRegex(ValueError, "two distinct nodes"):
+            make_episode(config, 7)
+
     def test_barabasi_albert_batch_is_seeded_and_distance_stratified(self):
         config = ScenarioConfig(
             request_count=24,

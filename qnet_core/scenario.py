@@ -10,6 +10,9 @@ import numpy as np
 from .spec import EpisodeSpec, PhysicalConfig, RequestSpec
 
 
+RANDOM_ENDPOINT_MODES = frozenset({"uniform_random", "qcast_random"})
+
+
 @dataclass(frozen=True)
 class ScenarioConfig:
     request_count: int = 4
@@ -86,7 +89,7 @@ def _make_waxman_graph(
             _add_euclidean_mst(graph)
         if not nx.is_connected(graph):
             continue
-        if config.endpoint_mode == "uniform_random":
+        if config.endpoint_mode in RANDOM_ENDPOINT_MODES:
             return graph, {}
         distances = {
             int(source): {
@@ -142,7 +145,7 @@ def _make_barabasi_albert_graph(
             attachment,
             seed=graph_seed,
         )
-        if config.endpoint_mode == "uniform_random":
+        if config.endpoint_mode in RANDOM_ENDPOINT_MODES:
             return graph, {}
         distances = {
             int(source): {
@@ -199,7 +202,7 @@ def _make_erdos_renyi_graph(
         )
         if not nx.is_connected(graph):
             continue
-        if config.endpoint_mode == "uniform_random":
+        if config.endpoint_mode in RANDOM_ENDPOINT_MODES:
             return graph, {}
         distances = {
             int(source): {
@@ -259,7 +262,7 @@ def _make_random_regular_graph(
         )
         if not nx.is_connected(graph):
             continue
-        if config.endpoint_mode == "uniform_random":
+        if config.endpoint_mode in RANDOM_ENDPOINT_MODES:
             return graph, {}
         distances = {
             int(source): {
@@ -370,7 +373,10 @@ def make_episode(config: ScenarioConfig, seed: int) -> EpisodeSpec:
         "parallel_corridors",
     }:
         raise ValueError(f"unknown topology_mode: {config.topology_mode}")
-    if config.endpoint_mode not in {"distance_stratified", "uniform_random"}:
+    if config.endpoint_mode not in {
+        "distance_stratified",
+        *RANDOM_ENDPOINT_MODES,
+    }:
         raise ValueError(f"unknown endpoint_mode: {config.endpoint_mode}")
 
     if config.topology_mode == "parallel_corridors":
@@ -397,6 +403,27 @@ def make_episode(config: ScenarioConfig, seed: int) -> EpisodeSpec:
             ))
             for _ in range(config.request_count)
         ]
+    elif config.endpoint_mode == "qcast_random":
+        batch_size = config.arrival_batch_size or config.request_count
+        if 2 * batch_size > len(nodes):
+            raise ValueError(
+                "qcast_random requires at least two distinct nodes per "
+                "request in an arrival batch"
+            )
+        for batch_start in range(0, config.request_count, batch_size):
+            current_size = min(
+                batch_size,
+                config.request_count - batch_start,
+            )
+            selected = request_rng.choice(
+                nodes,
+                size=2 * current_size,
+                replace=False,
+            )
+            endpoints.extend(
+                (int(selected[index]), int(selected[index + 1]))
+                for index in range(0, len(selected), 2)
+            )
     else:
         pair_buckets = _candidate_pair_buckets(distances, config)
         missing = [

@@ -41,7 +41,10 @@ def _validate_report(
 ) -> None:
     if payload.get("schema_version") != 1:
         raise ValueError(f"{case_name}: unsupported report schema")
-    if payload.get("experiment") != "paired_online_gnn_milp_qcast":
+    if payload.get("experiment") not in {
+        "paired_online_gnn_milp_qcast",
+        "paired_online_gnn_milp_routing_baselines",
+    }:
         raise ValueError(f"{case_name}: unexpected experiment type")
     contract = payload.get("comparison_contract")
     if not isinstance(contract, Mapping):
@@ -51,11 +54,12 @@ def _validate_report(
         "independent_persistent_executors": True,
         "future_requests_hidden": True,
         "gnn_calls_milp_online": False,
-        "qcast_included": False,
     }
     for key, expected in required.items():
         if contract.get(key) != expected:
             raise ValueError(f"{case_name}: contract mismatch for {key}")
+    if contract.get("qcast_included") not in (None, False):
+        raise ValueError(f"{case_name}: Q-CAST must not be included")
     policy = str(contract.get("gnn_construction_policy", ""))
     if adaptive and policy != "adaptive_swap_tree_selection":
         raise ValueError(f"{case_name}: adaptive report uses {policy!r}")
@@ -64,14 +68,27 @@ def _validate_report(
     configuration = payload.get("configuration")
     if not isinstance(configuration, Mapping):
         raise ValueError(f"{case_name}: configuration is missing")
-    if configuration.get("skip_milp") is not True:
-        raise ValueError(f"{case_name}: online MILP must be disabled")
-    if configuration.get("skip_qcast") is not True:
-        raise ValueError(f"{case_name}: Q-CAST must be skipped")
+    profile = configuration.get("comparison_profile")
+    if profile is None:
+        if configuration.get("skip_milp") is not True:
+            raise ValueError(f"{case_name}: online MILP must be disabled")
+        if (
+            "skip_qcast" in configuration
+            and configuration.get("skip_qcast") is not True
+        ):
+            raise ValueError(f"{case_name}: legacy Q-CAST flag must skip it")
+    elif profile != "construction_ablation":
+        raise ValueError(
+            f"{case_name}: construction report uses profile {profile!r}"
+        )
     if payload.get("milp_config") is not None:
         raise ValueError(f"{case_name}: report unexpectedly contains MILP config")
     if payload.get("qcast_config") is not None:
         raise ValueError(f"{case_name}: report unexpectedly contains Q-CAST config")
+    if payload.get("qpass_config") is not None:
+        raise ValueError(f"{case_name}: report unexpectedly contains Q-PASS config")
+    if payload.get("greedy_config") is not None:
+        raise ValueError(f"{case_name}: report unexpectedly contains Greedy config")
     fixed_index = configuration.get("fixed_swap_tree_index")
     if adaptive and fixed_index is not None:
         raise ValueError(f"{case_name}: adaptive report fixes a swap tree")

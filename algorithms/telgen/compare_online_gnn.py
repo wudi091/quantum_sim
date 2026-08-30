@@ -1,8 +1,9 @@
-"""Paired online comparison of GNN, exact MILP, and Q-CAST."""
+"""Paired online comparison on one shared generated episode suite."""
 
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 from dataclasses import asdict
 from datetime import datetime
 import hashlib
@@ -12,22 +13,49 @@ import shutil
 from statistics import fmean
 from time import perf_counter
 
-from algorithms.qcast.online import OnlineQCASTConfig, run_online_qcast
+from algorithms.baselines.online import (
+    OnlineBaselineConfig,
+    run_online_baseline,
+)
 from qnet_core.scenario import ScenarioConfig, make_episode
 from qnet_core.spec import PhysicalConfig
+from qnet_core.workload import resolve_periodic_arrival_workload
 
+from .comparison_methods import (
+    COMPARISON_PROFILES,
+    FORMAL_METHOD_ORDER,
+    ROUTING_BASELINE_METHODS,
+    methods_for_profile,
+    validate_profile_methods,
+)
 from .online import OnlineTELGENConfig, run_online_telgen
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Compare an online GNN checkpoint against MILP and Q-CAST."
+        description=(
+            "Compare a frozen online GNN against MILP and non-learning "
+            "routing baselines on paired EpisodeSpec instances."
+        )
     )
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--seeds", type=int, default=1)
     parser.add_argument("--seed-start", type=int, default=15000)
-    parser.add_argument("--requests", type=int, default=20)
+    workload = parser.add_mutually_exclusive_group()
+    workload.add_argument(
+        "--requests",
+        type=int,
+        help="legacy mode: fixed total request count",
+    )
+    workload.add_argument(
+        "--arrival-rounds",
+        type=int,
+        help=(
+            "Q-CAST-style mode: fixed traffic rounds with exactly "
+            "--requests-per-batch new requests per round"
+        ),
+    )
     parser.add_argument("--requests-per-batch", type=int, default=5)
     parser.add_argument("--decision-interval", type=int, default=4)
     parser.add_argument("--ttl", type=int, default=16)
@@ -37,7 +65,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-hops", type=int, default=4)
     parser.add_argument(
         "--endpoint-mode",
-        choices=("distance_stratified", "uniform_random"),
+        choices=("distance_stratified", "uniform_random", "qcast_random"),
         default="distance_stratified",
     )
     parser.add_argument(
@@ -71,23 +99,39 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--gnn-device", choices=("auto", "cpu", "cuda"), default="auto")
     parser.add_argument("--milp-time-limit-seconds", type=float, default=300.0)
-    parser.add_argument("--skip-milp", action="store_true")
     parser.add_argument(
-        "--skip-qcast",
-        action="store_true",
-        help="run only the configured GNN variant for paired ablations",
+        "--comparison-profile",
+        choices=tuple(COMPARISON_PROFILES),
+        default="formal",
+        help=(
+            "formal=GNN/MILP/Q-PASS/Greedy; "
+            "scalable=GNN/Q-PASS/Greedy; "
+            "construction_ablation=GNN only"
+        ),
     )
     parser.add_argument("--generation-probability", type=float, default=0.8)
     parser.add_argument("--swap-probability", type=float, default=0.9)
     parser.add_argument("--memory-capacity", type=int, default=2)
     parser.add_argument("--node-memory-capacity", type=int)
+    parser.add_argument("--max-width", type=int, default=1)
     parser.add_argument("--quantum-distance-m", type=float, default=1000.0)
     parser.add_argument("--slot-duration-ps", type=int, default=50_000_000)
     return parser
 
 
-def _aggregate(trials: list[dict[str, object]]) -> dict[str, dict[str, float]]:
-    methods = sorted({method for trial in trials for method in trial["methods"]})
+def _aggregate(
+    trials: list[dict[str, object]],
+    *,
+    comparison_profile: str,
+) -> dict[str, dict[str, float]]:
+    methods = validate_profile_methods(
+        comparison_profile,
+        {
+            str(method)
+            for trial in trials
+            for method in trial["methods"]
+        },
+    )
     result = {}
     for method in methods:
         rows = [trial["methods"][method]["metrics"] for trial in trials]
@@ -123,11 +167,49 @@ def _checkpoint_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _nearest_rank_percentile(
+    values: list[float],
+    percentile: float,
+) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    index = min(
+        len(ordered) - 1,
+        max(0, int(round(percentile / 100.0 * (len(ordered) - 1)))),
+    )
+    return float(ordered[index])
+
+
 def _method_payload(result, wall_seconds: float) -> dict[str, object]:
+    metrics = dict(result.metrics)
+    decision_seconds = [
+        float(decision.decision_seconds)
+        for decision in result.decisions
+    ]
+    metrics["p95_decision_seconds"] = _nearest_rank_percentile(
+        decision_seconds,
+        95.0,
+    )
+    attempts = tuple(getattr(result, "attempts", ()))
+    construction_attempt_counts = Counter(
+        str(attempt.construction_kind) for attempt in attempts
+    )
+    successful_construction_counts = Counter(
+        str(attempt.construction_kind)
+        for attempt in attempts
+        if attempt.success is True
+    )
     return {
-        "metrics": dict(result.metrics),
+        "metrics": metrics,
         "wall_seconds": wall_seconds,
         "violations": [asdict(item) for item in result.violations],
+        "construction_usage": {
+            "attempt_counts": dict(sorted(construction_attempt_counts.items())),
+            "successful_attempt_counts": dict(
+                sorted(successful_construction_counts.items())
+            ),
+        },
     }
 
 
@@ -151,36 +233,72 @@ def _resolve_construction_space(
     )
 
 
+def _routing_baseline_configs(
+    *,
+    decision_interval: int,
+    path_candidate_count: int,
+) -> dict[str, OnlineBaselineConfig]:
+    return {
+        algorithm: OnlineBaselineConfig(
+            algorithm=algorithm,
+            decision_interval=decision_interval,
+            path_candidate_count=path_candidate_count,
+            construction_kind="left_deep",
+        )
+        for algorithm in ROUTING_BASELINE_METHODS
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    if args.seeds < 1 or args.requests < 1 or args.requests_per_batch < 1:
-        raise ValueError("seeds and request counts must be positive")
+    if args.seeds < 1:
+        raise ValueError("seeds must be positive")
+    profile_methods = methods_for_profile(args.comparison_profile)
+    if (
+        args.fixed_swap_tree_index is not None
+        and args.comparison_profile != "construction_ablation"
+    ):
+        raise ValueError(
+            "fixed-swap-tree-index is reserved for the "
+            "construction_ablation profile"
+        )
     construction_kinds, swap_tree_count, construction_policy = (
         _resolve_construction_space(
             args.construction_plans,
             args.fixed_swap_tree_index,
         )
     )
-    arrival_rounds = (
-        args.requests + args.requests_per_batch - 1
-    ) // args.requests_per_batch
-    last_arrival = (arrival_rounds - 1) * args.decision_interval
-    horizon = last_arrival + args.ttl if args.horizon is None else args.horizon
-    if horizon < last_arrival + args.ttl:
-        raise ValueError("horizon must cover the final arrival's TTL")
+    workload = resolve_periodic_arrival_workload(
+        request_count=args.requests,
+        arrival_rounds=args.arrival_rounds,
+        requests_per_round=args.requests_per_batch,
+        arrival_interval_slots=args.decision_interval,
+        ttl_slots=args.ttl,
+        horizon_slots=args.horizon,
+        default_request_count=20,
+    )
+    horizon = workload.horizon_slots
     physical = PhysicalConfig(
         generation_probability=args.generation_probability,
         swap_probability=args.swap_probability,
         memory_capacity=args.memory_capacity,
         node_memory_capacity=args.node_memory_capacity,
-        max_width=1,
+        max_width=args.max_width,
         quantum_distance_m=args.quantum_distance_m,
         slot_duration_ps=args.slot_duration_ps,
     )
-    min_hops = None if args.endpoint_mode == "uniform_random" else args.min_hops
-    max_hops = None if args.endpoint_mode == "uniform_random" else args.max_hops
+    min_hops = (
+        args.min_hops
+        if args.endpoint_mode == "distance_stratified"
+        else None
+    )
+    max_hops = (
+        args.max_hops
+        if args.endpoint_mode == "distance_stratified"
+        else None
+    )
     scenario = ScenarioConfig(
-        request_count=args.requests,
+        request_count=workload.request_count,
         min_hops=min_hops,
         max_hops=max_hops,
         ttl=args.ttl,
@@ -219,11 +337,9 @@ def main(argv: list[str] | None = None) -> int:
         milp_time_limit_seconds=args.milp_time_limit_seconds,
         milp_relative_gap=0.0,
     )
-    qcast_config = OnlineQCASTConfig(
+    routing_baseline_configs = _routing_baseline_configs(
         decision_interval=args.decision_interval,
         path_candidate_count=args.paths,
-        construction_kind="left_deep",
-        purification_kind="none",
     )
     trials = []
     started = perf_counter()
@@ -236,20 +352,34 @@ def main(argv: list[str] | None = None) -> int:
             gnn,
             perf_counter() - gnn_started,
         )
-        if not args.skip_qcast:
-            qcast_started = perf_counter()
-            qcast = run_online_qcast(episode, qcast_config)
-            methods["qcast"] = _method_payload(
-                qcast,
-                perf_counter() - qcast_started,
-            )
-        if not args.skip_milp:
+        if "milp" in profile_methods:
             milp_started = perf_counter()
             milp = run_online_telgen(episode, milp_config)
             methods["milp"] = _method_payload(
                 milp,
                 perf_counter() - milp_started,
             )
+        if "qpass" in profile_methods:
+            qpass_started = perf_counter()
+            qpass = run_online_baseline(
+                episode,
+                routing_baseline_configs["qpass"],
+            )
+            methods["qpass"] = _method_payload(
+                qpass,
+                perf_counter() - qpass_started,
+            )
+        if "greedy" in profile_methods:
+            greedy_started = perf_counter()
+            greedy = run_online_baseline(
+                episode,
+                routing_baseline_configs["greedy"],
+            )
+            methods["greedy"] = _method_payload(
+                greedy,
+                perf_counter() - greedy_started,
+            )
+        validate_profile_methods(args.comparison_profile, set(methods))
         trials.append({
             "seed": seed,
             "episode": asdict(episode),
@@ -265,14 +395,21 @@ def main(argv: list[str] | None = None) -> int:
         )
     payload = {
         "schema_version": 1,
-        "experiment": "paired_online_gnn_milp_qcast",
+        "experiment": "paired_online_gnn_milp_routing_baselines",
         "comparison_contract": {
             "paired_episode_spec": True,
             "independent_persistent_executors": True,
             "future_requests_hidden": True,
             "gnn_calls_milp_online": False,
-            "qcast_uses_gnn_or_milp": False,
-            "qcast_included": not args.skip_qcast,
+            "comparison_profile": args.comparison_profile,
+            "formal_method_order": list(FORMAL_METHOD_ORDER),
+            "active_method_order": list(profile_methods),
+            "fixed_construction_role": "separate_paired_ablation",
+            "qcast_included": False,
+            "qpass_uses_gnn_or_milp": False,
+            "qpass_included": "qpass" in profile_methods,
+            "greedy_uses_gnn_or_milp": False,
+            "greedy_included": "greedy" in profile_methods,
             "primary_metric": "completed_requests",
             "secondary_metric": "mean_censored_latency_ps",
             "gnn_construction_policy": construction_policy,
@@ -281,15 +418,32 @@ def main(argv: list[str] | None = None) -> int:
             **vars(args),
             "checkpoint": str(args.checkpoint),
             "output": str(args.output),
+            "workload": asdict(workload),
+            "resolved_request_count": workload.request_count,
             "resolved_horizon": horizon,
         },
         "checkpoint_sha256": _checkpoint_sha256(args.checkpoint),
         "scenario": asdict(scenario),
         "gnn_config": asdict(gnn_config),
-        "milp_config": None if args.skip_milp else asdict(milp_config),
-        "qcast_config": None if args.skip_qcast else asdict(qcast_config),
+        "milp_config": (
+            asdict(milp_config) if "milp" in profile_methods else None
+        ),
+        "qcast_config": None,
+        "qpass_config": (
+            asdict(routing_baseline_configs["qpass"])
+            if "qpass" in profile_methods
+            else None
+        ),
+        "greedy_config": (
+            asdict(routing_baseline_configs["greedy"])
+            if "greedy" in profile_methods
+            else None
+        ),
         "elapsed_seconds": perf_counter() - started,
-        "aggregate": _aggregate(trials),
+        "aggregate": _aggregate(
+            trials,
+            comparison_profile=args.comparison_profile,
+        ),
         "trials": trials,
     }
     versioned, _ = _save(args.output, payload)

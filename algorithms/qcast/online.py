@@ -8,6 +8,7 @@ from time import perf_counter
 from typing import Mapping
 
 from algorithms.telgen.packing import PackingSolution
+from algorithms.telgen.time_expansion import TimeExpandedCandidate
 from algorithms.telgen.online import (
     OnlineAttemptRecord,
     OnlineTELGENConfig,
@@ -15,10 +16,20 @@ from algorithms.telgen.online import (
 )
 from qnet_core.construction_api import ExecutionEvent
 from qnet_core.construction_metrics import RequestSettlement
-from qnet_core.scheduled_execution import ScheduleViolation, ScheduledOperationLaunch
+from qnet_core.scheduled_execution import (
+    PersistentConstructionScheduler,
+    PersistentScheduleUpdate,
+    ScheduleViolation,
+    ScheduledOperationLaunch,
+)
 from qnet_core.spec import EpisodeSpec
 
-from .online_planner import QCASTPlanningRecord, plan_qcast_window
+from .online_planner import (
+    QCASTAllocation,
+    QCASTPlanningRecord,
+    plan_qcast_window,
+)
+from .recovery import QCASTRecoveryDecision, QCASTRecoveryPolicy
 
 
 @dataclass(frozen=True)
@@ -26,19 +37,25 @@ class OnlineQCASTConfig:
     """Planning-window settings for the rolling Q-CAST adaptation."""
 
     decision_interval: int = 4
-    path_candidate_count: int = 3
+    path_candidate_count: int = 4
     construction_kind: str = "left_deep"
     purification_kind: str = "none"
+    recovery_span_limit: int = 3
+    max_search_hops: int = 15
 
     def __post_init__(self) -> None:
         if self.decision_interval < 1:
             raise ValueError("decision_interval must be positive")
         if self.path_candidate_count < 1:
             raise ValueError("path_candidate_count must be positive")
-        if self.construction_kind not in {"left_deep", "balanced"}:
-            raise ValueError("unsupported construction_kind")
-        if self.purification_kind not in {"none", "elementary_once"}:
-            raise ValueError("unsupported purification_kind")
+        if self.construction_kind != "left_deep":
+            raise ValueError("official Q-CAST adaptation uses left_deep swapping")
+        if self.purification_kind != "none":
+            raise ValueError("Q-CAST does not make purification decisions")
+        if self.recovery_span_limit < 0:
+            raise ValueError("recovery_span_limit cannot be negative")
+        if self.max_search_hops < 1:
+            raise ValueError("max_search_hops must be positive")
 
 
 @dataclass(frozen=True)
@@ -73,6 +90,7 @@ class OnlineQCASTResult:
     launches: tuple[ScheduledOperationLaunch, ...]
     violations: tuple[ScheduleViolation, ...]
     event_trace: tuple[ExecutionEvent, ...]
+    recovery_decisions: tuple[QCASTRecoveryDecision, ...]
     metrics: Mapping[str, float]
 
 
@@ -85,6 +103,7 @@ class OnlineQCASTController(OnlineTELGENController):
         config: OnlineQCASTConfig | None = None,
     ):
         self.qcast_config = config or OnlineQCASTConfig()
+        self._recovery_policy = QCASTRecoveryPolicy(spec)
         super().__init__(
             spec,
             OnlineTELGENConfig(
@@ -93,8 +112,13 @@ class OnlineQCASTController(OnlineTELGENController):
                 construction_kinds=(self.qcast_config.construction_kind,),
                 purification_kinds=(self.qcast_config.purification_kind,),
             ),
+            scheduler=PersistentConstructionScheduler(
+                spec,
+                event_policy=self._recovery_policy,
+            ),
         )
         self._decisions: list[OnlineQCASTDecisionRecord] = []
+        self._allocation_by_candidate: dict[str, QCASTAllocation] = {}
 
     def _solve_qcast_decision(
         self,
@@ -125,8 +149,44 @@ class OnlineQCASTController(OnlineTELGENController):
             path_candidate_count=self.qcast_config.path_candidate_count,
             construction_kind=self.qcast_config.construction_kind,
             purification_kind=self.qcast_config.purification_kind,
+            recovery_span_limit=self.qcast_config.recovery_span_limit,
+            max_search_hops=self.qcast_config.max_search_hops,
         )
+        self._allocation_by_candidate.update(record.allocation_by_candidate)
         return record, record.solution
+
+    def _register_selected_variables(
+        self,
+        slot: int,
+        selected_variables: tuple[TimeExpandedCandidate, ...],
+        eligible_request_ids: tuple[str, ...],
+    ) -> None:
+        registered: list[str] = []
+        try:
+            for variable in selected_variables:
+                allocation = self._allocation_by_candidate.get(
+                    variable.candidate_id
+                )
+                if allocation is None:
+                    raise RuntimeError(
+                        f"missing Q-CAST allocation: {variable.candidate_id}"
+                    )
+                self._recovery_policy.register(allocation)
+                registered.append(variable.request_id)
+            super()._register_selected_variables(
+                slot,
+                selected_variables,
+                eligible_request_ids,
+            )
+        except Exception:
+            for request_id in registered:
+                self._recovery_policy.forget(request_id)
+            raise
+
+    def _process_update(self, update: PersistentScheduleUpdate) -> None:
+        super()._process_update(update)
+        for outcome in update.outcomes:
+            self._recovery_policy.forget(outcome.request_id)
 
     def _decision(self, slot: int) -> None:
         self._expire_waiting_requests(slot)
@@ -211,6 +271,14 @@ class OnlineQCASTController(OnlineTELGENController):
         metrics["mean_qcast_planning_seconds"] = (
             0.0 if not planner_times else fmean(planner_times)
         )
+        decisions = self._recovery_policy.decisions
+        metrics["qcast_recovery_decision_count"] = float(len(decisions))
+        metrics["qcast_repaired_request_count"] = float(sum(
+            decision.repaired for decision in decisions
+        ))
+        metrics["qcast_recovery_failure_count"] = float(sum(
+            bool(decision.failure_cause) for decision in decisions
+        ))
         return metrics
 
     def run(self) -> OnlineQCASTResult:
@@ -226,6 +294,7 @@ class OnlineQCASTController(OnlineTELGENController):
             launches=base.launches,
             violations=base.violations,
             event_trace=base.event_trace,
+            recovery_decisions=self._recovery_policy.decisions,
             metrics=base.metrics,
         )
 

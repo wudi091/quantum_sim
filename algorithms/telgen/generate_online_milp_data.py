@@ -18,6 +18,7 @@ import scipy
 
 from qnet_core.scenario import ScenarioConfig, make_episode
 from qnet_core.spec import EpisodeSpec, PhysicalConfig
+from qnet_core.workload import resolve_periodic_arrival_workload
 
 from .online import (
     OnlineTELGENConfig,
@@ -34,7 +35,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--episodes", type=int, default=10)
     parser.add_argument("--seed-start", type=int, default=12000)
-    parser.add_argument("--requests", type=int, default=20)
+    workload = parser.add_mutually_exclusive_group()
+    workload.add_argument(
+        "--requests",
+        type=int,
+        help="legacy mode: fixed total request count",
+    )
+    workload.add_argument(
+        "--arrival-rounds",
+        type=int,
+        help=(
+            "Q-CAST-style mode: fixed traffic rounds with exactly "
+            "--requests-per-batch new requests per round"
+        ),
+    )
     parser.add_argument("--requests-per-batch", type=int, default=5)
     parser.add_argument("--decision-interval", type=int, default=4)
     parser.add_argument("--ttl", type=int, default=16)
@@ -44,7 +58,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-hops", type=int, default=4)
     parser.add_argument(
         "--endpoint-mode",
-        choices=("distance_stratified", "uniform_random"),
+        choices=("distance_stratified", "uniform_random", "qcast_random"),
         default="distance_stratified",
     )
     parser.add_argument(
@@ -266,20 +280,21 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.episodes < 1:
         raise ValueError("episodes must be positive")
-    if args.requests_per_batch < 1 or args.decision_interval < 1:
-        raise ValueError("batch size and decision interval must be positive")
     time_limits = _time_limit_schedule(
         args.time_limit_seconds,
         args.time_limit_retries,
         args.time_limit_multiplier,
     )
-    arrival_rounds = (
-        args.requests + args.requests_per_batch - 1
-    ) // args.requests_per_batch
-    last_arrival = (arrival_rounds - 1) * args.decision_interval
-    horizon = last_arrival + args.ttl if args.horizon is None else args.horizon
-    if horizon < last_arrival + args.ttl:
-        raise ValueError("horizon must cover the final arrival's TTL")
+    workload = resolve_periodic_arrival_workload(
+        request_count=args.requests,
+        arrival_rounds=args.arrival_rounds,
+        requests_per_round=args.requests_per_batch,
+        arrival_interval_slots=args.decision_interval,
+        ttl_slots=args.ttl,
+        horizon_slots=args.horizon,
+        default_request_count=20,
+    )
+    horizon = workload.horizon_slots
     physical = PhysicalConfig(
         generation_probability=args.generation_probability,
         swap_probability=args.swap_probability,
@@ -289,10 +304,18 @@ def main(argv: list[str] | None = None) -> int:
         quantum_distance_m=args.quantum_distance_m,
         slot_duration_ps=args.slot_duration_ps,
     )
-    min_hops = None if args.endpoint_mode == "uniform_random" else args.min_hops
-    max_hops = None if args.endpoint_mode == "uniform_random" else args.max_hops
+    min_hops = (
+        args.min_hops
+        if args.endpoint_mode == "distance_stratified"
+        else None
+    )
+    max_hops = (
+        args.max_hops
+        if args.endpoint_mode == "distance_stratified"
+        else None
+    )
     scenario = ScenarioConfig(
-        request_count=args.requests,
+        request_count=workload.request_count,
         min_hops=min_hops,
         max_hops=max_hops,
         ttl=args.ttl,
@@ -340,6 +363,8 @@ def main(argv: list[str] | None = None) -> int:
             "configuration": {
                 **vars(args),
                 "output": str(args.output),
+                "workload": asdict(workload),
+                "resolved_request_count": workload.request_count,
                 "resolved_horizon": horizon,
             },
             "scenario": asdict(scenario),

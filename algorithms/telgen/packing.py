@@ -6,6 +6,8 @@ from dataclasses import dataclass
 import math
 from typing import Mapping, Sequence
 
+import numpy as np
+
 from .time_expansion import (
     TimeExpandedCandidate,
     TimeExpansionResult,
@@ -254,4 +256,34 @@ def greedy_feasible_projection(
         selected_variables=selected_variables,
         feasibility=feasibility,
         strategy="score_order_greedy",
+    )
+
+
+def decode_continuous_primal(
+    variables: Sequence[TimeExpandedCandidate],
+    primal: Sequence[float],
+    resource_capacities: Mapping[str, int],
+    *,
+    reserved_usage: Mapping[tuple[str, int], int] | None = None,
+) -> PackingSolution:
+    """Round a continuous LP/GNN primal into one feasible discrete schedule.
+
+    This is the entire decoder: rank every time-expanded candidate by its
+    fractional value and greedily accept it while its request is unselected
+    and every resource--slot capacity is respected.  There is no local search,
+    no request-priority rule, and no topology-specific repair.
+    """
+
+    ordered = tuple(sorted(variables, key=lambda item: item.variable_id))
+    values = np.asarray(primal, dtype=float)
+    if values.shape != (len(ordered),):
+        raise ValueError("primal vector length does not match variable count")
+    if not np.isfinite(values).all():
+        raise ValueError("continuous primal must be finite")
+    scores = np.clip(values, 0.0, 1.0)
+    return greedy_feasible_projection(
+        ordered,
+        resource_capacities,
+        scores,
+        reserved_usage=reserved_usage,
     )

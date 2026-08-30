@@ -16,6 +16,8 @@ from qnet_core.planning_spec import RequestSpec
 from qnet_core.scheduled_execution import (
     ConstructionBatchSchedule,
     PersistentConstructionScheduler,
+    ScheduledEventDisposition,
+    ScheduledEventResponse,
     ScheduledRequestPlan,
     _in_flight_dependency_blocked_operation_ids,
     run_scheduled_construction_plan,
@@ -24,6 +26,71 @@ from qnet_core.spec import EpisodeSpec, PhysicalConfig
 
 
 class ScheduledExecutionTests(unittest.TestCase):
+    def test_event_policy_can_complete_from_an_existing_terminal_segment(self):
+        spec = EpisodeSpec(
+            seed=1199,
+            nodes=(0, 1),
+            edges=((0, 1),),
+            requests=(RequestSpec("r0", 0, 1, ttl=4),),
+            horizon=4,
+            physical=PhysicalConfig(
+                generation_probability=1.0,
+                swap_probability=1.0,
+                detector_efficiency=1.0,
+                bsm_success_probability=1.0,
+                quantum_distance_m=1.0,
+                slot_duration_ps=1_000_000,
+                node_memory_capacity=4,
+            ),
+        )
+        candidate = build_route_construction_catalogue(
+            spec.planning,
+            candidate_count=1,
+            construction_kinds=("balanced",),
+        )[0]
+        first = candidate.dag.operations[0]
+        later = replace(
+            first,
+            op_id="r0:later",
+            predecessors=(first.op_id,),
+            output_segment_id="r0:later:segment",
+            ordinal=first.ordinal + 1,
+        )
+        plan = ScheduledRequestPlan(
+            request_id="r0",
+            candidate_id="policy-completion",
+            route_nodes=(0, 1),
+            construction_kind="balanced",
+            dag=ConstructionDAG("r0", (first, later)),
+            terminal_segment_ids=(later.output_segment_id or "",),
+            start_slot=0,
+            completion_slot=3,
+            operation_slots=((first.op_id, 0), (later.op_id, 2)),
+        )
+
+        class CompleteFirstGeneration:
+            @staticmethod
+            def on_event_batch(events, snapshot, active_request_ids):
+                del snapshot, active_request_ids
+                event = next(item for item in events if item.operation_id == first.op_id)
+                return (ScheduledEventResponse(
+                    request_id=event.request_id,
+                    disposition=ScheduledEventDisposition.COMPLETE,
+                    completion_segment_id=event.output_segment_id,
+                ),)
+
+        scheduler = PersistentConstructionScheduler(
+            spec,
+            event_policy=CompleteFirstGeneration(),
+        )
+        scheduler.submit((plan,))
+
+        update = scheduler.advance_to_slot(1)
+
+        self.assertEqual(len(update.outcomes), 1)
+        self.assertTrue(update.outcomes[0].success)
+        self.assertEqual(scheduler.completed_request_ids, ("r0",))
+
     def test_start_slot_and_rejected_requests_survive_the_physical_boundary(self):
         spec = EpisodeSpec(
             seed=1200,

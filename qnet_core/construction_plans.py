@@ -345,6 +345,78 @@ def left_deep_path_dag(
     return ConstructionDAG(request_id, tuple(operations))
 
 
+def left_deep_swap_suffix(
+    request_id: str,
+    route_nodes: tuple[int, ...],
+    input_segment_ids: tuple[str, ...],
+    *,
+    next_version: int,
+    ordinal_start: int,
+    operation_prefix: str,
+    required_fidelity: float = 0.0,
+) -> tuple[tuple[ConstructionOperation, ...], str]:
+    """Compile left-associated swaps over already established segments.
+
+    This is the conditional counterpart of :func:`left_deep_path_dag`.
+    Elementary generation remains outside the suffix, so planners can select
+    a branch after observing which physical segments survived.  The helper is
+    simulator-neutral and only emits ordinary construction DTOs.
+    """
+
+    if len(route_nodes) < 3:
+        raise ValueError("swap suffix requires a route with at least two edges")
+    if len(input_segment_ids) != len(route_nodes) - 1:
+        raise ValueError("swap suffix needs one segment per route edge")
+    if len(set(input_segment_ids)) != len(input_segment_ids):
+        raise ValueError("swap suffix input segments must be unique")
+    if next_version < 1 or ordinal_start < 0:
+        raise ValueError("swap suffix version and ordinal must be valid")
+    if not operation_prefix:
+        raise ValueError("swap suffix operation_prefix must be non-empty")
+
+    operations: list[ConstructionOperation] = []
+    current_segment = input_segment_ids[0]
+    previous_operation_id: str | None = None
+    for index in range(1, len(route_nodes) - 1):
+        middle = route_nodes[index]
+        right = route_nodes[index + 1]
+        operation_id = f"{operation_prefix}:swap:{index}"
+        output_segment_id = f"{operation_prefix}:segment:{index}"
+        predecessors = (
+            () if previous_operation_id is None else (previous_operation_id,)
+        )
+        operations.append(ConstructionOperation(
+            op_id=operation_id,
+            request_id=request_id,
+            kind=OperationKind.SWAP,
+            predecessors=predecessors,
+            input_segment_ids=(current_segment, input_segment_ids[index]),
+            output_segment_id=output_segment_id,
+            output_endpoints=(route_nodes[0], right),
+            resource_demand=_swap_resource_demand(
+                route_nodes[0],
+                middle,
+                right,
+            ),
+            output_resource_hold=ResourceDemand.from_mapping({
+                f"memory:{route_nodes[0]}": 1,
+                f"memory:{right}": 1,
+            }),
+            required_fidelity=(
+                required_fidelity
+                if index == len(route_nodes) - 2
+                else 0.0
+            ),
+            retry_limit=0,
+            duration_ps=2,
+            ordinal=ordinal_start + len(operations),
+            dag_version=next_version,
+        ))
+        current_segment = output_segment_id
+        previous_operation_id = operation_id
+    return tuple(operations), current_segment
+
+
 def balanced_path_dag(
     request_id: str,
     route_nodes: tuple[int, ...],

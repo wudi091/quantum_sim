@@ -103,6 +103,34 @@ class ConstructionAblationAnalysisTests(unittest.TestCase):
         self.assertEqual(completed["fixed_wins"], 0)
         self.assertTrue(analysis["overall"]["valid"])
 
+    def test_accepts_the_frozen_construction_ablation_profile(self):
+        adaptive = _report(adaptive=True, completed=(5, 7))
+        fixed = _report(adaptive=False, completed=(4, 7))
+        for payload in (adaptive, fixed):
+            payload["experiment"] = "paired_online_gnn_milp_routing_baselines"
+            payload["comparison_contract"].update({
+                "comparison_profile": "construction_ablation",
+                "active_method_order": ["gnn"],
+            })
+            payload["configuration"].pop("skip_milp")
+            payload["configuration"].pop("skip_qcast")
+            payload["configuration"]["comparison_profile"] = (
+                "construction_ablation"
+            )
+            payload["qpass_config"] = None
+            payload["greedy_config"] = None
+
+        with tempfile.TemporaryDirectory() as raw_directory:
+            paths = self._write_pair(Path(raw_directory), adaptive, fixed)
+            analysis = analyze_pairs(
+                [("case", *paths)],
+                bootstrap_samples=100,
+                randomization_samples=100,
+                random_seed=1,
+            )
+
+        self.assertTrue(analysis["overall"]["valid"])
+
     def test_rejects_an_episode_mismatch(self):
         adaptive = _report(adaptive=True, completed=(5, 7))
         fixed = _report(adaptive=False, completed=(4, 7))

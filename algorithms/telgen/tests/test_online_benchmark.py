@@ -31,7 +31,7 @@ def payload(rows):
             "paired_episode_spec": True,
             "independent_persistent_executors": True,
             "common_runtime_metric": "mean_decision_seconds",
-            "qcast_baseline": "width_one_ext_fixed_construction",
+            "qcast_baseline": "width_one_residual_ext_with_recovery",
             "qcast_uses_telgen_lp_or_search_decoder": False,
         },
         "scenario": {"name": "test"},

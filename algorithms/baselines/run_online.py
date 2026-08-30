@@ -1,26 +1,40 @@
-"""Command-line entry point for one rolling TELGEN execution."""
+"""Run one or all non-learning baselines on the same generated episode."""
 
 from __future__ import annotations
 
 import argparse
+from dataclasses import asdict
+from datetime import datetime
+import json
+from pathlib import Path
+import shutil
+from time import perf_counter
 
 from qnet_core.scenario import ScenarioConfig, make_episode
 from qnet_core.spec import PhysicalConfig
 from qnet_core.workload import resolve_periodic_arrival_workload
 
 from .online import (
-    OnlineTELGENConfig,
-    run_online_telgen,
-    save_online_milp_dataset,
-    save_online_result,
+    OnlineBaselineConfig,
+    run_online_baseline,
+    save_online_baseline_result,
 )
+from .planner import BASELINE_ALGORITHMS
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Run TELGEN on one periodic micro-batch episode."
+        description=(
+            "Run simulator-neutral non-learning planners through the shared "
+            "online SeQUeNCe environment."
+        )
     )
-    parser.add_argument("--output", default="results/telgen_online")
+    parser.add_argument(
+        "--algorithm",
+        choices=("all", *BASELINE_ALGORITHMS),
+        default="all",
+    )
+    parser.add_argument("--output", type=Path, default=Path("results/baselines_online"))
     parser.add_argument("--seed", type=int, default=100)
     workload = parser.add_mutually_exclusive_group()
     workload.add_argument(
@@ -36,29 +50,18 @@ def build_parser() -> argparse.ArgumentParser:
             "--requests-per-batch new requests per round"
         ),
     )
-    parser.add_argument("--min-hops", type=int, default=4)
-    parser.add_argument("--max-hops", type=int, default=4)
     parser.add_argument("--requests-per-batch", type=int, default=10)
     parser.add_argument("--decision-interval", type=int, default=4)
     parser.add_argument("--ttl", type=int, default=16)
     parser.add_argument("--horizon", type=int)
     parser.add_argument("--nodes", type=int, default=64)
+    parser.add_argument("--min-hops", type=int, default=4)
+    parser.add_argument("--max-hops", type=int, default=4)
     parser.add_argument("--paths", type=int, default=4)
-    parser.add_argument("--construction-plans", type=int, default=5)
     parser.add_argument(
-        "--decision-backend",
-        choices=("milp_teacher", "gnn"),
-        default="milp_teacher",
-    )
-    parser.add_argument("--gnn-checkpoint")
-    parser.add_argument(
-        "--gnn-device", choices=("auto", "cpu", "cuda"), default="auto"
-    )
-    parser.add_argument("--milp-time-limit-seconds", type=float, default=60.0)
-    parser.add_argument(
-        "--save-milp-dataset",
-        action="store_true",
-        help="save one GNN graph/label sample per non-empty MILP boundary",
+        "--construction-kind",
+        choices=("left_deep", "balanced"),
+        default="left_deep",
     )
     parser.add_argument(
         "--topology-mode",
@@ -94,14 +97,30 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _save_summary(
+    output: Path,
+    payload: dict[str, object],
+) -> tuple[Path, Path]:
+    output.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    versioned = output / f"non_learning_comparison_{timestamp}.json"
+    collision_index = 1
+    while versioned.exists():
+        collision_index += 1
+        versioned = output / (
+            f"non_learning_comparison_{timestamp}_{collision_index}.json"
+        )
+    latest = output / "non_learning_comparison.json"
+    versioned.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    shutil.copyfile(versioned, latest)
+    return versioned, latest
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    if args.save_milp_dataset and args.decision_backend != "milp_teacher":
-        raise ValueError(
-            "--save-milp-dataset requires --decision-backend milp_teacher"
-        )
-    if args.decision_backend == "gnn" and not args.gnn_checkpoint:
-        raise ValueError("--decision-backend gnn requires --gnn-checkpoint")
     workload = resolve_periodic_arrival_workload(
         request_count=args.requests,
         arrival_rounds=args.arrival_rounds,
@@ -152,49 +171,64 @@ def main(argv: list[str] | None = None) -> int:
         arrival_batch_size=args.requests_per_batch,
         arrival_interval=args.decision_interval,
     )
-    spec = make_episode(scenario, args.seed)
-    result = run_online_telgen(
-        spec,
-        OnlineTELGENConfig(
+    episode = make_episode(scenario, args.seed)
+    algorithms = (
+        BASELINE_ALGORITHMS
+        if args.algorithm == "all"
+        else (args.algorithm,)
+    )
+    methods: dict[str, object] = {}
+    for algorithm in algorithms:
+        config = OnlineBaselineConfig(
+            algorithm=algorithm,
             decision_interval=args.decision_interval,
             path_candidate_count=args.paths,
-            construction_kinds=(),
-            swap_tree_count=args.construction_plans,
-            purification_kinds=("none",),
-            decision_backend="milp_teacher",
-            milp_time_limit_seconds=args.milp_time_limit_seconds,
+            construction_kind=args.construction_kind,
         )
-        if args.decision_backend == "milp_teacher"
-        else OnlineTELGENConfig(
-                decision_interval=args.decision_interval,
-                path_candidate_count=args.paths,
-                construction_kinds=(),
-                swap_tree_count=args.construction_plans,
-                purification_kinds=("none",),
-                decision_backend="gnn",
-                gnn_checkpoint=args.gnn_checkpoint,
-                gnn_device=args.gnn_device,
-            ),
-    )
-    paths = save_online_result(result, args.output)
-    dataset_paths = None
-    if args.save_milp_dataset:
-        dataset_paths = save_online_milp_dataset(
-            result,
-            f"{args.output}/milp_dataset_seed_{args.seed:08d}",
+        started = perf_counter()
+        result = run_online_baseline(episode, config)
+        wall_seconds = perf_counter() - started
+        paths = save_online_baseline_result(result, args.output)
+        methods[algorithm] = {
+            "config": asdict(config),
+            "metrics": dict(result.metrics),
+            "wall_seconds": wall_seconds,
+            "violation_count": len(result.violations),
+            "result_json": str(paths.json_path),
+            "result_csv": str(paths.csv_path),
+        }
+        print(
+            f"{algorithm}: "
+            f"completed={int(result.metrics['completed_requests'])}/"
+            f"{int(result.metrics['request_count'])} "
+            f"violations={len(result.violations)} "
+            f"wall_s={wall_seconds:.3f}",
+            flush=True,
         )
-    print(
-        f"workload={workload.mode} rounds={workload.arrival_rounds} "
-        f"offered={workload.request_count} "
-        f"completed={int(result.metrics['completed_requests'])}/"
-        f"{int(result.metrics['request_count'])} "
-        f"attempts={int(result.metrics['construction_attempt_count'])} "
-        f"retries={int(result.metrics['retry_count'])}"
-    )
-    print(f"json: {paths.json_path}")
-    print(f"csv: {paths.csv_path}")
-    if dataset_paths is not None:
-        print(f"milp manifest: {dataset_paths.manifest_path}")
+    summary, _ = _save_summary(args.output, {
+        "schema_version": 1,
+        "experiment": "paired_non_learning_baselines",
+        "comparison_contract": {
+            "paired_episode_spec": True,
+            "independent_persistent_executors": True,
+            "future_requests_hidden": True,
+            "milp_called": False,
+            "learned_model_called": False,
+            "shared_resource_time_contract": True,
+            "shared_sequence_physical_backend": True,
+        },
+        "configuration": {
+            **vars(args),
+            "output": str(args.output),
+            "workload": asdict(workload),
+            "resolved_request_count": workload.request_count,
+            "resolved_horizon": horizon,
+        },
+        "scenario": asdict(scenario),
+        "episode": asdict(episode),
+        "methods": methods,
+    })
+    print(f"summary: {summary}")
     return 0
 
 

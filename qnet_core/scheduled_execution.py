@@ -10,12 +10,13 @@ and expiration.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Mapping
+from typing import Mapping, Protocol, Sequence
 
 from .construction_api import (
     ConstructionDAG,
     ConstructionLaunchRejected,
     ConstructionOperation,
+    ConstructionSnapshot,
     ExecutionEvent,
 )
 from .construction_metrics import (
@@ -283,22 +284,152 @@ class PersistentScheduleUpdate:
     violations: tuple[ScheduleViolation, ...]
 
 
+class ScheduledEventDisposition:
+    """Generic planner response to one physical event batch."""
+
+    CONTINUE = "CONTINUE"
+    REVISE = "REVISE"
+    COMPLETE = "COMPLETE"
+    FAIL = "FAIL"
+
+
+@dataclass(frozen=True)
+class ScheduledPlanRevision:
+    """A planner-supplied replacement for an uncommitted DAG suffix.
+
+    Slots are relative to ``earliest_start_slot``.  The persistent scheduler
+    shifts the complete suffix to the first future placement that respects
+    already committed operation capacities.  The planner chooses the branch;
+    the core only validates and installs neutral construction DTOs.
+    """
+
+    request_id: str
+    operations: tuple[ConstructionOperation, ...]
+    relative_operation_slots: tuple[tuple[str, int], ...]
+    terminal_segment_ids: tuple[str, ...]
+    earliest_start_slot: int
+    release_segment_ids: tuple[str, ...] = ()
+    supersede_uncommitted: bool = True
+
+    def __post_init__(self) -> None:
+        if not self.request_id:
+            raise ValueError("revision request_id must be non-empty")
+        if not self.operations:
+            raise ValueError("revision requires at least one operation")
+        if any(operation.request_id != self.request_id for operation in self.operations):
+            raise ValueError("revision operation belongs to another request")
+        operation_ids = {operation.op_id for operation in self.operations}
+        if len(operation_ids) != len(self.operations):
+            raise ValueError("revision operation IDs must be unique")
+        if tuple(sorted(self.relative_operation_slots)) != self.relative_operation_slots:
+            raise ValueError("revision operation slots must be operation-id sorted")
+        slot_map = dict(self.relative_operation_slots)
+        if len(slot_map) != len(self.relative_operation_slots):
+            raise ValueError("revision operation slots must be unique")
+        if set(slot_map) != operation_ids:
+            raise ValueError("revision slots must cover every revision operation")
+        if any(slot < 0 for slot in slot_map.values()):
+            raise ValueError("revision relative slots must be non-negative")
+        if self.earliest_start_slot < 0:
+            raise ValueError("revision earliest_start_slot must be non-negative")
+        if not self.terminal_segment_ids:
+            raise ValueError("revision terminal segments must be non-empty")
+        if len(set(self.terminal_segment_ids)) != len(self.terminal_segment_ids):
+            raise ValueError("revision terminal segments must be unique")
+        produced = {
+            operation.output_segment_id
+            for operation in self.operations
+            if operation.output_segment_id is not None
+        }
+        if not set(self.terminal_segment_ids).issubset(produced):
+            raise ValueError("revision terminal segment is not produced by its suffix")
+        if len(set(self.release_segment_ids)) != len(self.release_segment_ids):
+            raise ValueError("revision release segment IDs must be unique")
+
+
+@dataclass(frozen=True)
+class ScheduledEventResponse:
+    """One request-scoped response returned by an event policy."""
+
+    request_id: str
+    disposition: str
+    revision: ScheduledPlanRevision | None = None
+    release_segment_ids: tuple[str, ...] = ()
+    completion_segment_id: str | None = None
+    failure_cause: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.request_id:
+            raise ValueError("event response request_id must be non-empty")
+        if self.disposition not in {
+            ScheduledEventDisposition.CONTINUE,
+            ScheduledEventDisposition.REVISE,
+            ScheduledEventDisposition.COMPLETE,
+            ScheduledEventDisposition.FAIL,
+        }:
+            raise ValueError(f"unsupported event disposition: {self.disposition}")
+        if self.disposition == ScheduledEventDisposition.REVISE:
+            if self.revision is None or self.revision.request_id != self.request_id:
+                raise ValueError("REVISE response requires a matching revision")
+            if self.release_segment_ids:
+                raise ValueError(
+                    "REVISE response releases belong inside its revision"
+                )
+        elif self.revision is not None:
+            raise ValueError("only a REVISE response may carry a revision")
+        if self.disposition == ScheduledEventDisposition.COMPLETE:
+            if not self.completion_segment_id:
+                raise ValueError("COMPLETE response requires a terminal segment")
+            if self.release_segment_ids:
+                raise ValueError("COMPLETE response cannot release segments")
+        elif self.completion_segment_id is not None:
+            raise ValueError("only a COMPLETE response may carry a terminal segment")
+        if len(set(self.release_segment_ids)) != len(self.release_segment_ids):
+            raise ValueError("event response release segment IDs must be unique")
+        if (
+            self.disposition == ScheduledEventDisposition.FAIL
+            and not self.failure_cause
+        ):
+            raise ValueError("FAIL response requires a failure cause")
+
+
+class ScheduledEventPolicy(Protocol):
+    """Algorithm-owned policy for conditional construction branches."""
+
+    def on_event_batch(
+        self,
+        events: tuple[ExecutionEvent, ...],
+        snapshot: ConstructionSnapshot,
+        active_request_ids: tuple[str, ...],
+    ) -> Sequence[ScheduledEventResponse]: ...
+
+
 class PersistentConstructionScheduler:
     """Execute complete plans submitted at recurring decision boundaries.
 
     The scheduler owns one persistent SeQUeNCe-backed executor.  Planning code
     can submit additional neutral :class:`ScheduledRequestPlan` objects, but
-    cannot access or mutate simulator internals.  A submitted plan is never
-    rearranged; stochastic failure ends that attempt and makes the request
-    eligible for a later retry after physical cleanup.
+    cannot access or mutate simulator internals.  Fixed plans are never
+    rearranged.  An optional algorithm-owned event policy may accept a live
+    end-to-end segment or replace only an uncommitted suffix through neutral
+    DTOs; otherwise stochastic failure ends the attempt and makes the request
+    eligible after physical cleanup.
     """
 
-    def __init__(self, spec: EpisodeSpec):
+    def __init__(
+        self,
+        spec: EpisodeSpec,
+        *,
+        event_policy: ScheduledEventPolicy | None = None,
+    ):
         self.spec = spec
         self.slot_duration_ps = spec.physical.slot_duration_ps
         self.horizon_ps = spec.horizon * self.slot_duration_ps
         self.requests = {request.id: request for request in spec.requests}
         self.executor = make_sequence_construction_executor(spec, ())
+        initial_snapshot = self.executor.snapshot()
+        self.capacities = dict(initial_snapshot.resource_capacities)
+        self._event_policy = event_policy
         self._active_plans: dict[str, ScheduledRequestPlan] = {}
         self._cleanup_requests: set[str] = set()
         self._completed_times: dict[str, int] = {}
@@ -306,6 +437,9 @@ class PersistentConstructionScheduler:
         self._delivered_segments: dict[str, set[str]] = {}
         self._operations_by_slot: dict[int, list[ConstructionOperation]] = {}
         self._planned_slot_by_operation: dict[str, int] = {}
+        self._adaptive_reservations: dict[
+            str, dict[tuple[str, int], int]
+        ] = {}
         self._due: dict[str, ConstructionOperation] = {}
         self._event_trace: list[ExecutionEvent] = []
         self._launches: list[ScheduledOperationLaunch] = []
@@ -314,7 +448,7 @@ class PersistentConstructionScheduler:
         self._outcomes: list[ScheduledRequestAttemptOutcome] = []
         self._memory_telemetry = MemoryTelemetry()
         self._event_counter = 0
-        self._memory_telemetry.observe(self.executor.snapshot())
+        self._memory_telemetry.observe(initial_snapshot)
 
     @property
     def physical_time_ps(self) -> int:
@@ -534,8 +668,8 @@ class PersistentConstructionScheduler:
 
         operation_by_id = {
             operation.op_id: operation
-            for plan in self._active_plans.values()
-            for operation in plan.dag.operations
+            for operation in snapshot.operations
+            if operation.request_id in self._active_plans
         }
         producer_by_segment = {
             operation.output_segment_id: operation
@@ -599,6 +733,17 @@ class PersistentConstructionScheduler:
             for slot in range(self.current_slot, end_slot):
                 for resource_id, amount in envelope.items():
                     reserve_at_least(request_id, resource_id, slot, amount)
+        for request_id, planned_usage in self._adaptive_reservations.items():
+            if request_id not in self._active_plans:
+                continue
+            for (resource_id, slot), amount in planned_usage.items():
+                if self.current_slot <= slot < end_slot:
+                    reserve_at_least(
+                        request_id,
+                        resource_id,
+                        slot,
+                        amount,
+                    )
         return reservations
 
     def _ready_due_operations(self) -> tuple[ConstructionOperation, ...]:
@@ -673,13 +818,381 @@ class PersistentConstructionScheduler:
         ))
         self.executor.release_request(request_id)
 
+    def _release_segments(
+        self,
+        request_id: str,
+        segment_ids: Sequence[str],
+    ) -> None:
+        if not segment_ids:
+            return
+        snapshot_segments = {
+            segment.segment_id: segment
+            for segment in self.executor.snapshot().segments
+        }
+        for segment_id in tuple(dict.fromkeys(segment_ids)):
+            segment = snapshot_segments.get(segment_id)
+            if segment is None:
+                continue
+            if segment.request_id != request_id:
+                raise ValueError(
+                    "event policy cannot release another request's segment"
+                )
+            self.executor.release_segment(segment_id)
+
+    def _complete_from_live_segment(
+        self,
+        request_id: str,
+        segment_id: str,
+    ) -> None:
+        """Validate and settle a planner-selected live terminal segment."""
+
+        segment = next(
+            (
+                item
+                for item in self.executor.snapshot().segments
+                if item.segment_id == segment_id
+            ),
+            None,
+        )
+        if segment is None:
+            raise ValueError("event policy completion segment is not live")
+        if segment.request_id != request_id:
+            raise ValueError(
+                "event policy cannot complete from another request's segment"
+            )
+        request = self.requests[request_id]
+        if frozenset(segment.endpoints) != frozenset(
+            (request.source, request.destination)
+        ):
+            raise ValueError(
+                "event policy completion segment does not span the request"
+            )
+        if segment.fidelity + 1e-12 < request.required_fidelity:
+            self._finish_attempt(
+                request_id,
+                success=False,
+                time_ps=self.physical_time_ps,
+                failure_cause="fidelity_reject",
+            )
+            return
+        deadline = self._deadline_ps(request_id)
+        if deadline is not None and self.physical_time_ps > deadline:
+            self._finish_attempt(
+                request_id,
+                success=False,
+                time_ps=deadline,
+                failure_cause="deadline",
+            )
+            return
+        self._delivered_segments[request_id].add(segment_id)
+        if len(self._delivered_segments[request_id]) >= request.demand_pairs:
+            self._finish_attempt(
+                request_id,
+                success=True,
+                time_ps=self.physical_time_ps,
+            )
+
+    def _planned_operation_usage(
+        self,
+        excluded_operation_ids: set[str],
+    ) -> dict[tuple[str, int], int]:
+        usage: dict[tuple[str, int], int] = {}
+        for slot, operations in self._operations_by_slot.items():
+            for operation in operations:
+                if operation.op_id in excluded_operation_ids:
+                    continue
+                for resource_id, amount in operation.resource_demand.items():
+                    key = (resource_id, slot)
+                    usage[key] = usage.get(key, 0) + amount
+        return usage
+
+    def _revision_absolute_slots(
+        self,
+        revision: ScheduledPlanRevision,
+        obsolete_operation_ids: set[str],
+    ) -> dict[str, int] | None:
+        relative = dict(revision.relative_operation_slots)
+        operation_by_id = {
+            operation.op_id: operation
+            for operation in revision.operations
+        }
+        producer_by_segment = {
+            operation.output_segment_id: operation.op_id
+            for operation in revision.operations
+            if operation.output_segment_id is not None
+        }
+        for operation in revision.operations:
+            dependencies = set(operation.predecessors).intersection(operation_by_id)
+            dependencies.update(
+                producer_by_segment[segment_id]
+                for segment_id in operation.input_segment_ids
+                if segment_id in producer_by_segment
+            )
+            if any(
+                relative[predecessor] >= relative[operation.op_id]
+                for predecessor in dependencies
+            ):
+                raise ValueError(
+                    "revision dependency must be placed in an earlier slot"
+                )
+
+        terminal_producers = {
+            producer_by_segment[segment_id]
+            for segment_id in revision.terminal_segment_ids
+        }
+        relative_completion = 1 + max(
+            relative[operation_id] for operation_id in terminal_producers
+        )
+        existing = self._planned_operation_usage(obsolete_operation_ids)
+        first_start = max(
+            revision.earliest_start_slot,
+            self.current_slot + 1,
+        )
+        request = self.requests[revision.request_id]
+        completion_limit = self.spec.horizon
+        if request.deadline is not None:
+            completion_limit = min(completion_limit, request.deadline)
+        last_start = completion_limit - relative_completion
+        if last_start < first_start:
+            return None
+
+        for start_slot in range(first_start, last_start + 1):
+            delta: dict[tuple[str, int], int] = {}
+            for operation in revision.operations:
+                absolute_slot = start_slot + relative[operation.op_id]
+                for resource_id, amount in operation.resource_demand.items():
+                    if resource_id not in self.capacities:
+                        raise ValueError(
+                            f"missing capacity for revision resource: {resource_id}"
+                        )
+                    key = (resource_id, absolute_slot)
+                    delta[key] = delta.get(key, 0) + amount
+            if any(
+                existing.get(key, 0) + amount > self.capacities[key[0]]
+                for key, amount in delta.items()
+            ):
+                continue
+            return {
+                operation_id: start_slot + relative_slot
+                for operation_id, relative_slot in relative.items()
+            }
+        return None
+
+    def _revision_reservations(
+        self,
+        revision: ScheduledPlanRevision,
+        absolute_slots: Mapping[str, int],
+        snapshot: ConstructionSnapshot,
+    ) -> dict[tuple[str, int], int]:
+        """Build the future resource-time envelope of an adaptive suffix."""
+
+        usage: dict[tuple[str, int], int] = {}
+
+        def add(resource_id: str, slot: int, amount: int) -> None:
+            if amount <= 0 or not self.current_slot <= slot < self.spec.horizon:
+                return
+            key = (resource_id, slot)
+            usage[key] = usage.get(key, 0) + int(amount)
+
+        producer_by_segment = {
+            operation.output_segment_id: operation
+            for operation in revision.operations
+            if operation.output_segment_id is not None
+        }
+        consumer_by_segment: dict[str, ConstructionOperation] = {}
+        for operation in revision.operations:
+            for segment_id in operation.input_segment_ids:
+                if segment_id in consumer_by_segment:
+                    raise ValueError(
+                        "adaptive suffix cannot consume one segment twice"
+                    )
+                consumer_by_segment[segment_id] = operation
+            operation_slot = absolute_slots[operation.op_id]
+            for resource_id, amount in operation.resource_demand.items():
+                add(resource_id, operation_slot, amount)
+
+        for segment_id, producer in producer_by_segment.items():
+            consumer = consumer_by_segment.get(segment_id)
+            if consumer is None:
+                continue
+            producer_slot = absolute_slots[producer.op_id]
+            consumer_slot = absolute_slots[consumer.op_id]
+            for slot in range(producer_slot + 1, consumer_slot + 1):
+                for resource_id, amount in producer.output_resource_hold.items():
+                    add(resource_id, slot, amount)
+
+        live_segments = {
+            segment.segment_id: segment for segment in snapshot.segments
+        }
+        for segment_id, consumer in consumer_by_segment.items():
+            if segment_id in producer_by_segment:
+                continue
+            segment = live_segments.get(segment_id)
+            if segment is None:
+                raise ValueError(
+                    f"adaptive suffix input segment is not live: {segment_id}"
+                )
+            if segment.request_id != revision.request_id:
+                raise ValueError(
+                    "adaptive suffix cannot reserve another request's segment"
+                )
+            consumer_slot = absolute_slots[consumer.op_id]
+            for slot in range(self.current_slot, consumer_slot + 1):
+                for resource_id, amount in segment.held_resources.items():
+                    add(resource_id, slot, amount)
+        return usage
+
+    def _apply_revision(self, revision: ScheduledPlanRevision) -> bool:
+        if revision.request_id not in self._active_plans:
+            raise ValueError("cannot revise an inactive request")
+        snapshot = self.executor.snapshot()
+        try:
+            state = next(
+                item
+                for item in snapshot.dag_states
+                if item.request_id == revision.request_id
+            )
+        except StopIteration as exc:
+            raise ValueError("revision request has no registered DAG") from exc
+        if any(
+            operation.dag_version != state.version + 1
+            for operation in revision.operations
+        ):
+            raise ValueError("revision operations must carry the next DAG version")
+        obsolete = (
+            set(state.operation_ids)
+            - set(state.completed)
+            - set(state.started)
+            - set(state.dead)
+            if revision.supersede_uncommitted
+            else set()
+        )
+        absolute_slots = self._revision_absolute_slots(revision, obsolete)
+        if absolute_slots is None:
+            return False
+        adaptive_reservations = self._revision_reservations(
+            revision,
+            absolute_slots,
+            snapshot,
+        )
+
+        self._release_segments(
+            revision.request_id,
+            revision.release_segment_ids,
+        )
+        self.executor.repair(
+            revision.request_id,
+            revision.operations,
+            supersede_uncommitted=revision.supersede_uncommitted,
+        )
+        if obsolete:
+            self._due = {
+                operation_id: operation
+                for operation_id, operation in self._due.items()
+                if operation_id not in obsolete
+            }
+            for slot, operations in tuple(self._operations_by_slot.items()):
+                retained = [
+                    operation
+                    for operation in operations
+                    if operation.op_id not in obsolete
+                ]
+                if retained:
+                    self._operations_by_slot[slot] = retained
+                else:
+                    self._operations_by_slot.pop(slot, None)
+            for operation_id in obsolete:
+                self._planned_slot_by_operation.pop(operation_id, None)
+
+        for operation in revision.operations:
+            slot = absolute_slots[operation.op_id]
+            self._operations_by_slot.setdefault(slot, []).append(operation)
+            self._planned_slot_by_operation[operation.op_id] = slot
+        for operations in self._operations_by_slot.values():
+            operations.sort(key=lambda operation: operation.canonical_key)
+        self._terminal_segments[revision.request_id] = frozenset(
+            revision.terminal_segment_ids
+        )
+        if revision.supersede_uncommitted:
+            self._adaptive_reservations[revision.request_id] = (
+                adaptive_reservations
+            )
+        else:
+            current = self._adaptive_reservations.setdefault(
+                revision.request_id,
+                {},
+            )
+            for key, amount in adaptive_reservations.items():
+                current[key] = current.get(key, 0) + amount
+        return True
+
     def _process_events(self, events: tuple[ExecutionEvent, ...]) -> None:
         self._event_trace.extend(events)
+        responses: dict[str, ScheduledEventResponse] = {}
+        if events and self._event_policy is not None:
+            event_request_ids = {event.request_id for event in events}
+            raw_responses = tuple(self._event_policy.on_event_batch(
+                events,
+                self.executor.snapshot(),
+                self.active_request_ids,
+            ))
+            if len({item.request_id for item in raw_responses}) != len(raw_responses):
+                raise ValueError("event policy returned duplicate request responses")
+            for response in raw_responses:
+                if response.request_id not in event_request_ids:
+                    raise ValueError(
+                        "event policy responded for a request absent from the batch"
+                    )
+                if response.request_id not in self._active_plans:
+                    raise ValueError("event policy responded for an inactive request")
+                responses[response.request_id] = response
+
+            for request_id, response in sorted(responses.items()):
+                if response.disposition == ScheduledEventDisposition.FAIL:
+                    self._finish_attempt(
+                        request_id,
+                        success=False,
+                        time_ps=self.physical_time_ps,
+                        failure_cause=response.failure_cause,
+                    )
+                    continue
+                if response.disposition == ScheduledEventDisposition.CONTINUE:
+                    self._release_segments(
+                        request_id,
+                        response.release_segment_ids,
+                    )
+                if response.disposition == ScheduledEventDisposition.COMPLETE:
+                    assert response.completion_segment_id is not None
+                    self._complete_from_live_segment(
+                        request_id,
+                        response.completion_segment_id,
+                    )
+                if response.disposition == ScheduledEventDisposition.REVISE:
+                    assert response.revision is not None
+                    if not self._apply_revision(response.revision):
+                        self._finish_attempt(
+                            request_id,
+                            success=False,
+                            time_ps=self.physical_time_ps,
+                            failure_cause="revision_schedule_infeasible",
+                        )
+
         for event in events:
             request_id = event.request_id
             if request_id not in self._active_plans:
                 if request_id in self._cleanup_requests:
                     self.executor.release_request(request_id)
+                continue
+            response = responses.get(request_id)
+            if (
+                not event.success
+                and response is not None
+                and response.disposition in {
+                    ScheduledEventDisposition.CONTINUE,
+                    ScheduledEventDisposition.REVISE,
+                    ScheduledEventDisposition.COMPLETE,
+                }
+            ):
                 continue
             if not event.success:
                 self._finish_attempt(
@@ -741,6 +1254,7 @@ class PersistentConstructionScheduler:
             self._cleanup_requests.remove(request_id)
             self._terminal_segments.pop(request_id, None)
             self._delivered_segments.pop(request_id, None)
+            self._adaptive_reservations.pop(request_id, None)
             removed_operation_ids: set[str] = set()
             for slot, operations in tuple(self._operations_by_slot.items()):
                 retained = []
@@ -836,11 +1350,12 @@ class PersistentConstructionScheduler:
                 if operation.request_id in self._active_plans
             }
             ready = self._ready_due_operations()
+            launch_rejection_detail: str | None = None
             if ready:
                 try:
                     attempt_ids = self.executor.launch(ready)
                 except ConstructionLaunchRejected as exc:
-                    rejection_detail = str(exc)
+                    launch_rejection_detail = str(exc)
                 else:
                     for operation, attempt_id in zip(ready, attempt_ids):
                         self._launches.append(ScheduledOperationLaunch(
@@ -853,23 +1368,30 @@ class PersistentConstructionScheduler:
                         self._due.pop(operation.op_id, None)
                     self._memory_telemetry.observe(self.executor.snapshot())
                     continue
-            else:
-                rejection_detail = "operation is not physically ready"
+
+            if launch_rejection_detail is not None:
+                failed: dict[str, ConstructionOperation] = {}
+                for operation in ready:
+                    failed.setdefault(operation.request_id, operation)
+                for request_id, operation in sorted(failed.items()):
+                    self._launch_rejection(
+                        request_id,
+                        operation,
+                        launch_rejection_detail,
+                    )
+                continue
 
             if self.executor.has_in_flight:
                 if not self._advance_once(slot_end_ps):
                     break
                 continue
             if self._due:
-                failed: dict[str, ConstructionOperation] = {}
-                for operation in self._due.values():
-                    failed.setdefault(operation.request_id, operation)
-                for request_id, operation in sorted(failed.items()):
-                    self._launch_rejection(
-                        request_id,
-                        operation,
-                        rejection_detail,
-                    )
+                # A temporarily empty ready set can be caused by a physical
+                # segment expiring or a protocol lease being released later
+                # in the same coarse slot.  Advance the physical process once
+                # before classifying the fixed schedule as invalid.
+                if not self._advance_once(slot_end_ps):
+                    break
                 continue
             if not self._advance_once(slot_end_ps):
                 break
@@ -880,8 +1402,8 @@ class PersistentConstructionScheduler:
         snapshot = self.executor.snapshot()
         operation_by_id = {
             operation.op_id: operation
-            for plan in self._active_plans.values()
-            for operation in plan.dag.operations
+            for operation in snapshot.operations
+            if operation.request_id in self._active_plans
         }
         dependency_blocked = _in_flight_dependency_blocked_operation_ids(
             self._due,

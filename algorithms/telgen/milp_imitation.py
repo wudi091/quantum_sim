@@ -1772,6 +1772,7 @@ if torch is not None:
         sample: CandidateConstraintGraph | MILPGraphSample,
         *,
         device: str | torch.device | None = None,
+        mask_actions: bool = True,
     ) -> AutoregressiveRollout:
         """Emit a discrete plan from the dynamically feasible action space."""
 
@@ -1804,7 +1805,11 @@ if torch is not None:
                         device=resolved_device,
                     ),
                 )
-                valid_candidates = _valid_candidate_flags(incidence, state)
+                valid_candidates = (
+                    _valid_candidate_flags(incidence, state)
+                    if mask_actions
+                    else None
+                )
                 log_probabilities = _categorical_log_probabilities(
                     actions,
                     valid_candidates,
@@ -1825,6 +1830,22 @@ if torch is not None:
                     incidence, state, action_index
                 )
                 if violation is not None:
+                    if not mask_actions:
+                        return AutoregressiveRollout(
+                            selection=selection_from_state(
+                                sample, incidence, state
+                            ),
+                            action_indices=tuple(action_indices[:-1]),
+                            stopped_by_model=False,
+                            initial_candidate_probabilities=(
+                                initial_candidate_probabilities
+                            ),
+                            initial_stop_probability=float(
+                                initial_stop_probability
+                            ),
+                            invalid_action_index=action_index,
+                            invalid_action_reason=violation,
+                        )
                     raise RuntimeError(
                         "feasibility mask admitted an invalid action: "
                         f"{violation}"
