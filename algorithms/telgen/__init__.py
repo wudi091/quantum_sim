@@ -1,4 +1,4 @@
-"""Construction-aware MILP supervision and autoregressive GNN planning."""
+"""Construction-aware optimization teachers and online GNN planning."""
 
 from .dataset import PlanningBatchProblem, build_planning_batch_problem
 from .fidelity import (

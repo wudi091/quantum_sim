@@ -33,7 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--construction-plans", type=int, default=5)
     parser.add_argument(
         "--decision-backend",
-        choices=("milp_teacher", "gnn"),
+        choices=("milp_teacher", "gnn", "ipm_gnn"),
         default="milp_teacher",
     )
     parser.add_argument("--gnn-checkpoint")
@@ -88,8 +88,14 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError(
             "--save-milp-dataset requires --decision-backend milp_teacher"
         )
-    if args.decision_backend == "gnn" and not args.gnn_checkpoint:
-        raise ValueError("--decision-backend gnn requires --gnn-checkpoint")
+    if (
+        args.decision_backend in {"gnn", "ipm_gnn"}
+        and not args.gnn_checkpoint
+    ):
+        raise ValueError(
+            f"--decision-backend {args.decision_backend} requires "
+            "--gnn-checkpoint"
+        )
     arrival_rounds = (
         args.requests + args.requests_per_batch - 1
     ) // args.requests_per_batch
@@ -148,7 +154,7 @@ def main(argv: list[str] | None = None) -> int:
                 construction_kinds=(),
                 swap_tree_count=args.construction_plans,
                 purification_kinds=("none",),
-                decision_backend="gnn",
+                decision_backend=args.decision_backend,
                 gnn_checkpoint=args.gnn_checkpoint,
                 gnn_device=args.gnn_device,
             ),

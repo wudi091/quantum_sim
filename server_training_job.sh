@@ -17,8 +17,8 @@ readonly NVIDIA_SMI_BIN="/usr/bin/nvidia-smi"
 
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly SELF="${SCRIPT_DIR}/server_training_job.sh"
-readonly RESULT_BASE="${SCRIPT_DIR}/results/telgen_ipm_formal_v1"
-readonly STATE_DIR="${SCRIPT_DIR}/results/telgen_ipm_training_state"
+readonly RESULT_BASE="${SCRIPT_DIR}/results/telgen_ipm_rounding_v2"
+readonly STATE_DIR="${SCRIPT_DIR}/results/telgen_ipm_rounding_state_v2"
 readonly PID_FILE="${STATE_DIR}/training.pid"
 readonly JOB_LOG="${STATE_DIR}/training.log"
 readonly PHASE_FILE="${STATE_DIR}/phase.txt"
@@ -27,7 +27,7 @@ readonly FINISHED_AT_FILE="${STATE_DIR}/finished_at.txt"
 readonly EXIT_CODE_FILE="${STATE_DIR}/exit_code.txt"
 readonly RUN_ROOT_FILE="${STATE_DIR}/run_root.txt"
 readonly MANAGER_LOCK_FILE="${STATE_DIR}/manager.lock"
-readonly TRAIN_LOCK_FILE="${SCRIPT_DIR}/results/telgen_ipm_training.lock"
+readonly TRAIN_LOCK_FILE="${SCRIPT_DIR}/results/telgen_ipm_rounding_v2.lock"
 
 readonly TRAIN_SAMPLES=400
 readonly VALIDATION_SAMPLES=80
@@ -164,6 +164,7 @@ import json
 import math
 import pathlib
 import sys
+import torch
 
 report_path = pathlib.Path(sys.argv[1])
 checkpoint_path = pathlib.Path(sys.argv[2])
@@ -171,8 +172,14 @@ seed = int(sys.argv[3])
 if not report_path.is_file() or not checkpoint_path.is_file():
     raise SystemExit(1)
 payload = json.loads(report_path.read_text(encoding="utf-8"))
+checkpoint = torch.load(
+    checkpoint_path,
+    map_location="cpu",
+    weights_only=True,
+)
+decoder = payload.get("paper_alignment", {}).get("decoder", {})
 valid = (
-    payload.get("method") == "TELGEN paper-aligned IPM-trajectory GNN adaptation"
+    payload.get("method") == "TELGEN IPM-trajectory GNN with shared rounding"
     and payload.get("seed") == seed
     and payload.get("data_seed") == 20260826
     and payload.get("device") == "cuda"
@@ -181,7 +188,12 @@ valid = (
     and payload.get("data_protocol", {}).get("validation", {}).get("samples") == 80
     and payload.get("best_epoch", 0) > 0
     and math.isfinite(float(payload.get("best_validation_loss", float("nan"))))
-    and payload.get("paper_alignment", {}).get("decoder") is None
+    and payload.get("request_admission_weight") == 6.0
+    and checkpoint.get("schema_version") == 3
+    and checkpoint.get("model_class") == "TELGENPaperGNN"
+    and decoder.get("name") == "shared_capacity_safe_rounding"
+    and decoder.get("admission_mass") == "unscaled request mass"
+    and decoder.get("teacher_and_gnn_share_decoder") is True
 )
 raise SystemExit(0 if valid else 1)
 PY
@@ -219,6 +231,9 @@ run_training_seed() {
         --prediction-layers 4 \
         --objective-weight 3.43 \
         --constraint-weight 5.8 \
+        --request-mass-weight 2.0 \
+        --request-admission-weight 6.0 \
+        --candidate-distribution-weight 0.5 \
         --learning-rate 0.00001 \
         --weight-decay 0 \
         --train-topology waxman \

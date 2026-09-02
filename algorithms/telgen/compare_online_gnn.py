@@ -209,7 +209,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     gnn_config = OnlineTELGENConfig(
         **common,
-        decision_backend="gnn",
+        decision_backend="ipm_gnn",
         gnn_checkpoint=str(args.checkpoint),
         gnn_device=args.gnn_device,
     )
@@ -276,6 +276,7 @@ def main(argv: list[str] | None = None) -> int:
             "primary_metric": "completed_requests",
             "secondary_metric": "mean_censored_latency_ps",
             "gnn_construction_policy": construction_policy,
+            "gnn_decision_backend": "ipm_gnn",
         },
         "configuration": {
             **vars(args),

@@ -9,6 +9,7 @@ from algorithms.telgen.ipm_trajectory_pilot import (
     _resolve_device,
     _sample_loss,
     make_samples,
+    round_continuous_plan,
     solve_scipy_ipm_trajectory,
 )
 
@@ -95,6 +96,37 @@ class IPMTrajectoryPilotTests(unittest.TestCase):
             self.assertTrue(gradients)
             self.assertTrue(all(bool(torch.isfinite(item).all()) for item in gradients))
 
+    def test_paper_model_enforces_request_mass_at_every_iteration(self):
+        sample = make_samples(
+            topology="waxman",
+            node_count=16,
+            sample_count=1,
+            seed=101,
+            request_count=5,
+            horizon=8,
+            path_count=3,
+            construction_plan_count=3,
+            outer_steps=5,
+            endpoint_mode="cut_hotspot",
+        )[0]
+        model = TELGENPaperGNN(
+            hidden_dim=12,
+            inner_layers=2,
+            message_mlp_layers=2,
+            prediction_layers=2,
+        )
+        with torch.no_grad():
+            trace = model(sample.graph, steps=5)
+        groups, _, _ = model._request_partition(
+            sample.graph, next(model.parameters()).device
+        )
+        for point in trace:
+            for indices in groups:
+                self.assertLessEqual(
+                    float(point.index_select(0, indices).sum()),
+                    1.0 + 1e-6,
+                )
+
     def test_default_training_samples_use_multiple_graphs(self):
         samples = make_samples(
             topology="waxman",
@@ -131,9 +163,61 @@ class IPMTrajectoryPilotTests(unittest.TestCase):
             len({sample.topology_signature for sample in samples}), 1
         )
 
+    def test_cut_hotspot_samples_create_shared_active_constraints(self):
+        sample = make_samples(
+            topology="waxman",
+            node_count=24,
+            sample_count=1,
+            seed=920,
+            request_count=50,
+            horizon=12,
+            path_count=3,
+            construction_plan_count=3,
+            outer_steps=4,
+            endpoint_mode="cut_hotspot",
+        )[0]
+        final = sample.trajectory.points[-1]
+        request_mass = {}
+        for value, variable in zip(final, sample.variables):
+            request_mass[variable.request_id] = (
+                request_mass.get(variable.request_id, 0.0) + float(value)
+            )
+        self.assertGreaterEqual(len(request_mass), 5)
+        self.assertTrue(all(value <= 1.0 + 1e-6 for value in request_mass.values()))
+
     def test_quantum_semantic_extension_is_not_mixed_into_paper_model(self):
         with self.assertRaises(NotImplementedError):
             TELGENQuantumAdapterGNN()
+
+    def test_shared_rounding_produces_capacity_safe_unique_requests(self):
+        sample = make_samples(
+            topology="waxman",
+            node_count=10,
+            sample_count=1,
+            seed=500,
+            request_count=3,
+            horizon=6,
+            path_count=2,
+            construction_plan_count=3,
+            outer_steps=4,
+        )[0]
+        teacher = round_continuous_plan(
+            sample.trajectory.points[-1], sample
+        )
+        dense = round_continuous_plan(
+            np.ones(len(sample.variables), dtype=float), sample
+        )
+        empty = round_continuous_plan(
+            np.zeros(len(sample.variables), dtype=float), sample
+        )
+        self.assertTrue(teacher.feasible)
+        self.assertTrue(dense.feasible)
+        self.assertEqual(empty.completed_request_count, 0)
+        dense_requests = [
+            sample.variables[index].request_id
+            for index in dense.selected_indices
+        ]
+        self.assertEqual(len(dense_requests), len(set(dense_requests)))
 
 
 if __name__ == "__main__":

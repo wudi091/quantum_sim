@@ -1,0 +1,203 @@
+"""Online policy for the learned IPM-trajectory GNN."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from time import perf_counter
+from typing import Mapping, Sequence
+
+import numpy as np
+import torch
+
+from .ipm_trajectory_pilot import (
+    TELGENPaperGNN,
+    build_ipm_graph,
+    round_candidate_scores,
+)
+from .milp_imitation import AutoregressiveSelection
+from .optimization_model import build_stage_one_model
+from .time_expansion import TimeExpandedCandidate
+
+
+@dataclass(frozen=True)
+class OnlineIPMDecision:
+    continuous_primal: np.ndarray
+    selection: AutoregressiveSelection
+    inference_seconds: float
+    invalid_action_index: int | None = None
+    invalid_action_reason: str | None = None
+
+
+def _resolve_device(name: str) -> torch.device:
+    if name not in {"auto", "cpu", "cuda"}:
+        raise ValueError(f"unknown GNN device: {name}")
+    if name == "auto":
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if name == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("CUDA was requested but is not available")
+    return torch.device(name)
+
+
+def _candidate_loads(
+    variable: TimeExpandedCandidate,
+) -> dict[tuple[str, int], int]:
+    loads: dict[tuple[str, int], int] = {}
+    for entry in variable.resource_usage:
+        key = (entry.resource_id, int(entry.slot))
+        loads[key] = loads.get(key, 0) + int(entry.amount)
+    return loads
+
+
+def _individually_feasible_variables(
+    variables: Sequence[TimeExpandedCandidate],
+    capacities: Mapping[str, int],
+    reserved_usage: Mapping[tuple[str, int], int],
+) -> tuple[TimeExpandedCandidate, ...]:
+    feasible: list[TimeExpandedCandidate] = []
+    for variable in variables:
+        loads = _candidate_loads(variable)
+        if all(
+            reserved_usage.get(key, 0) + amount <= capacities[key[0]]
+            for key, amount in loads.items()
+        ):
+            feasible.append(variable)
+    return tuple(sorted(feasible, key=lambda item: item.variable_id))
+
+
+class OnlineIPMGNNPolicy:
+    """Predict a request-normalized LP primal and round it to a plan."""
+
+    def __init__(
+        self,
+        model: TELGENPaperGNN,
+        *,
+        inference_steps: int,
+        device: torch.device,
+        checkpoint_path: Path | None = None,
+    ):
+        if inference_steps < 1:
+            raise ValueError("inference_steps must be positive")
+        self.device = device
+        self.model = model.to(device).eval()
+        self.inference_steps = int(inference_steps)
+        self.checkpoint_path = checkpoint_path
+
+    @classmethod
+    def from_checkpoint(
+        cls,
+        path: str | Path,
+        *,
+        device: str = "auto",
+    ) -> "OnlineIPMGNNPolicy":
+        source = Path(path)
+        if not source.is_file():
+            raise FileNotFoundError(source)
+        resolved_device = _resolve_device(device)
+        checkpoint = torch.load(
+            source,
+            map_location=resolved_device,
+            weights_only=True,
+        )
+        if not isinstance(checkpoint, Mapping):
+            raise ValueError("IPM GNN checkpoint must contain a mapping")
+        if checkpoint.get("schema_version") != 3:
+            raise ValueError(
+                "checkpoint predates structural request normalization and "
+                "must be retrained"
+            )
+        if checkpoint.get("model_class") != "TELGENPaperGNN":
+            raise ValueError("checkpoint contains an unsupported model class")
+        config = checkpoint.get("model_config")
+        if not isinstance(config, Mapping):
+            raise ValueError("checkpoint is missing model configuration")
+        model = TELGENPaperGNN(
+            hidden_dim=int(config["hidden_dim"]),
+            inner_layers=int(config["inner_layers"]),
+            message_mlp_layers=int(config["message_mlp_layers"]),
+            prediction_layers=int(config["prediction_layers"]),
+            normalization=config.get("normalization"),
+            dropout=float(config.get("dropout", 0.0)),
+        )
+        state_dict = checkpoint.get("state_dict")
+        if not isinstance(state_dict, Mapping):
+            raise ValueError("checkpoint is missing model weights")
+        model.load_state_dict(state_dict, strict=True)
+        return cls(
+            model,
+            inference_steps=int(checkpoint["inference_steps"]),
+            device=resolved_device,
+            checkpoint_path=source,
+        )
+
+    def decide(
+        self,
+        variables: Sequence[TimeExpandedCandidate],
+        resource_capacities: Mapping[str, int],
+        *,
+        horizon: int,
+        reserved_usage: Mapping[tuple[str, int], int] | None = None,
+    ) -> OnlineIPMDecision:
+        started = perf_counter()
+        capacities = {
+            str(resource_id): int(capacity)
+            for resource_id, capacity in resource_capacities.items()
+        }
+        reservations = {
+            (str(resource_id), int(slot)): int(amount)
+            for (resource_id, slot), amount in (reserved_usage or {}).items()
+            if int(amount) != 0
+        }
+        feasible_variables = _individually_feasible_variables(
+            variables, capacities, reservations
+        )
+        if not feasible_variables:
+            selection = AutoregressiveSelection(
+                selected_variables=(),
+                selected_indices=(),
+                selected_variable_ids=(),
+                feasible=True,
+                stopped=True,
+                action_count=0,
+                total_completion_latency=0.0,
+            )
+            return OnlineIPMDecision(
+                continuous_primal=np.zeros(0, dtype=np.float32),
+                selection=selection,
+                inference_seconds=perf_counter() - started,
+            )
+        model = build_stage_one_model(
+            feasible_variables,
+            capacities,
+            reservations,
+        )
+        graph = build_ipm_graph(model, feasible_variables, horizon)
+        with torch.no_grad():
+            trace = self.model(graph, steps=self.inference_steps)
+        primal = trace[-1].detach().cpu().numpy()
+        rounded = round_candidate_scores(
+            primal,
+            feasible_variables,
+            capacities,
+            reserved_usage=reservations,
+        )
+        selected_variables = tuple(
+            feasible_variables[index] for index in rounded.selected_indices
+        )
+        selection = AutoregressiveSelection(
+            selected_variables=selected_variables,
+            selected_indices=rounded.selected_indices,
+            selected_variable_ids=rounded.selected_variable_ids,
+            feasible=rounded.feasible,
+            stopped=True,
+            action_count=len(selected_variables),
+            total_completion_latency=rounded.total_completion_latency,
+        )
+        return OnlineIPMDecision(
+            continuous_primal=np.asarray(primal, dtype=np.float32),
+            selection=selection,
+            inference_seconds=perf_counter() - started,
+        )
+
+
+__all__ = ["OnlineIPMDecision", "OnlineIPMGNNPolicy"]

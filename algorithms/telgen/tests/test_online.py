@@ -25,6 +25,7 @@ from algorithms.telgen.milp_imitation import (
     CandidateConstraintGNN,
 )
 from algorithms.telgen.gnn_policy import OnlineGNNPolicy
+from algorithms.telgen.ipm_trajectory_pilot import TELGENPaperGNN
 from qnet_core.planning_spec import RequestSpec
 from qnet_core.spec import EpisodeSpec, PhysicalConfig
 
@@ -83,6 +84,31 @@ class OnlineTELGENTests(unittest.TestCase):
         }
         torch.save(payload, path)
 
+    @staticmethod
+    def _save_ipm_gnn_checkpoint(path):
+        torch.manual_seed(11)
+        model = TELGENPaperGNN(
+            hidden_dim=8,
+            inner_layers=1,
+            message_mlp_layers=1,
+            prediction_layers=1,
+        )
+        torch.save({
+            "schema_version": 3,
+            "model_class": "TELGENPaperGNN",
+            "method": "ipm_trajectory_with_shared_rounding",
+            "model_config": {
+                "hidden_dim": 8,
+                "inner_layers": 1,
+                "message_mlp_layers": 1,
+                "prediction_layers": 1,
+                "normalization": "layer",
+                "dropout": 0.0,
+            },
+            "inference_steps": 2,
+            "state_dict": model.state_dict(),
+        }, path)
+
     def test_default_controller_uses_periodic_decisions(self):
         spec = EpisodeSpec(
             seed=19,
@@ -106,6 +132,37 @@ class OnlineTELGENTests(unittest.TestCase):
             [item.completion_end_slot for item in result.decisions],
             [8, 8],
         )
+
+    def test_ipm_gnn_checkpoint_runs_as_online_backend(self):
+        spec = EpisodeSpec(
+            seed=119,
+            nodes=(0, 1),
+            edges=((0, 1),),
+            requests=(RequestSpec("r0", 0, 1, arrival=0, ttl=4),),
+            horizon=4,
+            physical=deterministic_physical(),
+        )
+        with TemporaryDirectory() as directory:
+            checkpoint = f"{directory}/ipm.pt"
+            self._save_ipm_gnn_checkpoint(checkpoint)
+            result = run_online_telgen(
+                spec,
+                OnlineTELGENConfig(
+                    decision_interval=2,
+                    path_candidate_count=1,
+                    construction_kinds=("balanced",),
+                    purification_kinds=("none",),
+                    decision_backend="ipm_gnn",
+                    gnn_checkpoint=checkpoint,
+                    gnn_device="cpu",
+                ),
+            )
+        self.assertTrue(result.decisions)
+        self.assertTrue(all(
+            item.decision_backend == "ipm_gnn"
+            for item in result.decisions
+        ))
+        self.assertEqual(result.metrics["gnn_invalid_decision_count"], 0.0)
 
     def test_decisions_are_periodic_and_future_requests_are_invisible(self):
         spec = EpisodeSpec(

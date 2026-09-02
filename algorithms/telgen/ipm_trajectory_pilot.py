@@ -10,20 +10,23 @@ quantum planning LP:
 * SciPy's primal interior-point callback trajectory is the teacher signal;
 * K shared outer loops imitate IPM iterations and J inner GNN layers imitate
   the Newton step;
-* training uses only the primal, objective, and normalized constraint losses
-  described in the paper;
-* the primal readout is non-negative, with no feasibility decoder, greedy
-  repair, projection, or topology-specific action rule.
+* training uses the primal, objective, normalized constraint, request-mass,
+  and request-admission losses;
+* request uniqueness is parameterized at the readout, while one deterministic
+  capacity-safe rounding shared with the IPM teacher produces an executable
+  plan.
 
 The official public TELGEN repository contains incomplete heterogeneous
 aggregation code, so this is not a byte-for-byte copy.  The data generation,
 trajectory sampling, tripartite graph, six directed relations, double loop,
-weight sharing, readout, and losses follow the paper and the runnable parts of
-the official source.  The relation convolution is a dependency-free PyTorch
-implementation of the intended GCN operation.
+weight sharing, and readout follow the paper and the runnable parts of the
+official source.  Mean relation aggregation and request-structured losses are
+quantum-network adaptations for size transfer.  The relation convolution is a
+dependency-free PyTorch implementation of the intended GCN operation.
 
-This pilot learns a continuous LP relaxation.  It is not yet a discrete online
-quantum scheduler and does not replace SeQUeNCe or the current controller.
+This pilot learns a continuous LP relaxation and evaluates its rounded
+construction-aware plan.  The resulting checkpoint can be used by the
+``ipm_gnn`` backend of the existing SeQUeNCe online controller.
 """
 
 from __future__ import annotations
@@ -46,6 +49,7 @@ import numpy as np
 from scipy.optimize import linprog
 import torch
 from torch import nn
+from torch.nn import functional as F
 
 from qnet_core.planning_spec import RequestSpec
 from qnet_core.scenario import ScenarioConfig, make_episode
@@ -53,6 +57,7 @@ from qnet_core.spec import EpisodeSpec, PhysicalConfig
 
 from .dataset import build_planning_batch_problem
 from .optimization_model import PackingModelStage, build_stage_one_model
+from .time_expansion import TimeExpandedCandidate
 
 
 TELGEN_REFERENCE_COMMIT = "64684ebb3a7e856de86346da46232f8ceca6666c"
@@ -104,11 +109,37 @@ class IPMTrajectory:
 class PilotSample:
     graph: IPMGraph
     trajectory: IPMTrajectory
+    variables: tuple[TimeExpandedCandidate, ...]
+    resource_capacities: tuple[tuple[str, int], ...]
     seed: int
     topology: str
     topology_seed: int
     node_count: int
     topology_signature: tuple[tuple[int, int], ...]
+
+    @property
+    def capacities(self) -> dict[str, int]:
+        return dict(self.resource_capacities)
+
+
+class _PilotCacheUnpickler(pickle.Unpickler):
+    """Load caches produced by older ``python -m`` training invocations."""
+
+    _LOCAL_CLASSES = {
+        "IPMGraph",
+        "IPMTrajectory",
+        "PilotSample",
+    }
+
+    def find_class(self, module: str, name: str) -> object:
+        if module == "__main__" and name in self._LOCAL_CLASSES:
+            return globals()[name]
+        return super().find_class(module, name)
+
+
+def _load_pilot_cache(path: Path) -> object:
+    with path.open("rb") as handle:
+        return _PilotCacheUnpickler(handle).load()
 
 
 def _as_node_counts(value: int | Sequence[int]) -> tuple[int, ...]:
@@ -344,6 +375,7 @@ def _episode_with_fixed_topology(
     horizon: int,
     seed: int,
     request_count: int,
+    endpoint_mode: str = "uniform_random",
 ) -> EpisodeSpec:
     graph = nx.Graph()
     graph.add_nodes_from(nodes)
@@ -352,11 +384,36 @@ def _episode_with_fixed_topology(
         raise ValueError("pilot topology must be connected")
     rng = np.random.default_rng(seed)
     node_list = tuple(int(node) for node in nodes)
+    if endpoint_mode not in {"uniform_random", "cut_hotspot"}:
+        raise ValueError(f"unknown pilot endpoint mode: {endpoint_mode}")
+    endpoint_sides: tuple[tuple[int, ...], tuple[int, ...]] | None = None
+    if endpoint_mode == "cut_hotspot":
+        cut = nx.minimum_edge_cut(graph)
+        if not cut:
+            raise ValueError("cut-hotspot topology has no separating cut")
+        separated = graph.copy()
+        separated.remove_edges_from(cut)
+        components = sorted(
+            (
+                tuple(sorted(int(node) for node in component))
+                for component in nx.connected_components(separated)
+            ),
+            key=lambda item: (-len(item), item),
+        )
+        if len(components) < 2:
+            raise ValueError("minimum edge cut did not separate the topology")
+        endpoint_sides = (components[0], components[1])
     requests: list[RequestSpec] = []
     for index in range(request_count):
-        source, destination = (
-            int(value) for value in rng.choice(node_list, 2, replace=False)
-        )
+        if endpoint_sides is None:
+            source, destination = (
+                int(value) for value in rng.choice(node_list, 2, replace=False)
+            )
+        else:
+            source = int(rng.choice(endpoint_sides[0]))
+            destination = int(rng.choice(endpoint_sides[1]))
+            if index % 2:
+                source, destination = destination, source
         requests.append(RequestSpec(
             f"r{index}", source, destination, arrival=0, ttl=horizon,
         ))
@@ -411,6 +468,7 @@ def make_samples(
     outer_steps: int = 16,
     fixed_topology: bool = False,
     topology_seed: int | None = None,
+    endpoint_mode: str = "uniform_random",
 ) -> tuple[PilotSample, ...]:
     """Generate quantum LP samples and their paper-style IPM trajectories.
 
@@ -468,6 +526,7 @@ def make_samples(
             horizon,
             episode_seed,
             request_count,
+            endpoint_mode,
         )
         problem = build_planning_batch_problem(
             episode,
@@ -494,6 +553,8 @@ def make_samples(
         samples.append(PilotSample(
             graph=graph,
             trajectory=trajectory,
+            variables=variables,
+            resource_capacities=tuple(sorted(problem.capacities.items())),
             seed=episode_seed,
             topology=topology,
             topology_seed=sample_topology_seed,
@@ -576,16 +637,14 @@ class _RelationGCN(nn.Module):
         destination_self = self.destination(destination)
         if len(source_index) == 0:
             return self.update(destination_self)
-        source_degree = torch.bincount(
-            source_index, minlength=source_count
-        ).to(source.dtype) + 1.0
         destination_degree = torch.bincount(
             destination_index, minlength=destination_count
         ).to(source.dtype) + 1.0
-        normalization = (
-            source_degree[source_index].rsqrt()
-            * destination_degree[destination_index].rsqrt()
-        )
+        # Mean aggregation keeps a request embedding stable when the number
+        # of candidate variables grows on a larger or denser topology.  The
+        # symmetric normalization used by the generic TELGEN graph is
+        # degree-sensitive and caused a size-dependent scale drift here.
+        normalization = destination_degree[destination_index].reciprocal()
         message = torch.relu(
             self.source(source[source_index]) + self.edge(edge_value[:, None])
         )
@@ -682,7 +741,14 @@ class _TELGENInnerStep(nn.Module):
 
 
 class TELGENPaperGNN(nn.Module):
-    """Tripartite double-loop GNN aligned with the TELGEN architecture."""
+    """Tripartite double-loop GNN with structural request normalization.
+
+    The message-passing and shared outer loops follow TELGEN's IPM-process
+    recipe.  Quantum packing adds one invariant at the readout: candidate
+    mass is normalized within each request and scaled by a request-level
+    admission mass.  Consequently every predicted primal already satisfies
+    request uniqueness, independent of the number of candidates per request.
+    """
 
     def __init__(
         self,
@@ -728,6 +794,13 @@ class TELGENPaperGNN(nn.Module):
             normalization=normalization,
         )
         self.readout = _MLP(
+            [2 * hidden_dim]
+            + [hidden_dim] * (prediction_layers - 1)
+            + [1],
+            normalization=None,
+            dropout=dropout,
+        )
+        self.request_readout = _MLP(
             [2 * hidden_dim]
             + [hidden_dim] * (prediction_layers - 1)
             + [1],
@@ -793,6 +866,56 @@ class TELGENPaperGNN(nn.Module):
             ),
         }
 
+    @staticmethod
+    def _request_partition(
+        graph: IPMGraph,
+        device: torch.device,
+    ) -> tuple[tuple[torch.Tensor, ...], torch.Tensor, torch.Tensor]:
+        """Recover request rows and the variable-to-request assignment.
+
+        ``build_stage_one_model`` appends resource-time rows after request
+        rows.  Request rows therefore form the initial sequence of disjoint
+        all-one rows and collectively cover every candidate.  The same
+        invariant is retained in the serialized dataset, so this partition
+        remains available without adding quantum-specific graph features.
+        """
+
+        matrix = np.asarray(graph.matrix, dtype=np.float64)
+        variable_count = matrix.shape[1]
+        covered = np.zeros(variable_count, dtype=bool)
+        groups: list[np.ndarray] = []
+        rows: list[int] = []
+        for row_index in range(matrix.shape[0]):
+            columns = np.flatnonzero(np.abs(matrix[row_index]) > 1e-12)
+            if not len(columns):
+                continue
+            if not np.allclose(matrix[row_index, columns], 1.0):
+                break
+            if np.any(covered[columns]):
+                break
+            rows.append(row_index)
+            groups.append(columns)
+            covered[columns] = True
+            if bool(np.all(covered)):
+                break
+        if not groups or not bool(np.all(covered)):
+            raise ValueError(
+                "IPM graph does not expose a complete disjoint request "
+                "partition"
+            )
+        request_groups = tuple(
+            torch.as_tensor(columns, dtype=torch.long, device=device)
+            for columns in groups
+        )
+        variable_to_request = np.empty(variable_count, dtype=np.int64)
+        for request_index, columns in enumerate(groups):
+            variable_to_request[columns] = request_index
+        return (
+            request_groups,
+            torch.as_tensor(rows, dtype=torch.long, device=device),
+            torch.as_tensor(variable_to_request, dtype=torch.long, device=device),
+        )
+
     def forward(self, graph: IPMGraph, *, steps: int) -> torch.Tensor:
         if steps < 1:
             raise ValueError("steps must be positive")
@@ -807,6 +930,9 @@ class TELGENPaperGNN(nn.Module):
             graph.objective_features, dtype=torch.float32, device=device
         ))
         relations = self._relations(graph, device)
+        request_groups, request_rows, variable_to_request = (
+            self._request_partition(graph, device)
+        )
         outputs: list[torch.Tensor] = []
         for _ in range(steps):
             last_variable_message = variable
@@ -830,9 +956,27 @@ class TELGENPaperGNN(nn.Module):
                 objective_node = (
                     torch.relu(new_objective) + old_objective
                 ) / 2.0
-            # This is the only output constraint used by TELGEN itself.
+            candidate_scores = F.softplus(
+                self.readout(last_variable_message).squeeze(-1)
+            ) + 1e-8
+            request_mass = torch.sigmoid(
+                self.request_readout(
+                    constraint.index_select(0, request_rows)
+                ).squeeze(-1)
+            )
+            normalized_scores = torch.zeros_like(candidate_scores)
+            for request_index, candidate_indices in enumerate(request_groups):
+                request_scores = candidate_scores.index_select(
+                    0, candidate_indices
+                )
+                normalized_scores.index_copy_(
+                    0,
+                    candidate_indices,
+                    request_scores / request_scores.sum().clamp_min(1e-8),
+                )
             outputs.append(
-                torch.relu(self.readout(last_variable_message)).squeeze(-1)
+                normalized_scores
+                * request_mass.index_select(0, variable_to_request)
             )
         return torch.stack(outputs)
 
@@ -859,11 +1003,20 @@ def _sample_loss(
     discount: float = 0.7,
     objective_weight: float = 3.43,
     constraint_weight: float = 5.8,
+    request_mass_weight: float = 2.0,
+    request_admission_weight: float = 2.0,
+    candidate_distribution_weight: float = 0.5,
 ) -> tuple[torch.Tensor, dict[str, float]]:
-    """TELGEN's three-term step-supervised training loss."""
+    """Step-supervised IPM loss with quantum request-structure terms."""
 
     if not 0.0 <= discount <= 1.0:
         raise ValueError("discount must lie in [0, 1]")
+    if (
+        request_mass_weight < 0.0
+        or request_admission_weight < 0.0
+        or candidate_distribution_weight < 0.0
+    ):
+        raise ValueError("request-structure loss weights must be non-negative")
     device = prediction.device
     target = torch.as_tensor(
         sample.trajectory.points, dtype=torch.float32, device=device
@@ -908,17 +1061,265 @@ def _sample_loss(
     else:
         constraint_loss = prediction.new_zeros(())
         maximum_violation = 0.0
+
+    request_groups: dict[str, list[int]] = {}
+    for index, variable in enumerate(sample.variables):
+        request_groups.setdefault(variable.request_id, []).append(index)
+    request_mass_terms: list[torch.Tensor] = []
+    request_admission_terms: list[torch.Tensor] = []
+    distribution_terms: list[torch.Tensor] = []
+    for indices in request_groups.values():
+        index_tensor = torch.as_tensor(
+            indices, dtype=torch.long, device=device
+        )
+        predicted_request = prediction[:, index_tensor]
+        target_request = target[:, index_tensor]
+        predicted_mass = predicted_request.sum(dim=1)
+        target_mass = target_request.sum(dim=1)
+        request_mass_terms.append(
+            (predicted_mass - target_mass).pow(2) * weights
+        )
+        target_admission = (target_mass[-1].detach() >= 0.5).to(
+            predicted_mass.dtype
+        )
+        request_admission_terms.append(
+            F.binary_cross_entropy(
+                predicted_mass.clamp(1e-6, 1.0 - 1e-6),
+                target_admission.expand_as(predicted_mass),
+                reduction="none",
+            ) * weights
+        )
+        predicted_distribution = (
+            predicted_request
+            / predicted_mass[:, None].clamp_min(1e-8)
+        )
+        target_distribution = (
+            target_request / target_mass[:, None].clamp_min(1e-8)
+        )
+        distribution_terms.append(
+            (
+                predicted_distribution - target_distribution
+            ).pow(2).sum(dim=1) * weights
+        )
+    request_mass_loss = (
+        torch.stack(request_mass_terms).mean()
+        if request_mass_terms
+        else prediction.new_zeros(())
+    )
+    request_admission_loss = (
+        torch.stack(request_admission_terms).mean()
+        if request_admission_terms
+        else prediction.new_zeros(())
+    )
+    candidate_distribution_loss = (
+        torch.stack(distribution_terms).mean()
+        if distribution_terms
+        else prediction.new_zeros(())
+    )
     total = (
         primal_loss
         + objective_weight * objective_loss
         + constraint_weight * constraint_loss
+        + request_mass_weight * request_mass_loss
+        + request_admission_weight * request_admission_loss
+        + candidate_distribution_weight * candidate_distribution_loss
     )
     return total, {
         "primal_loss": float(primal_loss.detach().cpu()),
         "objective_loss": float(objective_loss.detach().cpu()),
         "constraint_loss": float(constraint_loss.detach().cpu()),
+        "request_mass_loss": float(request_mass_loss.detach().cpu()),
+        "request_admission_loss": float(
+            request_admission_loss.detach().cpu()
+        ),
+        "candidate_distribution_loss": float(
+            candidate_distribution_loss.detach().cpu()
+        ),
         "final_max_normalized_violation": maximum_violation,
     }
+
+
+@dataclass(frozen=True)
+class RoundedPlan:
+    """One executable integer plan produced from a continuous primal."""
+
+    selected_indices: tuple[int, ...]
+    selected_variable_ids: tuple[str, ...]
+    completed_request_count: int
+    expected_completed_request_mass: float
+    total_completion_latency: float
+    feasible: bool
+
+
+def _candidate_resource_loads(
+    variable: TimeExpandedCandidate,
+) -> dict[tuple[str, int], int]:
+    loads: dict[tuple[str, int], int] = {}
+    for entry in variable.resource_usage:
+        key = (entry.resource_id, int(entry.slot))
+        loads[key] = loads.get(key, 0) + int(entry.amount)
+    return loads
+
+
+def _feasible_prefix_scale(
+    point: np.ndarray,
+    variables: Sequence[TimeExpandedCandidate],
+    resource_capacities: Mapping[str, int],
+    reserved_usage: Mapping[tuple[str, int], int],
+) -> float:
+    """Largest common scale that makes the non-negative primal feasible."""
+
+    if not len(point):
+        return 1.0
+    scale = min(1.0, 1.0 / max(float(np.max(point)), 1.0))
+    request_loads: dict[str, float] = {}
+    resource_loads: dict[tuple[str, int], float] = {}
+    for value, variable in zip(point, variables):
+        weight = float(value)
+        if weight <= 0.0:
+            continue
+        request_loads[variable.request_id] = (
+            request_loads.get(variable.request_id, 0.0) + weight
+        )
+        for key, amount in _candidate_resource_loads(variable).items():
+            resource_loads[key] = (
+                resource_loads.get(key, 0.0) + weight * amount
+            )
+    for load in request_loads.values():
+        if load > 1e-12:
+            scale = min(scale, 1.0 / load)
+    for (resource_id, slot), load in resource_loads.items():
+        if load <= 1e-12:
+            continue
+        residual = (
+            int(resource_capacities[resource_id])
+            - int(reserved_usage.get((resource_id, slot), 0))
+        )
+        if residual <= 0:
+            return 0.0
+        scale = min(scale, residual / load)
+    return max(0.0, min(1.0, float(scale)))
+
+
+def round_continuous_plan(
+    point: np.ndarray,
+    sample: PilotSample,
+    *,
+    admission_threshold: float = 0.5,
+) -> RoundedPlan:
+    """Round one stored pilot sample with the shared online rule."""
+
+    return round_candidate_scores(
+        point,
+        sample.variables,
+        sample.capacities,
+        admission_threshold=admission_threshold,
+    )
+
+
+def round_candidate_scores(
+    point: np.ndarray,
+    variables: Sequence[TimeExpandedCandidate],
+    resource_capacities: Mapping[str, int],
+    *,
+    reserved_usage: Mapping[tuple[str, int], int] | None = None,
+    admission_threshold: float = 0.5,
+) -> RoundedPlan:
+    """Apply the same deterministic rounding to teacher and GNN primals.
+
+    A request is considered eligible when its *unscaled* fractional mass
+    reaches the threshold.  The common feasible-prefix scale is only used to
+    rank candidates and keep the continuous diagnostic capacity-safe; it must
+    not turn every request into a rejection when a dense graph has a small
+    common scale.  Requests are then processed by decreasing unscaled mass,
+    while candidates are tried by decreasing scaled value until one fits all
+    resource--slot capacities.
+    """
+
+    values = np.asarray(point, dtype=np.float64).reshape(-1)
+    ordered_variables = tuple(variables)
+    if values.shape != (len(ordered_variables),):
+        raise ValueError("continuous primal and candidate count differ")
+    if not np.all(np.isfinite(values)):
+        raise ValueError("continuous primal must be finite")
+    if not 0.0 < admission_threshold <= 1.0:
+        raise ValueError("admission threshold must lie in (0, 1]")
+    non_negative = np.maximum(values, 0.0)
+    capacities = {
+        str(resource_id): int(capacity)
+        for resource_id, capacity in resource_capacities.items()
+    }
+    reservations = {
+        (str(resource_id), int(slot)): int(amount)
+        for (resource_id, slot), amount in (reserved_usage or {}).items()
+        if int(amount) != 0
+    }
+    scale = _feasible_prefix_scale(
+        non_negative,
+        ordered_variables,
+        capacities,
+        reservations,
+    )
+    scores = np.clip(scale * non_negative, 0.0, 1.0)
+    by_request: dict[str, list[int]] = {}
+    for index, variable in enumerate(ordered_variables):
+        by_request.setdefault(variable.request_id, []).append(index)
+
+    request_order: list[tuple[float, str, tuple[int, ...]]] = []
+    for request_id, indices in by_request.items():
+        admission_mass = min(1.0, float(np.sum(non_negative[indices])))
+        if admission_mass + 1e-12 < admission_threshold:
+            continue
+        ranked = tuple(sorted(
+            indices,
+            key=lambda index: (
+                -float(scores[index]),
+                ordered_variables[index].completion_latency,
+                ordered_variables[index].variable_id,
+            ),
+        ))
+        request_order.append((admission_mass, request_id, ranked))
+    request_order.sort(key=lambda item: (-item[0], item[1]))
+
+    occupied = dict(reservations)
+    selected: list[int] = []
+    for _, _, ranked in request_order:
+        for index in ranked:
+            variable = ordered_variables[index]
+            loads = _candidate_resource_loads(variable)
+            if any(
+                occupied.get(key, 0) + amount
+                > capacities[key[0]]
+                for key, amount in loads.items()
+            ):
+                continue
+            for key, amount in loads.items():
+                occupied[key] = occupied.get(key, 0) + amount
+            selected.append(index)
+            break
+
+    feasible = all(
+        amount <= capacities[resource_id]
+        for (resource_id, _), amount in occupied.items()
+    )
+    selected_variables = tuple(ordered_variables[index] for index in selected)
+    return RoundedPlan(
+        selected_indices=tuple(selected),
+        selected_variable_ids=tuple(
+            variable.variable_id for variable in selected_variables
+        ),
+        completed_request_count=len(selected_variables),
+        expected_completed_request_mass=float(sum(
+            variable.expected_success_probability
+            for variable in selected_variables
+        )),
+        total_completion_latency=float(sum(
+            variable.expected_success_probability
+            * variable.completion_latency
+            for variable in selected_variables
+        )),
+        feasible=feasible,
+    )
 
 
 def _evaluate(
@@ -939,6 +1340,16 @@ def _evaluate(
     feasible: list[float] = []
     final_mse: list[float] = []
     trajectory_mse: list[float] = []
+    teacher_rounded_counts: list[float] = []
+    gnn_rounded_counts: list[float] = []
+    teacher_rounded_mass: list[float] = []
+    gnn_rounded_mass: list[float] = []
+    rounded_mass_ratios: list[float] = []
+    teacher_rounded_latency: list[float] = []
+    gnn_rounded_latency: list[float] = []
+    rounded_jaccard: list[float] = []
+    rounded_request_jaccard: list[float] = []
+    rounded_feasible: list[float] = []
     with torch.no_grad():
         for sample in samples:
             trace = model(
@@ -1007,6 +1418,59 @@ def _evaluate(
             trajectory_mse.append(float(np.mean(
                 (trace - sample.trajectory.points) ** 2
             )))
+            teacher_plan = round_continuous_plan(
+                sample.trajectory.points[-1], sample
+            )
+            gnn_plan = round_continuous_plan(point, sample)
+            teacher_rounded_counts.append(
+                float(teacher_plan.completed_request_count)
+            )
+            gnn_rounded_counts.append(
+                float(gnn_plan.completed_request_count)
+            )
+            teacher_rounded_mass.append(
+                teacher_plan.expected_completed_request_mass
+            )
+            gnn_rounded_mass.append(
+                gnn_plan.expected_completed_request_mass
+            )
+            if teacher_plan.expected_completed_request_mass > 1e-10:
+                rounded_mass_ratios.append(
+                    gnn_plan.expected_completed_request_mass
+                    / teacher_plan.expected_completed_request_mass
+                )
+            teacher_rounded_latency.append(
+                teacher_plan.total_completion_latency
+            )
+            gnn_rounded_latency.append(
+                gnn_plan.total_completion_latency
+            )
+            teacher_indices = set(teacher_plan.selected_indices)
+            gnn_indices = set(gnn_plan.selected_indices)
+            union = teacher_indices | gnn_indices
+            rounded_jaccard.append(
+                1.0
+                if not union
+                else len(teacher_indices & gnn_indices) / len(union)
+            )
+            teacher_requests = {
+                sample.variables[index].request_id
+                for index in teacher_indices
+            }
+            gnn_requests = {
+                sample.variables[index].request_id
+                for index in gnn_indices
+            }
+            request_union = teacher_requests | gnn_requests
+            rounded_request_jaccard.append(
+                1.0
+                if not request_union
+                else len(teacher_requests & gnn_requests)
+                / len(request_union)
+            )
+            rounded_feasible.append(float(
+                teacher_plan.feasible and gnn_plan.feasible
+            ))
     return {
         "samples": len(samples),
         "mean_objective_ratio": float(np.mean(ratios)) if ratios else 0.0,
@@ -1046,6 +1510,44 @@ def _evaluate(
         "mean_trajectory_variable_mse": (
             float(np.mean(trajectory_mse)) if trajectory_mse else 0.0
         ),
+        "mean_teacher_rounded_request_count": (
+            float(np.mean(teacher_rounded_counts))
+            if teacher_rounded_counts else 0.0
+        ),
+        "mean_gnn_rounded_request_count": (
+            float(np.mean(gnn_rounded_counts))
+            if gnn_rounded_counts else 0.0
+        ),
+        "mean_teacher_rounded_expected_mass": (
+            float(np.mean(teacher_rounded_mass))
+            if teacher_rounded_mass else 0.0
+        ),
+        "mean_gnn_rounded_expected_mass": (
+            float(np.mean(gnn_rounded_mass))
+            if gnn_rounded_mass else 0.0
+        ),
+        "mean_gnn_to_teacher_rounded_mass_ratio": (
+            float(np.mean(rounded_mass_ratios))
+            if rounded_mass_ratios else 0.0
+        ),
+        "mean_teacher_rounded_completion_latency": (
+            float(np.mean(teacher_rounded_latency))
+            if teacher_rounded_latency else 0.0
+        ),
+        "mean_gnn_rounded_completion_latency": (
+            float(np.mean(gnn_rounded_latency))
+            if gnn_rounded_latency else 0.0
+        ),
+        "mean_rounded_selection_jaccard": (
+            float(np.mean(rounded_jaccard)) if rounded_jaccard else 0.0
+        ),
+        "mean_rounded_request_jaccard": (
+            float(np.mean(rounded_request_jaccard))
+            if rounded_request_jaccard else 0.0
+        ),
+        "rounded_feasible_rate": (
+            float(np.mean(rounded_feasible)) if rounded_feasible else 0.0
+        ),
     }
 
 
@@ -1055,6 +1557,9 @@ def _mean_supervised_loss(
     *,
     objective_weight: float,
     constraint_weight: float,
+    request_mass_weight: float,
+    request_admission_weight: float,
+    candidate_distribution_weight: float,
 ) -> float:
     if not samples:
         return float("inf")
@@ -1070,6 +1575,9 @@ def _mean_supervised_loss(
                 sample,
                 objective_weight=objective_weight,
                 constraint_weight=constraint_weight,
+                request_mass_weight=request_mass_weight,
+                request_admission_weight=request_admission_weight,
+                candidate_distribution_weight=candidate_distribution_weight,
             )
             value = float(loss.detach().cpu())
             if not np.isfinite(value):
@@ -1117,9 +1625,9 @@ def _save_checkpoint(
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save({
-        "schema_version": 1,
+        "schema_version": 3,
         "model_class": "TELGENPaperGNN",
-        "method": "paper_aligned_ipm_trajectory",
+        "method": "ipm_trajectory_with_shared_rounding",
         "telgen_reference_commit": TELGEN_REFERENCE_COMMIT,
         "model_config": {
             "hidden_dim": model.hidden_dim,
@@ -1129,6 +1637,7 @@ def _save_checkpoint(
             "normalization": model.normalization,
             "dropout": model.dropout,
         },
+        "inference_steps": int(report["ipm_steps"]),
         "state_dict": {
             key: value.detach().cpu().clone()
             for key, value in model.state_dict().items()
@@ -1136,7 +1645,13 @@ def _save_checkpoint(
         "training_protocol": report["data_protocol"],
         "best_epoch": report["best_epoch"],
         "best_validation_loss": report["best_validation_loss"],
-        "decoder": None,
+        "decoder": {
+            "name": "shared_capacity_safe_rounding",
+            "admission_threshold": 0.5,
+            "admission_mass": "unscaled request mass",
+            "candidate_ranking": "feasible-prefix-scaled candidate value",
+            "teacher_and_gnn_share_decoder": True,
+        },
     }, path)
 
 
@@ -1162,6 +1677,9 @@ def run_pilot(
     inner_layers: int = 2,
     objective_weight: float = 3.43,
     constraint_weight: float = 5.8,
+    request_mass_weight: float = 2.0,
+    request_admission_weight: float = 2.0,
+    candidate_distribution_weight: float = 0.5,
     learning_rate: float = 1e-5,
     weight_decay: float = 0.0,
     message_mlp_layers: int = 4,
@@ -1173,6 +1691,8 @@ def run_pilot(
     cross_topology: str | None = "barabasi_albert",
     cross_nodes: int | Sequence[int] | None = None,
     cross_samples: int | None = None,
+    train_endpoint_mode: str = "uniform_random",
+    test_endpoint_mode: str | None = None,
     request_count: int = 3,
     horizon: int = 6,
     path_count: int = 2,
@@ -1210,11 +1730,18 @@ def run_pilot(
         raise ValueError("validation_samples/patience must be positive")
     if min_delta < 0.0:
         raise ValueError("min_delta must be non-negative")
-    if objective_weight < 0.0 or constraint_weight < 0.0:
+    if (
+        objective_weight < 0.0
+        or constraint_weight < 0.0
+        or request_mass_weight < 0.0
+        or request_admission_weight < 0.0
+        or candidate_distribution_weight < 0.0
+    ):
         raise ValueError("loss weights must be non-negative")
     if learning_rate <= 0.0 or weight_decay < 0.0:
         raise ValueError("optimizer configuration is invalid")
     resolved_test_topology = test_topology or train_topology
+    resolved_test_endpoint_mode = test_endpoint_mode or train_endpoint_mode
     resolved_cross_nodes = cross_nodes or test_nodes
     resolved_cross_samples = test_samples if cross_samples is None else cross_samples
     resolved_data_seed = seed if data_seed is None else int(data_seed)
@@ -1224,7 +1751,7 @@ def run_pilot(
     started_at = time.perf_counter()
     data_started_at = time.perf_counter()
     cache_contract = {
-        "schema_version": 1,
+        "schema_version": 2,
         "data_seed": resolved_data_seed,
         "train_samples": train_samples,
         "validation_samples": validation_samples,
@@ -1233,8 +1760,10 @@ def run_pilot(
             resolved_cross_samples if cross_topology is not None else 0
         ),
         "train_topology": train_topology,
+        "train_endpoint_mode": train_endpoint_mode,
         "train_nodes": list(_as_node_counts(train_nodes)),
         "test_topology": resolved_test_topology,
+        "test_endpoint_mode": resolved_test_endpoint_mode,
         "test_nodes": list(_as_node_counts(test_nodes)),
         "cross_topology": cross_topology,
         "cross_nodes": (
@@ -1251,8 +1780,7 @@ def run_pilot(
     cache_loaded = False
     if dataset_cache_path is not None and dataset_cache_path.is_file():
         print(f"loading IPM teacher cache: {dataset_cache_path}", flush=True)
-        with dataset_cache_path.open("rb") as handle:
-            cached = pickle.load(handle)
+        cached = _load_pilot_cache(dataset_cache_path)
         if not isinstance(cached, dict) or cached.get("contract") != cache_contract:
             raise ValueError("IPM teacher cache does not match this run")
         train = tuple(cached["train"])
@@ -1280,6 +1808,7 @@ def run_pilot(
             path_count=path_count,
             construction_plan_count=construction_plan_count,
             outer_steps=ipm_steps,
+            endpoint_mode=train_endpoint_mode,
         )
         validation = make_samples(
             topology=train_topology,
@@ -1293,6 +1822,7 @@ def run_pilot(
             path_count=path_count,
             construction_plan_count=construction_plan_count,
             outer_steps=ipm_steps,
+            endpoint_mode=train_endpoint_mode,
         )
         same_family_test = make_samples(
             topology=resolved_test_topology,
@@ -1306,6 +1836,7 @@ def run_pilot(
             path_count=path_count,
             construction_plan_count=construction_plan_count,
             outer_steps=ipm_steps,
+            endpoint_mode=resolved_test_endpoint_mode,
         )
         cross_family_test = (
             make_samples(
@@ -1320,6 +1851,7 @@ def run_pilot(
                 path_count=path_count,
                 construction_plan_count=construction_plan_count,
                 outer_steps=ipm_steps,
+                endpoint_mode=resolved_test_endpoint_mode,
             )
             if cross_topology is not None
             else ()
@@ -1388,6 +1920,9 @@ def run_pilot(
                 sample,
                 objective_weight=objective_weight,
                 constraint_weight=constraint_weight,
+                request_mass_weight=request_mass_weight,
+                request_admission_weight=request_admission_weight,
+                candidate_distribution_weight=candidate_distribution_weight,
             )
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -1398,6 +1933,9 @@ def run_pilot(
             validation,
             objective_weight=objective_weight,
             constraint_weight=constraint_weight,
+            request_mass_weight=request_mass_weight,
+            request_admission_weight=request_admission_weight,
+            candidate_distribution_weight=candidate_distribution_weight,
         )
         if validation_loss < best_validation_loss - min_delta:
             best_validation_loss = validation_loss
@@ -1446,7 +1984,7 @@ def run_pilot(
         ),
     }
     report: dict[str, object] = {
-        "method": "TELGEN paper-aligned IPM-trajectory GNN adaptation",
+        "method": "TELGEN IPM-trajectory GNN with shared rounding",
         "reference": {
             "paper": TELGEN_REFERENCE_PAPER,
             "official_repository": "https://github.com/aelitazhou/TELGEN",
@@ -1461,9 +1999,25 @@ def run_pilot(
             "inner_loop": f"{inner_layers} shared GCN layers per outer step",
             "node_features": "row/column/objective mean and standard deviation",
             "edge_features": "A, c, and b coefficients",
-            "loss": "discounted primal + objective-gap + normalized constraint violation",
-            "readout": "ReLU non-negative continuous primal",
-            "decoder": None,
+            "loss": (
+                "discounted primal + objective-gap + normalized constraint "
+                "violation + request mass + request admission + "
+                "within-request distribution"
+            ),
+            "readout": (
+                "request admission sigmoid times within-request normalized "
+                "candidate softplus weights"
+            ),
+            "request_uniqueness": (
+                "satisfied structurally at every learned IPM iteration"
+            ),
+            "decoder": {
+                "name": "shared_capacity_safe_rounding",
+                "admission_threshold": 0.5,
+                "admission_mass": "unscaled request mass",
+                "candidate_ranking": "feasible-prefix-scaled candidate value",
+                "teacher_and_gnn_share_decoder": True,
+            },
         },
         "quantum_adaptation": {
             "variable": "request + path + swap tree + start slot candidate",
@@ -1481,7 +2035,8 @@ def run_pilot(
                 "additional stress test; not guaranteed by the original paper"
             ),
             "discrete_quantum_schedule": (
-                "not produced; the model learns a continuous LP relaxation"
+                "produced by the same deterministic capacity-safe rounding "
+                "for the IPM teacher and GNN output"
             ),
             "official_replication": (
                 "algorithmically aligned adaptation, not byte-for-byte reproduction"
@@ -1493,10 +2048,12 @@ def run_pilot(
             else "one topology family with multiple independent graphs and scales"
         ),
         "train_topology": train_topology,
+        "train_endpoint_mode": train_endpoint_mode,
         "seed": seed,
         "data_seed": resolved_data_seed,
         "train_nodes": list(_as_node_counts(train_nodes)),
         "test_topology": resolved_test_topology,
+        "test_endpoint_mode": resolved_test_endpoint_mode,
         "test_nodes": list(_as_node_counts(test_nodes)),
         "cross_topology": cross_topology,
         "cross_nodes": (
@@ -1530,6 +2087,9 @@ def run_pilot(
         "prediction_layers": prediction_layers,
         "objective_weight": objective_weight,
         "constraint_weight": constraint_weight,
+        "request_mass_weight": request_mass_weight,
+        "request_admission_weight": request_admission_weight,
+        "candidate_distribution_weight": candidate_distribution_weight,
         "learning_rate": learning_rate,
         "weight_decay": weight_decay,
         "device": str(resolved_device),
@@ -1588,15 +2148,31 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--inner-layers", type=int, default=2)
     parser.add_argument("--objective-weight", type=float, default=3.43)
     parser.add_argument("--constraint-weight", type=float, default=5.8)
+    parser.add_argument("--request-mass-weight", type=float, default=2.0)
+    parser.add_argument(
+        "--request-admission-weight", type=float, default=2.0
+    )
+    parser.add_argument(
+        "--candidate-distribution-weight", type=float, default=0.5
+    )
     parser.add_argument("--learning-rate", type=float, default=1e-5)
     parser.add_argument("--weight-decay", type=float, default=0.0)
     parser.add_argument("--message-mlp-layers", type=int, default=4)
     parser.add_argument("--prediction-layers", type=int, default=4)
     parser.add_argument("--train-topology", type=str, default="waxman")
     parser.add_argument(
+        "--train-endpoint-mode",
+        choices=("uniform_random", "cut_hotspot"),
+        default="uniform_random",
+    )
+    parser.add_argument(
         "--train-nodes", type=int, nargs="+", default=[10, 12, 14]
     )
     parser.add_argument("--test-topology", type=str, default="waxman")
+    parser.add_argument(
+        "--test-endpoint-mode",
+        choices=("uniform_random", "cut_hotspot"),
+    )
     parser.add_argument(
         "--test-nodes", type=int, nargs="+", default=[18, 20]
     )
@@ -1649,13 +2225,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         inner_layers=args.inner_layers,
         objective_weight=args.objective_weight,
         constraint_weight=args.constraint_weight,
+        request_mass_weight=args.request_mass_weight,
+        request_admission_weight=args.request_admission_weight,
+        candidate_distribution_weight=args.candidate_distribution_weight,
         learning_rate=args.learning_rate,
         weight_decay=args.weight_decay,
         message_mlp_layers=args.message_mlp_layers,
         prediction_layers=args.prediction_layers,
         train_topology=args.train_topology,
+        train_endpoint_mode=args.train_endpoint_mode,
         train_nodes=args.train_nodes,
         test_topology=args.test_topology,
+        test_endpoint_mode=args.test_endpoint_mode,
         test_nodes=args.test_nodes,
         cross_topology=cross_topology,
         cross_nodes=args.cross_nodes,
