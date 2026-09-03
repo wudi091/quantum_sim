@@ -1143,6 +1143,7 @@ def _sample_loss(
 class RoundedPlan:
     """One executable integer plan produced from a continuous primal."""
 
+    selected_variables: tuple[TimeExpandedCandidate, ...]
     selected_indices: tuple[int, ...]
     selected_variable_ids: tuple[str, ...]
     completed_request_count: int
@@ -1304,6 +1305,7 @@ def round_candidate_scores(
     )
     selected_variables = tuple(ordered_variables[index] for index in selected)
     return RoundedPlan(
+        selected_variables=selected_variables,
         selected_indices=tuple(selected),
         selected_variable_ids=tuple(
             variable.variable_id for variable in selected_variables

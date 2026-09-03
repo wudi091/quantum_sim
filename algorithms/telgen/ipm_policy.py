@@ -11,11 +11,11 @@ import numpy as np
 import torch
 
 from .ipm_trajectory_pilot import (
+    RoundedPlan,
     TELGENPaperGNN,
     build_ipm_graph,
     round_candidate_scores,
 )
-from .milp_imitation import AutoregressiveSelection
 from .optimization_model import build_stage_one_model
 from .time_expansion import TimeExpandedCandidate
 
@@ -23,7 +23,7 @@ from .time_expansion import TimeExpandedCandidate
 @dataclass(frozen=True)
 class OnlineIPMDecision:
     continuous_primal: np.ndarray
-    selection: AutoregressiveSelection
+    selection: RoundedPlan
     inference_seconds: float
     invalid_action_index: int | None = None
     invalid_action_reason: str | None = None
@@ -152,14 +152,11 @@ class OnlineIPMGNNPolicy:
             variables, capacities, reservations
         )
         if not feasible_variables:
-            selection = AutoregressiveSelection(
-                selected_variables=(),
-                selected_indices=(),
-                selected_variable_ids=(),
-                feasible=True,
-                stopped=True,
-                action_count=0,
-                total_completion_latency=0.0,
+            selection = round_candidate_scores(
+                np.zeros(0, dtype=np.float32),
+                (),
+                capacities,
+                reserved_usage=reservations,
             )
             return OnlineIPMDecision(
                 continuous_primal=np.zeros(0, dtype=np.float32),
@@ -181,21 +178,9 @@ class OnlineIPMGNNPolicy:
             capacities,
             reserved_usage=reservations,
         )
-        selected_variables = tuple(
-            feasible_variables[index] for index in rounded.selected_indices
-        )
-        selection = AutoregressiveSelection(
-            selected_variables=selected_variables,
-            selected_indices=rounded.selected_indices,
-            selected_variable_ids=rounded.selected_variable_ids,
-            feasible=rounded.feasible,
-            stopped=True,
-            action_count=len(selected_variables),
-            total_completion_latency=rounded.total_completion_latency,
-        )
         return OnlineIPMDecision(
             continuous_primal=np.asarray(primal, dtype=np.float32),
-            selection=selection,
+            selection=rounded,
             inference_seconds=perf_counter() - started,
         )
 
