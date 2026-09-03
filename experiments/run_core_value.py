@@ -68,8 +68,17 @@ def _load_model(
     )
     if not isinstance(checkpoint, Mapping):
         raise ValueError("checkpoint must contain a mapping")
+    if checkpoint.get("schema_version") != 4:
+        raise ValueError(
+            "checkpoint does not use the single-stage delay objective; "
+            "retrain the IPM-GNN model"
+        )
     if checkpoint.get("model_class") != "TELGENPaperGNN":
         raise ValueError("checkpoint is not a TELGENPaperGNN checkpoint")
+    if checkpoint.get("objective") != "expected_censored_completion_latency":
+        raise ValueError(
+            "checkpoint is missing the single-stage delay objective"
+        )
     config = checkpoint.get("model_config")
     if not isinstance(config, Mapping):
         raise ValueError("checkpoint is missing model_config")
@@ -156,7 +165,10 @@ def _offline_case(
         "contract": {
             "checkpoint_frozen": True,
             "trained_and_untrained_share_samples": True,
-            "teacher": "SciPy interior-point LP trajectory",
+            "teacher": (
+                "SciPy interior-point trajectory of the single-stage "
+                "expected censored delay LP"
+            ),
             "physical_execution": False,
         },
         "trained": trained_metrics,

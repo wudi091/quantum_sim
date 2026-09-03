@@ -1,4 +1,4 @@
-"""Exact two-stage binary teacher for construction-aware planning."""
+"""Exact binary teacher for the single-stage construction-aware LP."""
 
 from __future__ import annotations
 
@@ -10,9 +10,9 @@ import numpy as np
 from scipy.optimize import Bounds, LinearConstraint, milp
 
 from .optimization_model import (
-    PackingModelStage,
-    build_stage_one_model,
-    build_stage_two_model,
+    PackingModel,
+    build_delay_model,
+    evaluate_expected_censored_delay,
 )
 from .time_expansion import TimeExpandedCandidate, TimeExpansionResult
 
@@ -23,16 +23,15 @@ from .time_expansion import TimeExpandedCandidate, TimeExpansionResult
 # solutions that HiGHS has certified optimal up to numerical roundoff.
 NUMERICAL_ZERO_MIP_GAP_TOLERANCE = 1e-7
 DEFAULT_MILP_INTEGRALITY_TOLERANCE = 1e-6
-# HiGHS may round a certified optimal primal/dual pair slightly apart.  Require
-# agreement at the same relative scale as the accepted numerical MIP gap and
-# retain a small absolute floor for objectives close to zero.
 NUMERICAL_OBJECTIVE_ABSOLUTE_TOLERANCE = 1e-6
 NUMERICAL_OBJECTIVE_RELATIVE_TOLERANCE = 1e-7
 
 
 @dataclass(frozen=True)
-class DiscreteStageResult:
-    stage_name: str
+class DiscreteSolveResult:
+    """One certified HiGHS binary solve result."""
+
+    solve_name: str
     success: bool
     status: int
     message: str
@@ -45,11 +44,11 @@ class DiscreteStageResult:
 
 @dataclass(frozen=True)
 class DiscreteOracleSolution:
+    """Result of one exact binary solve using the delay objective."""
+
     variables: tuple[TimeExpandedCandidate, ...]
-    stage_one_model: PackingModelStage
-    stage_two_model: PackingModelStage
-    stage_one: DiscreteStageResult
-    stage_two: DiscreteStageResult
+    model: PackingModel
+    result: DiscreteSolveResult
     completed_request_count: int
     expected_completed_request_mass: float
     total_completion_latency: float
@@ -58,17 +57,22 @@ class DiscreteOracleSolution:
     def final_values(self) -> dict[str, int]:
         return {
             variable.variable_id: int(round(value))
-            for variable, value in zip(self.variables, self.stage_two.primal)
+            for variable, value in zip(self.variables, self.result.primal)
         }
 
     @property
     def selected_variables(self) -> tuple[TimeExpandedCandidate, ...]:
         return tuple(
             variable
-            for variable, value in zip(self.variables, self.stage_two.primal)
+            for variable, value in zip(self.variables, self.result.primal)
             if value > 0.5
         )
 
+    @property
+    def reduced_objective_value(self) -> float:
+        """The solver objective without the request-censoring constant."""
+
+        return float(self.result.objective_value)
 
 class DiscreteOracleSolveError(RuntimeError):
     """Raised when the exact MILP teacher does not return a valid solution."""
@@ -89,18 +93,18 @@ def has_numerically_zero_mip_gap(
     return math.isfinite(value) and abs(value) <= tolerance
 
 
-def is_numerically_optimal_stage(stage: DiscreteStageResult) -> bool:
-    """Certify an optimal HiGHS stage up to floating-point gap tolerance."""
+def is_numerically_optimal_result(result: DiscreteSolveResult) -> bool:
+    """Certify one optimal HiGHS result up to floating-point gap tolerance."""
 
     return (
-        stage.success
-        and stage.status == 0
-        and has_numerically_zero_mip_gap(stage.mip_gap)
-        and stage.mip_dual_bound is not None
-        and math.isfinite(float(stage.mip_dual_bound))
+        result.success
+        and result.status == 0
+        and has_numerically_zero_mip_gap(result.mip_gap)
+        and result.mip_dual_bound is not None
+        and math.isfinite(float(result.mip_dual_bound))
         and math.isclose(
-            stage.objective_value,
-            float(stage.mip_dual_bound),
+            result.objective_value,
+            float(result.mip_dual_bound),
             rel_tol=NUMERICAL_OBJECTIVE_RELATIVE_TOLERANCE,
             abs_tol=NUMERICAL_OBJECTIVE_ABSOLUTE_TOLERANCE,
         )
@@ -108,7 +112,7 @@ def is_numerically_optimal_stage(stage: DiscreteStageResult) -> bool:
 
 
 def _constraints_for(
-    model: PackingModelStage,
+    model: PackingModel,
 ) -> tuple[LinearConstraint, ...]:
     constraints: list[LinearConstraint] = []
     if len(model.b_ub):
@@ -126,7 +130,7 @@ def _constraints_for(
     return tuple(constraints)
 
 
-def _max_violation(model: PackingModelStage, primal: np.ndarray) -> float:
+def _max_violation(model: PackingModel, primal: np.ndarray) -> float:
     violations = [0.0]
     if len(model.b_ub):
         violations.append(float(np.max(
@@ -144,7 +148,7 @@ def _max_violation(model: PackingModelStage, primal: np.ndarray) -> float:
 
 
 class ConstructionAwareMILPOracle:
-    """Solve the lexicographic construction-aware packing MILP exactly."""
+    """Solve the single construction-aware binary delay model exactly."""
 
     def __init__(
         self,
@@ -168,21 +172,22 @@ class ConstructionAwareMILPOracle:
         self.feasibility_tolerance = float(feasibility_tolerance)
 
     @staticmethod
-    def _trivial_result(model: PackingModelStage) -> DiscreteStageResult:
+    def _trivial_result(model: PackingModel) -> DiscreteSolveResult:
         primal = np.zeros(len(model.variable_ids), dtype=float)
-        return DiscreteStageResult(
-            stage_name=model.name,
+        objective = float(model.objective @ primal)
+        return DiscreteSolveResult(
+            solve_name=model.name,
             success=True,
             status=0,
             message="trivial feasible MILP",
             primal=primal,
-            objective_value=float(model.objective @ primal),
+            objective_value=objective,
             mip_gap=0.0,
             mip_node_count=0,
-            mip_dual_bound=float(model.objective @ primal),
+            mip_dual_bound=objective,
         )
 
-    def _solve_stage(self, model: PackingModelStage) -> DiscreteStageResult:
+    def _solve_model(self, model: PackingModel) -> DiscreteSolveResult:
         variable_count = len(model.variable_ids)
         if variable_count == 0:
             return self._trivial_result(model)
@@ -222,8 +227,8 @@ class ConstructionAwareMILPOracle:
                 f"{model.name} returned an infeasible incumbent: "
                 f"violation={violation}"
             )
-        return DiscreteStageResult(
-            stage_name=model.name,
+        return DiscreteSolveResult(
+            solve_name=model.name,
             success=True,
             status=int(result.status),
             message=str(result.message),
@@ -249,7 +254,10 @@ class ConstructionAwareMILPOracle:
         resource_capacities: Mapping[str, int],
         *,
         reserved_usage: Mapping[tuple[str, int], int] | None = None,
+        request_censoring_latencies: Mapping[str, float] | None = None,
     ) -> DiscreteOracleSolution:
+        """Solve one binary model with the shared expected-delay objective."""
+
         raw_variables = (
             expanded.variables
             if isinstance(expanded, TimeExpansionResult)
@@ -259,44 +267,48 @@ class ConstructionAwareMILPOracle:
             raw_variables,
             key=lambda item: item.variable_id,
         ))
-        stage_one_model = build_stage_one_model(
+        model = build_delay_model(
             variables,
             resource_capacities,
             reserved_usage,
+            request_censoring_latencies=request_censoring_latencies,
         )
-        stage_one = self._solve_stage(stage_one_model)
+        result = self._solve_model(model)
         success_probabilities = np.asarray(
             [item.expected_success_probability for item in variables],
             dtype=float,
         )
+        selected = result.primal > 0.5
         expected_completed_mass = float(
-            success_probabilities @ stage_one.primal
+            success_probabilities @ selected.astype(float)
         )
-        stage_two_model = build_stage_two_model(
-            variables,
-            resource_capacities,
-            expected_completed_mass,
-            reserved_usage,
-        )
-        stage_two = self._solve_stage(stage_two_model)
-        final_expected_mass = float(success_probabilities @ stage_two.primal)
-        if (
-            abs(final_expected_mass - expected_completed_mass)
-            > self.feasibility_tolerance
-        ):
+        final_count = int(np.sum(selected))
+        total_delay = evaluate_expected_censored_delay(model, result.primal)
+        # Tiny negative values can only be floating-point roundoff when a
+        # candidate reaches its censoring boundary exactly.
+        if total_delay < 0.0 and total_delay > -self.feasibility_tolerance:
+            total_delay = 0.0
+        if total_delay < 0.0:
             raise DiscreteOracleSolveError(
-                "second-stage MILP did not preserve optimal expected throughput"
+                f"{model.name} produced a negative expected delay: {total_delay}"
             )
-        final_count = int(round(float(np.sum(stage_two.primal))))
         return DiscreteOracleSolution(
             variables=variables,
-            stage_one_model=stage_one_model,
-            stage_two_model=stage_two_model,
-            stage_one=stage_one,
-            stage_two=stage_two,
+            model=model,
+            result=result,
             completed_request_count=final_count,
-            expected_completed_request_mass=final_expected_mass,
-            total_completion_latency=float(
-                stage_two_model.objective @ stage_two.primal
-            ),
+            expected_completed_request_mass=expected_completed_mass,
+            total_completion_latency=total_delay,
         )
+
+
+__all__ = [
+    "ConstructionAwareMILPOracle",
+    "DEFAULT_MILP_INTEGRALITY_TOLERANCE",
+    "DiscreteOracleSolution",
+    "DiscreteOracleSolveError",
+    "DiscreteSolveResult",
+    "NUMERICAL_ZERO_MIP_GAP_TOLERANCE",
+    "has_numerically_zero_mip_gap",
+    "is_numerically_optimal_result",
+]

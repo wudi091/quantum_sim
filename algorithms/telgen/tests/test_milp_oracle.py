@@ -1,16 +1,17 @@
 import unittest
+from dataclasses import replace
 
 import numpy as np
 
 from algorithms.telgen import (
     ConstructionAwareMILPOracle,
-    DiscreteStageResult,
+    DiscreteSolveResult,
     NominalConstructionSchedule,
     ResourceSlotUsage,
     TimeExpandedCandidate,
     expand_construction_candidates,
     has_numerically_zero_mip_gap,
-    is_numerically_optimal_stage,
+    is_numerically_optimal_result,
 )
 from qnet_core.construction_catalog import build_route_construction_catalogue
 from qnet_core.planning_spec import PlanningSpec, RequestSpec
@@ -65,8 +66,8 @@ class MILPOracleTests(unittest.TestCase):
         self.assertTrue(has_numerically_zero_mip_gap(2.519004916667029e-8))
         self.assertFalse(has_numerically_zero_mip_gap(1e-6))
         self.assertFalse(has_numerically_zero_mip_gap(None))
-        stage = DiscreteStageResult(
-            stage_name="test",
+        result = DiscreteSolveResult(
+            solve_name="test",
             success=True,
             status=0,
             message="optimal",
@@ -76,20 +77,20 @@ class MILPOracleTests(unittest.TestCase):
             mip_node_count=0,
             mip_dual_bound=1.0 + 3e-14,
         )
-        self.assertTrue(is_numerically_optimal_stage(stage))
-        self.assertFalse(is_numerically_optimal_stage(DiscreteStageResult(
+        self.assertTrue(is_numerically_optimal_result(result))
+        self.assertFalse(is_numerically_optimal_result(DiscreteSolveResult(
             **{
-                **stage.__dict__,
-                "mip_dual_bound": stage.objective_value + 1e-4,
+                **result.__dict__,
+                "mip_dual_bound": result.objective_value + 1e-4,
             }
         )))
-        self.assertFalse(is_numerically_optimal_stage(DiscreteStageResult(
-            **{**stage.__dict__, "status": 1, "message": "time limit"}
+        self.assertFalse(is_numerically_optimal_result(DiscreteSolveResult(
+            **{**result.__dict__, "status": 1, "message": "time limit"}
         )))
 
     def test_numerical_certification_accepts_highs_optimal_roundoff(self):
-        stage = DiscreteStageResult(
-            stage_name="minimize_expected_completion_latency",
+        result = DiscreteSolveResult(
+            solve_name="minimize_expected_censored_completion_latency",
             success=True,
             status=0,
             message="Optimization terminated successfully. (HiGHS Status 7: Optimal)",
@@ -99,7 +100,7 @@ class MILPOracleTests(unittest.TestCase):
             mip_node_count=0,
             mip_dual_bound=33.741618350046814,
         )
-        self.assertTrue(is_numerically_optimal_stage(stage))
+        self.assertTrue(is_numerically_optimal_result(result))
 
     def test_triangle_set_packing_selects_one_feasible_request(self):
         bases = three_request_bases()
@@ -111,6 +112,11 @@ class MILPOracleTests(unittest.TestCase):
         solution = ConstructionAwareMILPOracle().solve(
             variables,
             {"a": 1, "b": 1, "c": 1},
+            request_censoring_latencies={
+                "r0": 2.0,
+                "r1": 2.0,
+                "r2": 2.0,
+            },
         )
         self.assertEqual(solution.completed_request_count, 1)
         self.assertEqual(len(solution.selected_variables), 1)
@@ -148,6 +154,7 @@ class MILPOracleTests(unittest.TestCase):
         solution = ConstructionAwareMILPOracle().solve(
             expansion,
             capacities,
+            request_censoring_latencies={"r0": 2.0, "r1": 2.0},
         )
         self.assertEqual(solution.completed_request_count, 1)
         self.assertEqual(len(solution.selected_variables), 1)
@@ -162,14 +169,61 @@ class MILPOracleTests(unittest.TestCase):
             variables,
             {"shared": 2},
             reserved_usage={("shared", 0): 1},
+            request_censoring_latencies={"r0": 2.0, "r1": 2.0},
         )
         self.assertEqual(solution.completed_request_count, 1)
         resource_row = next(
             descriptor
-            for descriptor in solution.stage_one_model.ub_constraints
+            for descriptor in solution.model.ub_constraints
             if descriptor.kind == "resource_time"
         )
         self.assertEqual(resource_row.rhs, 1.0)
+
+    def test_oracle_exposes_one_solve_and_actual_censored_delay(self):
+        bases = three_request_bases()
+        variables = (
+            manual_variable(bases["r0"], ("a",)),
+            manual_variable(bases["r1"], ("b",)),
+        )
+        solution = ConstructionAwareMILPOracle().solve(
+            variables,
+            {"a": 1, "b": 1},
+            request_censoring_latencies={"r0": 4.0, "r1": 4.0},
+        )
+        self.assertEqual(solution.result.solve_name,
+                         "minimize_expected_censored_completion_latency")
+        self.assertEqual(solution.completed_request_count, 2)
+        self.assertAlmostEqual(solution.total_completion_latency, 2.0)
+        self.assertEqual(
+            set(solution.__dataclass_fields__),
+            {
+                "variables",
+                "model",
+                "result",
+                "completed_request_count",
+                "expected_completed_request_mass",
+                "total_completion_latency",
+            },
+        )
+
+    def test_delay_objective_prefers_earlier_completion_under_conflict(self):
+        bases = three_request_bases()
+        early = manual_variable(bases["r0"], ("shared",))
+        late = replace(
+            manual_variable(bases["r1"], ("shared",)),
+            completion_slot=3,
+            completion_latency=3,
+        )
+        solution = ConstructionAwareMILPOracle().solve(
+            (early, late),
+            {"shared": 1},
+            request_censoring_latencies={"r0": 5.0, "r1": 5.0},
+        )
+        self.assertEqual(
+            {variable.request_id for variable in solution.selected_variables},
+            {"r0"},
+        )
+        self.assertAlmostEqual(solution.total_completion_latency, 6.0)
 
 
 if __name__ == "__main__":

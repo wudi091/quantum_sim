@@ -139,7 +139,7 @@ def normalize_reserved_usage(
 
     Online replanning keeps the ordinary ``resource_id -> capacity`` mapping
     unchanged and supplies already committed usage separately.  This helper
-    is shared by expansion, MILP assembly, autoregressive feasibility masking,
+    is shared by expansion, LP/MILP assembly, IPM-GNN inference,
     and physical-plan compilation so every layer applies the same residual-
     capacity semantics.
     """

@@ -12,10 +12,10 @@ from .milp_oracle import (
     DEFAULT_MILP_INTEGRALITY_TOLERANCE,
     DiscreteOracleSolution,
     DiscreteOracleSolveError,
-    DiscreteStageResult,
+    DiscreteSolveResult,
     NUMERICAL_ZERO_MIP_GAP_TOLERANCE,
     has_numerically_zero_mip_gap,
-    is_numerically_optimal_stage,
+    is_numerically_optimal_result,
 )
 from .online import (
     OnlineDecisionRecord,
@@ -27,9 +27,9 @@ from .online import (
 )
 from .optimization_model import (
     ConstraintDescriptor,
-    PackingModelStage,
-    build_stage_one_model,
-    build_stage_two_model,
+    PackingModel,
+    build_delay_model,
+    evaluate_expected_censored_delay,
 )
 from .packing import (
     PackingFeasibility,

@@ -1,8 +1,7 @@
 """Paper-aligned TELGEN IPM-trajectory pilot for the quantum planning LP.
 
-This module is deliberately isolated from the production autoregressive
-planner.  It adapts the algorithmic recipe in TELGEN to the simulator-neutral
-quantum planning LP:
+This module adapts the algorithmic recipe in TELGEN to the simulator-neutral
+single-stage quantum planning LP:
 
 * one time-expanded path/construction/start candidate is one LP variable;
 * request and resource-time rows are inequality-constraint vertices;
@@ -41,7 +40,7 @@ from pathlib import Path
 import pickle
 import random
 import time
-from typing import Iterable, Sequence
+from typing import Iterable, Mapping, Sequence
 import warnings
 
 import networkx as nx
@@ -56,7 +55,7 @@ from qnet_core.scenario import ScenarioConfig, make_episode
 from qnet_core.spec import EpisodeSpec, PhysicalConfig
 
 from .dataset import build_planning_batch_problem
-from .optimization_model import PackingModelStage, build_stage_one_model
+from .optimization_model import PackingModel, build_delay_model
 from .time_expansion import TimeExpandedCandidate
 
 
@@ -71,10 +70,12 @@ TELGEN_REFERENCE_PAPER = (
 class IPMGraph:
     """Tripartite LP graph in the feature convention used by TELGEN.
 
-    ``objective`` stores SciPy's minimization coefficients.  The quantum
-    stage-one model is a maximization problem, so these coefficients are
-    non-positive after converting it to minimization.  They are normalized by
-    their largest absolute value exactly as in the official data pipeline.
+    ``objective`` stores the normalized reduced coefficients of the
+    single-stage expected-delay minimization LP.  They are generally
+    non-positive because selecting an on-time candidate reduces the censoring
+    penalty.  The request-censoring constant is kept separately for reporting
+    the absolute expected delay; ``objective_scale`` records the normalization
+    applied to the reduced coefficients.
     """
 
     variable_features: np.ndarray
@@ -89,6 +90,15 @@ class IPMGraph:
     rhs: np.ndarray
     objective: np.ndarray
     variable_upper_bound: float = 1.0
+    objective_scale: float = 1.0
+    objective_constant: float = 0.0
+    request_censoring_latencies: tuple[tuple[str, float], ...] = ()
+
+    @property
+    def normalized_objective_constant(self) -> float:
+        """Constant expressed in the same scale as ``objective``."""
+
+        return float(self.objective_constant) / max(float(self.objective_scale), 1e-12)
 
 
 @dataclass(frozen=True)
@@ -103,6 +113,13 @@ class IPMTrajectory:
     lp_optimum: float
     solver_iterations: int
     solver_status: int
+    objective_constant: float = 0.0
+
+    @property
+    def total_lp_optimum(self) -> float:
+        """Return the full normalized objective including the constant."""
+
+        return float(self.objective_constant) + float(self.lp_optimum)
 
 
 @dataclass(frozen=True)
@@ -206,6 +223,7 @@ def solve_scipy_ipm_trajectory(
     outer_steps: int = 16,
     tolerance: float = 1e-9,
     max_iterations: int = 1000,
+    objective_constant: float = 0.0,
 ) -> IPMTrajectory:
     """Solve the bounded LP and record SciPy interior-point primal iterates.
 
@@ -228,6 +246,8 @@ def solve_scipy_ipm_trajectory(
         raise ValueError("LP objective must be finite")
     if outer_steps < 1 or max_iterations < 1 or tolerance <= 0.0:
         raise ValueError("invalid IPM trajectory configuration")
+    if not np.isfinite(objective_constant) or objective_constant < 0.0:
+        raise ValueError("objective_constant must be finite and non-negative")
 
     callbacks: list[np.ndarray] = []
 
@@ -293,11 +313,12 @@ def solve_scipy_ipm_trajectory(
         lp_optimum=float(result.fun),
         solver_iterations=int(result.nit),
         solver_status=int(result.status),
+        objective_constant=float(objective_constant),
     )
 
 
 def build_ipm_graph(
-    model: PackingModelStage,
+    model: PackingModel,
     variables: Sequence[object],
     horizon: int,
 ) -> IPMGraph:
@@ -365,6 +386,11 @@ def build_ipm_graph(
         rhs=rhs,
         objective=objective,
         variable_upper_bound=1.0,
+        objective_scale=float(objective_scale),
+        objective_constant=float(model.objective_constant),
+        request_censoring_latencies=tuple(
+            model.request_censoring_latencies
+        ),
     )
 
 
@@ -542,13 +568,20 @@ def make_samples(
         attempt += 1
         if not variables:
             continue
-        model = build_stage_one_model(variables, problem.capacities)
+        model = build_delay_model(
+            variables,
+            problem.capacities,
+            request_censoring_latencies=(
+                problem.request_censoring_latency_map
+            ),
+        )
         graph = build_ipm_graph(model, variables, episode.horizon)
         trajectory = solve_scipy_ipm_trajectory(
             graph.matrix,
             graph.rhs,
             graph.objective,
             outer_steps=outer_steps,
+            objective_constant=graph.normalized_objective_constant,
         )
         samples.append(PilotSample(
             graph=graph,
@@ -873,7 +906,7 @@ class TELGENPaperGNN(nn.Module):
     ) -> tuple[tuple[torch.Tensor, ...], torch.Tensor, torch.Tensor]:
         """Recover request rows and the variable-to-request assignment.
 
-        ``build_stage_one_model`` appends resource-time rows after request
+        ``build_delay_model`` appends resource-time rows after request
         rows.  Request rows therefore form the initial sequence of disjoint
         all-one rows and collectively cover every candidate.  The same
         invariant is retained in the serialized dataset, so this partition
@@ -1214,8 +1247,50 @@ def round_continuous_plan(
         point,
         sample.variables,
         sample.capacities,
+        request_censoring_latencies=dict(
+            sample.graph.request_censoring_latencies
+        ),
         admission_threshold=admission_threshold,
     )
+
+
+def _resolve_rounding_censoring_latencies(
+    variables: Sequence[TimeExpandedCandidate],
+    supplied: Mapping[str, float] | None,
+) -> dict[str, float]:
+    """Resolve delay penalties for rounded plans.
+
+    Low-level callers can omit the map; the largest available completion
+    latency then supplies a conservative censoring boundary.  Online and
+    pilot callers pass the explicit episode/deadline catalogue.
+    """
+
+    inferred: dict[str, float] = {}
+    for variable in variables:
+        inferred[variable.request_id] = max(
+            inferred.get(variable.request_id, 0.0),
+            float(variable.completion_latency),
+        )
+    resolved: dict[str, float] = {}
+    for raw_request_id, raw_latency in (supplied or {}).items():
+        request_id = str(raw_request_id)
+        latency = float(raw_latency)
+        if not request_id:
+            raise ValueError("request censoring IDs must be non-empty")
+        if not np.isfinite(latency) or latency < 0.0:
+            raise ValueError(
+                "request censoring latencies must be finite and non-negative"
+            )
+        resolved[request_id] = latency
+    for request_id, latency in inferred.items():
+        if request_id not in resolved:
+            resolved[request_id] = latency
+        elif resolved[request_id] + 1e-9 < latency:
+            raise ValueError(
+                f"censoring latency for {request_id} is earlier than a "
+                "candidate completion"
+            )
+    return resolved
 
 
 def round_candidate_scores(
@@ -1224,6 +1299,7 @@ def round_candidate_scores(
     resource_capacities: Mapping[str, int],
     *,
     reserved_usage: Mapping[tuple[str, int], int] | None = None,
+    request_censoring_latencies: Mapping[str, float] | None = None,
     admission_threshold: float = 0.5,
 ) -> RoundedPlan:
     """Apply the same deterministic rounding to teacher and GNN primals.
@@ -1304,6 +1380,20 @@ def round_candidate_scores(
         for (resource_id, _), amount in occupied.items()
     )
     selected_variables = tuple(ordered_variables[index] for index in selected)
+    censoring = _resolve_rounding_censoring_latencies(
+        ordered_variables,
+        request_censoring_latencies,
+    )
+    expected_total_delay = sum(censoring.values()) + sum(
+        variable.expected_success_probability
+        * (
+            float(variable.completion_latency)
+            - censoring[variable.request_id]
+        )
+        for variable in selected_variables
+    )
+    if expected_total_delay < 0.0 and expected_total_delay > -1e-9:
+        expected_total_delay = 0.0
     return RoundedPlan(
         selected_variables=selected_variables,
         selected_indices=tuple(selected),
@@ -1315,11 +1405,7 @@ def round_candidate_scores(
             variable.expected_success_probability
             for variable in selected_variables
         )),
-        total_completion_latency=float(sum(
-            variable.expected_success_probability
-            * variable.completion_latency
-            for variable in selected_variables
-        )),
+        total_completion_latency=float(expected_total_delay),
         feasible=feasible,
     )
 
@@ -1358,16 +1444,33 @@ def _evaluate(
                 sample.graph, steps=len(sample.trajectory.points)
             ).cpu().numpy()
             point = trace[-1]
-            # ``objective`` is the normalized minimization vector.  Negating
-            # it yields the stage-one quantum utility.
-            utility = float(-sample.graph.objective @ point)
-            optimum_utility = max(-sample.trajectory.lp_optimum, 1e-10)
-            ratio = utility / optimum_utility
-            ratios.append(ratio)
-            signed_gaps.append((optimum_utility - utility) / optimum_utility)
-            absolute_gaps.append(
-                abs(optimum_utility - utility) / optimum_utility
+            # ``objective`` is the normalized reduced delay vector.  Negating
+            # it is the delay reduction relative to leaving requests
+            # uncensored at their deadlines.
+            delay_reduction = float(-sample.graph.objective @ point)
+            raw_optimum_delay_reduction = max(
+                0.0,
+                -float(sample.trajectory.lp_optimum),
             )
+            if raw_optimum_delay_reduction <= 1e-10:
+                # A graph whose every candidate completes exactly at the
+                # censoring boundary has no reducible delay.  Treat an also
+                # zero prediction as an exact match instead of emitting an
+                # arbitrary ratio caused by a tiny denominator.
+                ratio = 1.0 if abs(delay_reduction) <= 1e-8 else 0.0
+                signed_gap = 0.0 if ratio == 1.0 else 1.0
+                absolute_gap = signed_gap
+                optimum_delay_reduction = 0.0
+            else:
+                optimum_delay_reduction = raw_optimum_delay_reduction
+                ratio = delay_reduction / optimum_delay_reduction
+                signed_gap = (
+                    optimum_delay_reduction - delay_reduction
+                ) / optimum_delay_reduction
+                absolute_gap = abs(signed_gap)
+            ratios.append(ratio)
+            signed_gaps.append(signed_gap)
+            absolute_gaps.append(absolute_gap)
             row_load = (
                 sample.graph.matrix @ point
                 if len(sample.graph.rhs)
@@ -1406,14 +1509,23 @@ def _evaluate(
             scale = _maximum_feasible_prefix_scale(
                 point, sample.graph.matrix, sample.graph.rhs
             )
-            scaled_utility = float(
+            scaled_delay_reduction = float(
                 -sample.graph.objective @ (scale * point)
             )
-            scaled_ratio = scaled_utility / optimum_utility
+            if optimum_delay_reduction <= 1e-10:
+                scaled_ratio = (
+                    1.0 if abs(scaled_delay_reduction) <= 1e-8 else 0.0
+                )
+                scaled_gap = 0.0 if scaled_ratio == 1.0 else 1.0
+            else:
+                scaled_ratio = (
+                    scaled_delay_reduction / optimum_delay_reduction
+                )
+                scaled_gap = (
+                    optimum_delay_reduction - scaled_delay_reduction
+                ) / optimum_delay_reduction
             scaled_ratios.append(scaled_ratio)
-            scaled_gaps.append(
-                (optimum_utility - scaled_utility) / optimum_utility
-            )
+            scaled_gaps.append(scaled_gap)
             final_mse.append(float(np.mean(
                 (point - sample.trajectory.points[-1]) ** 2
             )))
@@ -1627,9 +1739,10 @@ def _save_checkpoint(
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save({
-        "schema_version": 3,
+        "schema_version": 4,
         "model_class": "TELGENPaperGNN",
-        "method": "ipm_trajectory_with_shared_rounding",
+        "method": "single_stage_delay_ipm_trajectory_with_shared_rounding",
+        "objective": "expected_censored_completion_latency",
         "telgen_reference_commit": TELGEN_REFERENCE_COMMIT,
         "model_config": {
             "hidden_dim": model.hidden_dim,
@@ -1753,7 +1866,7 @@ def run_pilot(
     started_at = time.perf_counter()
     data_started_at = time.perf_counter()
     cache_contract = {
-        "schema_version": 2,
+        "schema_version": 3,
         "data_seed": resolved_data_seed,
         "train_samples": train_samples,
         "validation_samples": validation_samples,
@@ -1986,7 +2099,9 @@ def run_pilot(
         ),
     }
     report: dict[str, object] = {
-        "method": "TELGEN IPM-trajectory GNN with shared rounding",
+        "method": (
+            "TELGEN IPM-trajectory GNN for the single-stage expected-delay LP"
+        ),
         "reference": {
             "paper": TELGEN_REFERENCE_PAPER,
             "official_repository": "https://github.com/aelitazhou/TELGEN",
@@ -2002,9 +2117,9 @@ def run_pilot(
             "node_features": "row/column/objective mean and standard deviation",
             "edge_features": "A, c, and b coefficients",
             "loss": (
-                "discounted primal + objective-gap + normalized constraint "
-                "violation + request mass + request admission + "
-                "within-request distribution"
+                "discounted primal + reduced-delay objective gap + "
+                "normalized constraint violation + request-structure "
+                "supervision"
             ),
             "readout": (
                 "request admission sigmoid times within-request normalized "
@@ -2024,7 +2139,7 @@ def run_pilot(
         "quantum_adaptation": {
             "variable": "request + path + swap tree + start slot candidate",
             "constraint": "request uniqueness or resource-time capacity row",
-            "objective": "stage-one expected completed-request mass",
+            "objective": "single-stage expected censored completion latency",
             "construction_candidates": construction_plan_count,
             "path_candidates": path_count,
             "physical_execution": "not part of this LP-learning pilot",
@@ -2106,14 +2221,29 @@ def run_pilot(
         "final": final,
         "history": history,
         "teacher_reference": {
-            "train_mean_optimal_utility": float(np.mean([
+            "train_mean_optimal_delay_reduction": float(np.mean([
                 -sample.trajectory.lp_optimum for sample in train
             ])),
-            "validation_mean_optimal_utility": float(np.mean([
+            "validation_mean_optimal_delay_reduction": float(np.mean([
                 -sample.trajectory.lp_optimum for sample in validation
             ])),
-            "same_family_mean_optimal_utility": float(np.mean([
+            "same_family_mean_optimal_delay_reduction": float(np.mean([
                 -sample.trajectory.lp_optimum for sample in same_family_test
+            ])),
+            "train_mean_optimal_expected_censored_delay": float(np.mean([
+                sample.trajectory.total_lp_optimum
+                * sample.graph.objective_scale
+                for sample in train
+            ])),
+            "validation_mean_optimal_expected_censored_delay": float(np.mean([
+                sample.trajectory.total_lp_optimum
+                * sample.graph.objective_scale
+                for sample in validation
+            ])),
+            "same_family_mean_optimal_expected_censored_delay": float(np.mean([
+                sample.trajectory.total_lp_optimum
+                * sample.graph.objective_scale
+                for sample in same_family_test
             ])),
             "train_final_mean_normalized_violation": float(np.mean([
                 sample.trajectory.normalized_violations[-1]

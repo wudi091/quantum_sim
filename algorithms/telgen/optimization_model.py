@@ -1,8 +1,24 @@
-"""Sparse two-stage packing model shared by exact MILP and GNN graphs."""
+"""Single-stage expected-delay packing LP shared by MILP and GNN.
+
+The planning layer makes one binary/continuous variable for every feasible
+``(request, route, construction, start-slot)`` candidate.  The model has one
+objective only: minimize the expected censored completion delay of the
+requests represented by the planning window.
+
+For request ``r`` let ``D_r`` be its censoring delay (the delay at the episode
+horizon or request deadline), and let candidate ``j`` have completion delay
+``L_j`` and success probability ``p_j``.  Selecting that candidate changes
+the request's expected delay from ``D_r`` to
+``p_j L_j + (1-p_j)D_r``.  After removing the constant ``sum_r D_r``, the LP
+minimizes ``sum_j p_j (L_j-D_r) x_j``.  Keeping the constant on the model is
+important for reporting the actual expected delay, while the sparse reduced
+objective is what is passed to the LP/MILP solver and to the GNN graph.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Mapping, Sequence
 
 import numpy as np
@@ -25,8 +41,13 @@ class ConstraintDescriptor:
 
 
 @dataclass(frozen=True)
-class PackingModelStage:
-    """Sparse objective and constraints for one lexicographic MILP stage."""
+class PackingModel:
+    """Sparse single-stage LP/MILP data.
+
+    ``objective`` is the reduced minimization vector.  ``objective_constant``
+    is the request-censoring constant that must be added to ``objective @ x``
+    to obtain the actual expected total delay.
+    """
 
     name: str
     variable_ids: tuple[str, ...]
@@ -37,11 +58,15 @@ class PackingModelStage:
     a_eq: spmatrix
     b_eq: np.ndarray
     eq_constraints: tuple[ConstraintDescriptor, ...]
+    objective_constant: float = 0.0
+    request_censoring_latencies: tuple[tuple[str, float], ...] = ()
 
     def __post_init__(self) -> None:
         variable_count = len(self.variable_ids)
         if self.objective.shape != (variable_count,):
             raise ValueError("objective has the wrong shape")
+        if not np.isfinite(self.objective).all():
+            raise ValueError("objective coefficients must be finite")
         if self.a_ub.shape != (len(self.b_ub), variable_count):
             raise ValueError("A_ub has the wrong shape")
         if self.a_eq.shape != (len(self.b_eq), variable_count):
@@ -50,6 +75,49 @@ class PackingModelStage:
             raise ValueError("inequality metadata does not match A_ub")
         if len(self.eq_constraints) != len(self.b_eq):
             raise ValueError("equality metadata does not match A_eq")
+        if not math.isfinite(float(self.objective_constant)):
+            raise ValueError("objective_constant must be finite")
+        if float(self.objective_constant) < 0.0:
+            raise ValueError("objective_constant cannot be negative")
+        previous: str | None = None
+        total = 0.0
+        for request_id, latency in self.request_censoring_latencies:
+            if not request_id:
+                raise ValueError("request censoring IDs must be non-empty")
+            if previous is not None and request_id <= previous:
+                raise ValueError(
+                    "request censoring latencies must be sorted and unique"
+                )
+            value = float(latency)
+            if not math.isfinite(value) or value < 0.0:
+                raise ValueError(
+                    "request censoring latencies must be finite and non-negative"
+                )
+            previous = request_id
+            total += value
+        if not math.isclose(
+            total,
+            float(self.objective_constant),
+            rel_tol=1e-9,
+            abs_tol=1e-9,
+        ):
+            raise ValueError(
+                "objective_constant must equal the sum of request censoring "
+                "latencies"
+            )
+
+    @property
+    def objective_offset(self) -> float:
+        """Readability alias for the reduced-objective offset."""
+
+        return float(self.objective_constant)
+
+    @property
+    def request_censoring_latency_map(self) -> dict[str, float]:
+        return {
+            request_id: float(latency)
+            for request_id, latency in self.request_censoring_latencies
+        }
 
 
 def _empty_matrix(rows: int, columns: int) -> csr_matrix:
@@ -124,12 +192,61 @@ def _base_constraints(
     return matrix, np.asarray(rhs, dtype=float), tuple(descriptors)
 
 
-def build_stage_one_model(
+def _resolve_request_censoring_latencies(
+    variables: Sequence[TimeExpandedCandidate],
+    supplied: Mapping[str, float] | None,
+) -> tuple[tuple[str, float], ...]:
+    """Resolve one censoring delay for every represented/requested request.
+
+    A caller with an ``EpisodeSpec`` should provide the explicit map so that
+    requests with no feasible candidate still receive their horizon/deadline
+    penalty.  Direct low-level callers may omit it; in that case the largest
+    candidate latency for each request is the conservative censoring boundary.
+    """
+
+    inferred: dict[str, float] = {}
+    for variable in variables:
+        inferred[variable.request_id] = max(
+            inferred.get(variable.request_id, 0.0),
+            float(variable.completion_latency),
+        )
+    resolved: dict[str, float] = {}
+    if supplied is not None:
+        for raw_id, raw_latency in supplied.items():
+            request_id = str(raw_id)
+            latency = float(raw_latency)
+            if not request_id:
+                raise ValueError("request censoring IDs must be non-empty")
+            if not math.isfinite(latency) or latency < 0.0:
+                raise ValueError(
+                    "request censoring latencies must be finite and non-negative"
+                )
+            resolved[request_id] = latency
+    for request_id, inferred_latency in inferred.items():
+        if request_id not in resolved:
+            resolved[request_id] = inferred_latency
+        elif resolved[request_id] + 1e-9 < inferred_latency:
+            raise ValueError(
+                f"censoring latency for {request_id} is earlier than a "
+                "feasible candidate completion"
+            )
+    return tuple(sorted(resolved.items()))
+
+
+def build_delay_model(
     variables: Sequence[TimeExpandedCandidate],
     resource_capacities: Mapping[str, int],
     reserved_usage: Mapping[tuple[str, int], int] | None = None,
-) -> PackingModelStage:
-    """Build expected-completion maximization as a minimization model."""
+    *,
+    request_censoring_latencies: Mapping[str, float] | None = None,
+) -> PackingModel:
+    """Build the single-stage expected censored completion-delay model.
+
+    The LP uses ``0 <= x_j <= 1``; the exact oracle changes only the variable
+    domain to binary.  Request uniqueness, resource--time capacity, and all
+    physical construction legality are represented by the shared candidate
+    expansion and its sparse rows.
+    """
 
     ordered = tuple(sorted(variables, key=lambda item: item.variable_id))
     a_ub, b_ub, descriptors = _base_constraints(
@@ -137,68 +254,51 @@ def build_stage_one_model(
         resource_capacities,
         reserved_usage,
     )
-    variable_count = len(ordered)
-    return PackingModelStage(
-        name="maximize_expected_completed_requests",
-        variable_ids=tuple(item.variable_id for item in ordered),
-        objective=-np.asarray(
-            [item.expected_success_probability for item in ordered],
-            dtype=float,
-        ),
-        a_ub=a_ub,
-        b_ub=b_ub,
-        ub_constraints=descriptors,
-        a_eq=_empty_matrix(0, variable_count),
-        b_eq=np.zeros(0, dtype=float),
-        eq_constraints=(),
-    )
-
-
-def build_stage_two_model(
-    variables: Sequence[TimeExpandedCandidate],
-    resource_capacities: Mapping[str, int],
-    completed_mass: float,
-    reserved_usage: Mapping[tuple[str, int], int] | None = None,
-) -> PackingModelStage:
-    """Fix optimal expected throughput and minimize expected latency."""
-
-    ordered = tuple(sorted(variables, key=lambda item: item.variable_id))
-    a_ub, b_ub, descriptors = _base_constraints(
+    censoring = _resolve_request_censoring_latencies(
         ordered,
-        resource_capacities,
-        reserved_usage,
+        request_censoring_latencies,
     )
-    success_probabilities = np.asarray(
-        [item.expected_success_probability for item in ordered],
+    censoring_map = dict(censoring)
+    objective = np.asarray(
+        [
+            float(item.expected_success_probability)
+            * (float(item.completion_latency) - censoring_map[item.request_id])
+            for item in ordered
+        ],
         dtype=float,
     )
-    return PackingModelStage(
-        name="minimize_expected_completion_latency",
+    return PackingModel(
+        name="minimize_expected_censored_completion_latency",
         variable_ids=tuple(item.variable_id for item in ordered),
-        objective=np.asarray(
-            [
-                item.expected_success_probability * item.completion_latency
-                for item in ordered
-            ],
-            dtype=float,
-        ),
+        objective=objective,
         a_ub=a_ub,
         b_ub=b_ub,
         ub_constraints=descriptors,
-        a_eq=csr_matrix(success_probabilities.reshape(1, -1)),
-        b_eq=np.asarray([float(completed_mass)], dtype=float),
-        eq_constraints=(ConstraintDescriptor(
-            constraint_id="throughput:stage_one_optimum",
-            kind="throughput_equality",
-            rhs=float(completed_mass),
-            sense="=",
-        ),),
+        a_eq=_empty_matrix(0, len(ordered)),
+        b_eq=np.zeros(0, dtype=float),
+        eq_constraints=(),
+        objective_constant=float(sum(latency for _, latency in censoring)),
+        request_censoring_latencies=censoring,
     )
+
+
+def evaluate_expected_censored_delay(
+    model: PackingModel,
+    values: Sequence[float] | np.ndarray,
+) -> float:
+    """Evaluate the full expected censored delay for a model point."""
+
+    point = np.asarray(values, dtype=float).reshape(-1)
+    if point.shape != (len(model.variable_ids),):
+        raise ValueError("model point has the wrong length")
+    if not np.isfinite(point).all():
+        raise ValueError("model point must be finite")
+    return float(model.objective_constant + model.objective @ point)
 
 
 __all__ = [
     "ConstraintDescriptor",
-    "PackingModelStage",
-    "build_stage_one_model",
-    "build_stage_two_model",
+    "PackingModel",
+    "build_delay_model",
+    "evaluate_expected_censored_delay",
 ]

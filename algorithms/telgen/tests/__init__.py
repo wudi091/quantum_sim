@@ -1,1 +1,1 @@
-"""Tests for construction-aware MILP supervision and GNN planning."""
+"""Tests for construction-aware LP/MILP planning and GNN learning."""

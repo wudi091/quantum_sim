@@ -16,7 +16,7 @@ from .ipm_trajectory_pilot import (
     build_ipm_graph,
     round_candidate_scores,
 )
-from .optimization_model import build_stage_one_model
+from .optimization_model import build_delay_model
 from .time_expansion import TimeExpandedCandidate
 
 
@@ -101,13 +101,17 @@ class OnlineIPMGNNPolicy:
         )
         if not isinstance(checkpoint, Mapping):
             raise ValueError("IPM GNN checkpoint must contain a mapping")
-        if checkpoint.get("schema_version") != 3:
+        if checkpoint.get("schema_version") != 4:
             raise ValueError(
-                "checkpoint predates structural request normalization and "
+                "checkpoint does not use the single-stage delay objective and "
                 "must be retrained"
             )
         if checkpoint.get("model_class") != "TELGENPaperGNN":
             raise ValueError("checkpoint contains an unsupported model class")
+        if checkpoint.get("objective") != "expected_censored_completion_latency":
+            raise ValueError(
+                "checkpoint is missing the single-stage delay objective"
+            )
         config = checkpoint.get("model_config")
         if not isinstance(config, Mapping):
             raise ValueError("checkpoint is missing model configuration")
@@ -137,6 +141,7 @@ class OnlineIPMGNNPolicy:
         *,
         horizon: int,
         reserved_usage: Mapping[tuple[str, int], int] | None = None,
+        request_censoring_latencies: Mapping[str, float] | None = None,
     ) -> OnlineIPMDecision:
         started = perf_counter()
         capacities = {
@@ -157,16 +162,18 @@ class OnlineIPMGNNPolicy:
                 (),
                 capacities,
                 reserved_usage=reservations,
+                request_censoring_latencies=request_censoring_latencies,
             )
             return OnlineIPMDecision(
                 continuous_primal=np.zeros(0, dtype=np.float32),
                 selection=selection,
                 inference_seconds=perf_counter() - started,
             )
-        model = build_stage_one_model(
+        model = build_delay_model(
             feasible_variables,
             capacities,
             reservations,
+            request_censoring_latencies=request_censoring_latencies,
         )
         graph = build_ipm_graph(model, feasible_variables, horizon)
         with torch.no_grad():
@@ -177,6 +184,7 @@ class OnlineIPMGNNPolicy:
             feasible_variables,
             capacities,
             reserved_usage=reservations,
+            request_censoring_latencies=request_censoring_latencies,
         )
         return OnlineIPMDecision(
             continuous_primal=np.asarray(primal, dtype=np.float32),

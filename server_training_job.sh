@@ -17,8 +17,8 @@ readonly NVIDIA_SMI_BIN="/usr/bin/nvidia-smi"
 
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly SELF="${SCRIPT_DIR}/server_training_job.sh"
-readonly RESULT_BASE="${SCRIPT_DIR}/results/telgen_ipm_rounding_v2"
-readonly STATE_DIR="${SCRIPT_DIR}/results/telgen_ipm_rounding_state_v2"
+readonly RESULT_BASE="${SCRIPT_DIR}/results/telgen_ipm_delay_v1"
+readonly STATE_DIR="${SCRIPT_DIR}/results/telgen_ipm_delay_state_v1"
 readonly PID_FILE="${STATE_DIR}/training.pid"
 readonly JOB_LOG="${STATE_DIR}/training.log"
 readonly PHASE_FILE="${STATE_DIR}/phase.txt"
@@ -27,7 +27,7 @@ readonly FINISHED_AT_FILE="${STATE_DIR}/finished_at.txt"
 readonly EXIT_CODE_FILE="${STATE_DIR}/exit_code.txt"
 readonly RUN_ROOT_FILE="${STATE_DIR}/run_root.txt"
 readonly MANAGER_LOCK_FILE="${STATE_DIR}/manager.lock"
-readonly TRAIN_LOCK_FILE="${SCRIPT_DIR}/results/telgen_ipm_rounding_v2.lock"
+readonly TRAIN_LOCK_FILE="${SCRIPT_DIR}/results/telgen_ipm_delay_v1.lock"
 
 readonly TRAIN_SAMPLES=400
 readonly VALIDATION_SAMPLES=80
@@ -179,7 +179,7 @@ checkpoint = torch.load(
 )
 decoder = payload.get("paper_alignment", {}).get("decoder", {})
 valid = (
-    payload.get("method") == "TELGEN IPM-trajectory GNN with shared rounding"
+    payload.get("method") == "TELGEN IPM-trajectory GNN for the single-stage expected-delay LP"
     and payload.get("seed") == seed
     and payload.get("data_seed") == 20260826
     and payload.get("device") == "cuda"
@@ -189,8 +189,10 @@ valid = (
     and payload.get("best_epoch", 0) > 0
     and math.isfinite(float(payload.get("best_validation_loss", float("nan"))))
     and payload.get("request_admission_weight") == 6.0
-    and checkpoint.get("schema_version") == 3
+    and payload.get("quantum_adaptation", {}).get("objective") == "single-stage expected censored completion latency"
+    and checkpoint.get("schema_version") == 4
     and checkpoint.get("model_class") == "TELGENPaperGNN"
+    and checkpoint.get("objective") == "expected_censored_completion_latency"
     and decoder.get("name") == "shared_capacity_safe_rounding"
     and decoder.get("admission_mass") == "unscaled request mass"
     and decoder.get("teacher_and_gnn_share_decoder") is True

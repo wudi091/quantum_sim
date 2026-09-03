@@ -1,7 +1,7 @@
 {
-  "protocol_version": 1,
+  "protocol_version": 2,
   "name": "generalizable_gnn_quantum_planning",
-  "checkpoint": "results/telgen_ipm_rounding_v2/20260902_104954_pid62657/seed_20260826/telgen_ipm_model.pt",
+  "checkpoint": "results/telgen_ipm_delay_v1/20260902_104954_pid62657/seed_20260826/telgen_ipm_model.pt",
   "output_root": "results/core_value",
   "untrained_seed": 20260902,
   "offline": {

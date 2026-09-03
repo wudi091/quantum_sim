@@ -40,6 +40,7 @@ class PlanningBatchProblem:
     success_probability_model: str
     planning_window: tuple[int, int] | None = None
     completion_end_slot: int | None = None
+    request_censoring_latencies: tuple[tuple[str, float], ...] = ()
     reserved_usage: tuple[tuple[str, int, int], ...] = ()
     equivalent_candidate_aliases: tuple[tuple[str, str], ...] = ()
 
@@ -52,6 +53,21 @@ class PlanningBatchProblem:
         return {
             (resource_id, slot): amount
             for resource_id, slot, amount in self.reserved_usage
+        }
+
+    @property
+    def request_censoring_latency_map(self) -> dict[str, float]:
+        """Return the delay charged when a request is not completed.
+
+        The values are measured from each request's arrival slot and are
+        capped by the episode horizon and, when present, its TTL deadline.
+        Keeping this catalogue beside the candidate expansion lets the LP,
+        exact MILP, and IPM-GNN use exactly the same single objective.
+        """
+
+        return {
+            request_id: float(latency)
+            for request_id, latency in self.request_censoring_latencies
         }
 
 
@@ -270,6 +286,21 @@ def build_planning_batch_problem(
         planning_window = None
         completion_end = episode.horizon
 
+    # The single LP objective charges every request that is not completed by
+    # its censoring boundary.  Use the same boundary that candidate expansion
+    # uses, so static and rolling-horizon calls share identical semantics.
+    request_censoring_latencies: dict[str, float] = {}
+    for request in episode.requests:
+        boundary = int(completion_end)
+        if request.deadline is not None:
+            boundary = min(boundary, int(request.deadline))
+        latency = boundary - int(request.arrival)
+        if latency < 0:
+            raise ValueError(
+                f"request {request.id} is already past its censoring boundary"
+            )
+        request_censoring_latencies[request.id] = float(latency)
+
     capacities = (
         build_resource_capacities(episode)
         if resource_capacities is None
@@ -349,6 +380,9 @@ def build_planning_batch_problem(
         completion_end_slot=(
             None if planning_window is None else completion_end
         ),
+        request_censoring_latencies=tuple(sorted(
+            request_censoring_latencies.items()
+        )),
         reserved_usage=tuple(sorted(
             (str(resource_id), int(slot), int(amount))
             for (resource_id, slot), amount in (reserved_usage or {}).items()

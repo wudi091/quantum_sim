@@ -36,7 +36,7 @@ from .dataset import (
 from .milp_oracle import (
     ConstructionAwareMILPOracle,
     DiscreteOracleSolution,
-    is_numerically_optimal_stage,
+    is_numerically_optimal_result,
 )
 from .physical_validation import (
     compile_selected_schedule,
@@ -119,8 +119,7 @@ class OnlineDecisionRecord:
     decision_seconds: float
     decision_backend: str = "milp_teacher"
     policy_inference_seconds: float = 0.0
-    milp_stage_one_mip_gap: float | None = None
-    milp_stage_two_mip_gap: float | None = None
+    milp_mip_gap: float | None = None
     policy_output_feasible: bool | None = None
     policy_invalid_action_index: int | None = None
     policy_invalid_action_reason: str | None = None
@@ -311,16 +310,19 @@ class OnlineTELGENController:
             problem.expansion,
             problem.capacities,
             reserved_usage=problem.reserved_usage_map,
+            request_censoring_latencies=(
+                problem.request_censoring_latency_map
+            ),
         )
-        for stage in (solution.stage_one, solution.stage_two):
-            if not is_numerically_optimal_stage(stage):
-                raise RuntimeError(
-                    f"{stage.stage_name} did not reach certified numerical "
-                    f"optimality: status={stage.status}, gap={stage.mip_gap}, "
-                    f"objective={stage.objective_value}, "
-                    f"dual_bound={stage.mip_dual_bound}, "
-                    f"message={stage.message}"
-                )
+        if not is_numerically_optimal_result(solution.result):
+            result = solution.result
+            raise RuntimeError(
+                f"{result.solve_name} did not reach certified numerical "
+                f"optimality: status={result.status}, gap={result.mip_gap}, "
+                f"objective={result.objective_value}, "
+                f"dual_bound={result.mip_dual_bound}, "
+                f"message={result.message}"
+            )
         return solution, perf_counter() - started
 
     def _solve_ipm_gnn_decision(
@@ -336,6 +338,9 @@ class OnlineTELGENController:
             problem.capacities,
             horizon=problem.episode.horizon,
             reserved_usage=problem.reserved_usage_map,
+            request_censoring_latencies=(
+                problem.request_censoring_latency_map
+            ),
         )
 
     def _register_selected_variables(
@@ -508,15 +513,10 @@ class OnlineTELGENController:
                 if gnn_decision is None
                 else gnn_decision.inference_seconds
             ),
-            milp_stage_one_mip_gap=(
+            milp_mip_gap=(
                 None
                 if milp_solution is None
-                else milp_solution.stage_one.mip_gap
-            ),
-            milp_stage_two_mip_gap=(
-                None
-                if milp_solution is None
-                else milp_solution.stage_two.mip_gap
+                else milp_solution.result.mip_gap
             ),
             policy_output_feasible=(
                 None
@@ -776,7 +776,7 @@ def run_online_telgen(
 
 def _json_payload(result: OnlineTELGENResult) -> dict[str, object]:
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "episode_seed": result.episode_seed,
         "horizon_slots": result.horizon_slots,
         "episode": asdict(result.episode),
