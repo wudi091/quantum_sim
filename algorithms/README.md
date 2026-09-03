@@ -8,16 +8,14 @@
 - `time_expansion.py`：把构造 DAG 映射为资源—时隙占用；
 - `optimization_model.py`：LP/MILP 的稀疏目标和约束矩阵；
 - `milp_oracle.py`：精确 0/1 MILP 参考教师；
-- `milp_imitation.py`：在线基线仍使用的候选—约束图组件；
+- `milp_imitation.py`：共享候选—约束图和容量安全选择结构；
 - `ipm_trajectory_pilot.py`：TELGEN 风格 LP 内点法轨迹教师和图 GNN；
-- `online_milp_dataset.py`：在线标签数据读取；
-- `train_online_milp_gnn.py`：训练、验证和 checkpoint 选择；
+- `online_milp_dataset.py`：MILP 教师样本的中性数据读取；
+- `train_online_milp_gnn.py`：MILP 标签 GNN 的兼容训练入口；
 - `ipm_policy.py`：加载 IPM checkpoint，输出连续规划解并做容量安全舍入；
 - `online.py`：共享滚动请求队列与 TELGEN 在线控制；
 - `physical_validation.py`：把已选变量编译为中性物理计划；
 - `compare_online_gnn.py`：GNN、MILP 与 Q-CAST 的配对在线比较；
-- `validate_construction_milp.py`：自适应交换树与固定交换树的 MILP 消融；
-- `validate_construction_physics.py`：在 SeQUeNCe 中复放构造消融计划。
 
 IPM 轨迹 GNN 在三部图上共享迭代参数，输出连续 LP 规划解。请求结构在读出
 阶段保持不变，最终使用与教师一致的共享容量安全舍入生成离散执行计划。
