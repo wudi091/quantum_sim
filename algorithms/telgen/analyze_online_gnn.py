@@ -16,7 +16,10 @@ from .analyze_online_benchmark import (
 def _convert_payload(payload: Mapping[str, object]) -> dict[str, object]:
     if payload.get("schema_version") != 1:
         raise ValueError("unsupported online GNN comparison schema")
-    if payload.get("experiment") != "paired_online_gnn_milp_qcast":
+    if payload.get("experiment") not in {
+        "paired_online_gnn_milp_qcast",
+        "paired_online_gnn_routing_baselines",
+    }:
         raise ValueError("not an online GNN comparison report")
     contract = payload.get("comparison_contract")
     if not isinstance(contract, Mapping):

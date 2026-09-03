@@ -1,0 +1,82 @@
+{
+  "protocol_version": 1,
+  "name": "generalizable_gnn_quantum_planning",
+  "checkpoint": "results/telgen_ipm_rounding_v2/20260902_104954_pid62657/seed_20260826/telgen_ipm_model.pt",
+  "output_root": "results/core_value",
+  "untrained_seed": 20260902,
+  "offline": {
+    "quality": {
+      "name": "lp_quality",
+      "topology": "waxman",
+      "nodes": [64, 96, 128],
+      "samples": 60,
+      "seed": 41000,
+      "requests": 8,
+      "horizon": 12,
+      "paths": 4,
+      "construction_plans": 5,
+      "endpoint_mode": "uniform_random"
+    },
+    "generalization": [
+      {
+        "name": "waxman_scale",
+        "topology": "waxman",
+        "nodes": [160, 192, 256],
+        "samples": 90,
+        "seed": 42000,
+        "requests": 8,
+        "horizon": 12,
+        "paths": 4,
+        "construction_plans": 5,
+        "endpoint_mode": "uniform_random"
+      },
+      {
+        "name": "ba_transfer",
+        "topology": "barabasi_albert",
+        "nodes": [128, 192, 256],
+        "samples": 90,
+        "seed": 43000,
+        "requests": 8,
+        "horizon": 12,
+        "paths": 4,
+        "construction_plans": 5,
+        "endpoint_mode": "uniform_random"
+      }
+    ]
+  },
+  "online": {
+    "common": {
+      "requests": 20,
+      "requests_per_batch": 5,
+      "decision_interval": 4,
+      "ttl": 16,
+      "nodes": 64,
+      "min_hops": 4,
+      "max_hops": 4,
+      "endpoint_mode": "distance_stratified",
+      "paths": 4,
+      "construction_plans": 5,
+      "gnn_device": "cpu",
+      "milp_time_limit_seconds": 30.0,
+      "generation_probability": 0.8,
+      "swap_probability": 0.9,
+      "memory_capacity": 2,
+      "quantum_distance_m": 1000.0,
+      "slot_duration_ps": 50000000
+    },
+    "cases": [
+      {
+        "name": "waxman_main",
+        "topology_mode": "waxman",
+        "seeds": 50,
+        "seed_start": 44000
+      },
+      {
+        "name": "ba_transfer",
+        "topology_mode": "barabasi_albert",
+        "seeds": 50,
+        "seed_start": 45000
+      }
+    ]
+  }
+}

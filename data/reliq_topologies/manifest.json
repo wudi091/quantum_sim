@@ -1,0 +1,98 @@
+{
+  "topohub_version": "1.5.1",
+  "topohub_commit": "db1a31247ffd4ed5875d584c91fed305a3f94a1e",
+  "reliq_repository": "https://github.com/meusert/RELiQ",
+  "topohub_repository": "https://github.com/piotrjurkiewicz/topohub",
+  "entries": [
+    {
+      "paper_label": "Cost 266",
+      "topohub_key": "sndlib/cost266",
+      "json": "raw/sndlib/cost266.json",
+      "gml": "raw/sndlib/cost266.gml",
+      "nodes": 37,
+      "edges": 57,
+      "json_sha256": "71e0a3a47d707abb34a0f90ff581bb6c8eb73129fad24753cdd9ec39923a262c"
+    },
+    {
+      "paper_label": "Germany",
+      "topohub_key": "sndlib/germany50",
+      "json": "raw/sndlib/germany50.json",
+      "gml": "raw/sndlib/germany50.gml",
+      "nodes": 50,
+      "edges": 88,
+      "json_sha256": "4109d866e8422a28c977e3bcb292ffd025eac9def2d755895d4fe55e1da058d0"
+    },
+    {
+      "paper_label": "EU",
+      "topohub_key": "sndlib/nobel-eu",
+      "json": "raw/sndlib/nobel-eu.json",
+      "gml": "raw/sndlib/nobel-eu.gml",
+      "nodes": 28,
+      "edges": 41,
+      "json_sha256": "b8439ef0d0b9f3e1896434861e97212c84c4dec0e82e7a7a0d6dc3ad3bb3d114"
+    },
+    {
+      "paper_label": "Poland (SNDlib)",
+      "topohub_key": "sndlib/polska",
+      "json": "raw/sndlib/polska.json",
+      "gml": "raw/sndlib/polska.gml",
+      "nodes": 12,
+      "edges": 18,
+      "json_sha256": "d255f2cf15b8a047f71a75dcef443c0790ca00276e93e1e8f83fa176e15260ac"
+    },
+    {
+      "paper_label": "US",
+      "topohub_key": "topozoo/NetworkUsa",
+      "json": "raw/topozoo/NetworkUsa.json",
+      "gml": "raw/topozoo/NetworkUsa.gml",
+      "nodes": 35,
+      "edges": 39,
+      "json_sha256": "94cf1e826fa4c304cf551441ca3643f2ec3431d9df3750868385548ab6138fea"
+    },
+    {
+      "paper_label": "Finland",
+      "topohub_key": "topozoo/Funet",
+      "json": "raw/topozoo/Funet.json",
+      "gml": "raw/topozoo/Funet.gml",
+      "nodes": 24,
+      "edges": 27,
+      "json_sha256": "fc875eb34f84e13fe13c196c6329555972e952f821d80c850c9494d08fb06c33"
+    },
+    {
+      "paper_label": "Poland (Topology Zoo)",
+      "topohub_key": "topozoo/PionierL3",
+      "json": "raw/topozoo/PionierL3.json",
+      "gml": "raw/topozoo/PionierL3.gml",
+      "nodes": 27,
+      "edges": 32,
+      "json_sha256": "be041b303a772f8dfc7d2b26c2b75a9f93960d1259a096081b1b2ce7f918a66b"
+    },
+    {
+      "paper_label": "UK",
+      "topohub_key": "topozoo/Janetbackbone",
+      "json": "raw/topozoo/Janetbackbone.json",
+      "gml": "raw/topozoo/Janetbackbone.gml",
+      "nodes": 28,
+      "edges": 43,
+      "json_sha256": "2427d9888d8a7a54e42370d6e949ffce3193609f789d6fd570b47b16f8d0afc1"
+    },
+    {
+      "paper_label": "Canada",
+      "topohub_key": "topozoo/Bellcanada",
+      "json": "raw/topozoo/Bellcanada.json",
+      "gml": "raw/topozoo/Bellcanada.gml",
+      "nodes": 48,
+      "edges": 64,
+      "json_sha256": "c9591b32bd21f00bbb03796182bfac252b02aca9297d413ef603d4e9da5f2bfe"
+    },
+    {
+      "paper_label": "York",
+      "topohub_key": "topozoo/York",
+      "json": "raw/topozoo/York.json",
+      "gml": "raw/topozoo/York.gml",
+      "nodes": 23,
+      "edges": 24,
+      "json_sha256": "ac2327dea0a0221312b8d261aabc04cf3ef322a1b88b0e2a97b259fc7884cecf"
+    }
+  ]
+}

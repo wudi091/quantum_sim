@@ -730,6 +730,24 @@ class OnlineTELGENController:
         )
         return float(ordered[index])
 
+    @staticmethod
+    def _gini(values: list[int]) -> float:
+        """Return the Gini coefficient of non-negative request delays."""
+
+        if not values:
+            return 0.0
+        ordered = np.asarray(values, dtype=float)
+        if np.any(ordered < 0.0) or not np.all(np.isfinite(ordered)):
+            raise ValueError("completion delays must be finite and non-negative")
+        total = float(np.sum(ordered))
+        if total <= 0.0:
+            return 0.0
+        count = ordered.size
+        return float(
+            np.abs(ordered[:, None] - ordered[None, :]).sum()
+            / (2.0 * count * total)
+        )
+
     def _metrics(
         self,
         settlements: tuple[RequestSettlement, ...],
@@ -740,6 +758,39 @@ class OnlineTELGENController:
             item.settlement_time - item.arrival_time
             for item in settlements
             if item.success
+        ]
+        censored_latencies = [
+            max(
+                0,
+                (
+                    item.settlement_time
+                    if item.success
+                    else horizon_ps
+                ) - item.arrival_time,
+            )
+            for item in settlements
+        ]
+        successful_request_ids = {
+            item.request_id for item in settlements if item.success
+        }
+        final_fidelity_events: dict[str, ExecutionEvent] = {}
+        for event in self.scheduler.event_trace:
+            if (
+                event.request_id not in successful_request_ids
+                or not event.success
+                or event.output_fidelity is None
+            ):
+                continue
+            previous = final_fidelity_events.get(event.request_id)
+            if previous is None or (
+                event.physical_time_ps,
+                event.event_id,
+            ) >= (previous.physical_time_ps, previous.event_id):
+                final_fidelity_events[event.request_id] = event
+        final_fidelity_losses = [
+            max(0.0, 1.0 - float(event.output_fidelity))
+            for event in final_fidelity_events.values()
+            if event.output_fidelity is not None
         ]
         flow_time = censored_flow_time(settlements, horizon_ps)
         attempted_requests = len(self._attempt_counts)
@@ -765,6 +816,17 @@ class OnlineTELGENController:
             "throughput_per_slot": completed / max(self.spec.horizon, 1),
             "censored_flow_time_ps": float(flow_time),
             "mean_censored_latency_ps": flow_time / max(len(settlements), 1),
+            "mean_completion_delay_ps": flow_time / max(len(settlements), 1),
+            "max_completion_delay_ps": float(max(censored_latencies, default=0)),
+            "completion_delay_gini": self._gini(censored_latencies),
+            "mean_final_fidelity_loss": (
+                0.0
+                if not final_fidelity_losses
+                else fmean(final_fidelity_losses)
+            ),
+            "final_fidelity_observation_count": float(
+                len(final_fidelity_losses)
+            ),
             "mean_success_latency_ps": (
                 0.0 if not successful_latencies else fmean(successful_latencies)
             ),

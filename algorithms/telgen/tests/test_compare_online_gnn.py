@@ -1,6 +1,7 @@
 import unittest
 
 from algorithms.telgen.compare_online_gnn import (
+    _routing_baseline_configs,
     _resolve_construction_space,
 )
 
@@ -22,6 +23,17 @@ class OnlineGNNComparisonConfigurationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             _resolve_construction_space(5, 5)
 
+    def test_routing_baselines_share_the_online_window_configuration(self):
+        configs = _routing_baseline_configs(
+            decision_interval=4,
+            path_candidate_count=4,
+        )
+        self.assertEqual(set(configs), {"qpass", "greedy"})
+        for name, config in configs.items():
+            self.assertEqual(config.algorithm, name)
+            self.assertEqual(config.decision_interval, 4)
+            self.assertEqual(config.path_candidate_count, 4)
+            self.assertEqual(config.construction_kind, "left_deep")
 
 if __name__ == "__main__":
     unittest.main()

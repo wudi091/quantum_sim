@@ -10,7 +10,12 @@ def payload(rows):
             "seed": seed,
             "telgen": {"violations": [], "metrics": {
                 "completed_requests": telgen_completed,
+                "mean_completion_delay_ps": telgen_latency,
                 "mean_censored_latency_ps": telgen_latency,
+                "max_completion_delay_ps": telgen_latency + 20.0,
+                "mean_final_fidelity_loss": 0.1,
+                "completion_delay_gini": 0.2,
+                "mean_planner_seconds": 1.0,
                 "mean_decision_seconds": 1.0,
                 "schedule_violation_count": 0.0,
                 "fidelity_violation_count": 0.0,
@@ -18,7 +23,12 @@ def payload(rows):
             }},
             "qcast": {"violations": [], "metrics": {
                 "completed_requests": qcast_completed,
+                "mean_completion_delay_ps": qcast_latency,
                 "mean_censored_latency_ps": qcast_latency,
+                "max_completion_delay_ps": qcast_latency + 20.0,
+                "mean_final_fidelity_loss": 0.1,
+                "completion_delay_gini": 0.2,
+                "mean_planner_seconds": 0.1,
                 "mean_decision_seconds": 0.1,
                 "schedule_violation_count": 0.0,
                 "fidelity_violation_count": 0.0,
@@ -40,7 +50,7 @@ def payload(rows):
 
 
 class OnlineBenchmarkAnalysisTests(unittest.TestCase):
-    def test_throughput_has_priority_over_latency(self):
+    def test_average_completion_delay_is_the_quality_metric(self):
         report = analyze_online_payloads(
             {"case": payload([
                 (seed, 3, 2, 200.0, 100.0)
@@ -52,11 +62,11 @@ class OnlineBenchmarkAnalysisTests(unittest.TestCase):
         )
         self.assertEqual(
             report["overall"]["quality_verdict"],
-            "telgen_better_throughput",
+            "qcast_better_latency",
         )
         self.assertEqual(report["overall"]["runtime_verdict"], "qcast_faster")
 
-    def test_latency_breaks_an_exact_throughput_tie(self):
+    def test_lower_average_completion_delay_is_better(self):
         report = analyze_online_payloads(
             {"case": payload([
                 (seed, 2, 2, 80.0, 100.0)
@@ -68,24 +78,22 @@ class OnlineBenchmarkAnalysisTests(unittest.TestCase):
         )
         self.assertEqual(
             report["overall"]["quality_verdict"],
-            "telgen_better_latency_at_equal_throughput",
+            "telgen_better_latency",
         )
 
-    def test_mixed_throughput_does_not_fall_back_to_latency(self):
+    def test_latency_remains_primary_when_throughput_differs(self):
         report = analyze_online_payloads(
             {"case": payload([
-                (1, 3, 2, 80.0, 100.0),
-                (2, 2, 3, 80.0, 100.0),
-                (3, 3, 2, 80.0, 100.0),
-                (4, 2, 3, 80.0, 100.0),
+                (seed, 3 if seed % 2 else 2, 2 if seed % 2 else 3, 80.0, 100.0)
+                for seed in range(1, 9)
             ])},
             bootstrap_samples=200,
-            randomization_samples=200,
+            randomization_samples=2_000,
             random_seed=13,
         )
         self.assertEqual(
             report["overall"]["quality_verdict"],
-            "inconclusive_throughput",
+            "telgen_better_latency",
         )
 
     def test_hard_gate_failure_invalidates_quality_verdict(self):
@@ -128,7 +136,7 @@ class OnlineBenchmarkAnalysisTests(unittest.TestCase):
         )
         self.assertEqual(
             report["overall"]["quality_verdict"],
-            "telgen_better_throughput",
+            "telgen_better_latency",
         )
 
 

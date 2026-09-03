@@ -3,28 +3,29 @@
 当前仓库只保留一条研究主链：
 
 ```text
-在线精确 MILP 标签
+LP 教师样本
         ↓
-可行性掩码自回归 GNN
+TELGEN IPM 轨迹 GNN
         ↓
-中性离散构造计划
+可行的连续规划解
         ↓
-SeQUeNCe 物理执行
+共享容量舍入
         ↓
-与 Q-CAST 在线基线比较
+SeQUeNCe 在线执行与基线比较
 ```
 
-研究对象是多请求场景下的联合路径与交换构造计划选择。MILP 先最大化
-期望完成量，再在最优完成量下最小化期望完成延迟；GNN 学习 MILP 的离散
-选择集合，在线推理时不调用 LP/MILP，也不使用事后硬解码或局部搜索。
+研究核心是可泛化的量子网络规划。GNN 在一种拓扑族上学习 LP 教师的规划
+规律，测试时迁移到未见拓扑和更大规模，并在在线推理时不调用 LP/MILP。
+连续输出通过与教师一致的容量安全舍入转换为可执行计划。
 
 ## 目录
 
-- `algorithms/telgen/`：候选展开、MILP、约束图、自回归 GNN、训练与评估；
+- `algorithms/telgen/`：候选展开、LP/MILP 教师、约束图、IPM 轨迹 GNN、训练与评估；
 - `algorithms/qcast/`：共享在线环境中的 Q-CAST 路径基线；
 - `qnet_core/`：规划层与 SeQUeNCe 之间的中性接口和持久执行器；
 - `QCAST/`：Q-CAST 上游源码参考，不参与物理仿真；
 - `results/`：实验数据、模型与评估结果；
+- `experiments/`：围绕论文核心价值的固定实验协议和可扩展配置；
 - `server_training_job.sh`：服务器固定配置训练任务。
 
 ## 分层边界
@@ -47,52 +48,34 @@ python -m qnet_core.sequence_smoke
 python -m pytest -q
 ```
 
-## 基本流程
+## 核心实验
 
-生成在线精确 MILP 标签：
+实验协议集中在 `experiments/core_value_config.json`。新增拓扑、规模或负载
+只需增加配置项，不需要修改规划器和物理层。
+
+先检查协议：
 
 ```bash
-python -m algorithms.telgen.generate_online_milp_data \
-  --output results/milp_data \
-  --episodes 20 \
-  --requests 20 \
-  --requests-per-batch 5 \
-  --decision-interval 4 \
-  --nodes 64 \
-  --min-hops 4 \
-  --max-hops 4 \
-  --paths 4 \
-  --construction-plans 5
+python -m experiments.run_core_value --dry-run --case all
 ```
 
-训练自回归 GNN：
+运行 LP 学习质量和拓扑泛化：
 
 ```bash
-python -m algorithms.telgen.train_online_milp_gnn \
-  --dataset results/milp_data/online_milp_dataset.json \
-  --output results/gnn_model \
-  --device auto
+python -m experiments.run_core_value --case quality
+python -m experiments.run_core_value --case generalization
 ```
 
-在相同 EpisodeSpec 和独立同配置 SeQUeNCe 执行器上比较 GNN、MILP 与
-Q-CAST：
+运行在线 GNN、MILP、Q-CAST 配对比较：
 
 ```bash
-python -m algorithms.telgen.compare_online_gnn \
-  --checkpoint results/gnn_model/online_milp_gnn.pt \
-  --output results/online_comparison \
-  --seeds 20 \
-  --seed-start 30000
+python -m experiments.run_core_value --case online
 ```
 
-验证构造方式选择本身是否优于固定交换树：
+完整运行：
 
 ```bash
-python -m algorithms.telgen.validate_construction_milp \
-  --output results/construction_milp
-
-python -m algorithms.telgen.validate_construction_physics \
-  --output results/construction_physics
+python -m experiments.run_core_value --case all
 ```
 
 服务器固定任务：
@@ -104,4 +87,5 @@ bash server_training_job.sh status
 bash server_training_job.sh log
 ```
 
-实验协议见 [`refine-logs/EXPERIMENT_PLAN.md`](refine-logs/EXPERIMENT_PLAN.md)。
+实验协议见 [`experiments/core_value_config.json`](experiments/core_value_config.json)，
+说明见 [`refine-logs/EXPERIMENT_PLAN.md`](refine-logs/EXPERIMENT_PLAN.md)。

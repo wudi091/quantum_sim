@@ -1,0 +1,93 @@
+protocol_version: 1
+name: telgen_long_run_online_protocol
+
+# MILP remains the offline teacher. Online experiments compare only deployable
+# policies on the same episode and physical execution environment.
+methods: [gnn, qcast, qpass, greedy]
+
+checkpoint: results/telgen_ipm_rounding_v2/20260902_104954_pid62657/seed_20260826/telgen_ipm_model.pt
+output_root: results/online_long_run
+
+runner:
+  module: algorithms.telgen.compare_online_gnn
+  time_segments: 5
+
+# Shared settings. Every point below is a complete long-running online run.
+common:
+  seeds: 10
+  seed_start: 60000
+  requests: 300
+  requests_per_batch: 20
+  decision_interval: 4
+  ttl: 8
+  horizon: 256
+  nodes: 64
+  endpoint_mode: uniform_random
+  topology_mode: waxman
+  topology_attempts: 128
+  waxman_alpha: 0.15
+  waxman_beta: 0.45
+  waxman_add_mst: true
+  barabasi_attachment: 2
+  paths: 4
+  construction_plans: 5
+  gnn_device: auto
+  milp_time_limit_seconds: 30.0
+  generation_probability: 0.8
+  swap_probability: 0.9
+  memory_capacity: 2
+  quantum_distance_m: 1000.0
+  slot_duration_ps: 50000000
+
+experiments:
+  - id: standard_stability
+    kind: temporal_stability
+    x_axis: time_segment
+    values: [1, 2, 3, 4, 5]
+    overrides: {}
+
+  - id: request_load
+    kind: sweep
+    x_axis: requests
+    parameter: requests
+    values: [20, 50, 100, 200, 300]
+
+  - id: network_scale
+    kind: sweep
+    x_axis: nodes
+    parameter: nodes
+    values: [32, 64, 128, 192, 256]
+
+  - id: topology_generalization
+    kind: points
+    x_axis: topology
+    points:
+      - label: unseen_waxman
+        overrides:
+          topology_mode: waxman
+          nodes: 64
+      - label: ba
+        overrides:
+          topology_mode: barabasi_albert
+          nodes: 64
+      - label: cost266
+        overrides:
+          topology_file: data/reliq_topologies/raw/sndlib/cost266.json
+      - label: germany
+        overrides:
+          topology_file: data/reliq_topologies/raw/sndlib/germany50.json
+      - label: bellcanada
+        overrides:
+          topology_file: data/reliq_topologies/raw/topozoo/Bellcanada.json
+
+  - id: physical_conditions
+    kind: group
+    sweeps:
+      - id: link_generation
+        x_axis: generation_probability
+        parameter: generation_probability
+        values: [0.4, 0.55, 0.7, 0.85, 1.0]
+      - id: swapping
+        x_axis: swap_probability
+        parameter: swap_probability
+        values: [0.6, 0.7, 0.8, 0.9, 1.0]

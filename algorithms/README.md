@@ -6,21 +6,24 @@
 
 - `dataset.py`：生成路径—构造候选并建立在线规划问题；
 - `time_expansion.py`：把构造 DAG 映射为资源—时隙占用；
-- `optimization_model.py`：两阶段 MILP 的稀疏目标和约束矩阵；
-- `milp_oracle.py`：精确 0/1 MILP 标签教师；
-- `milp_imitation.py`：候选—约束图、自回归状态和 GNN；
+- `optimization_model.py`：LP/MILP 的稀疏目标和约束矩阵；
+- `milp_oracle.py`：精确 0/1 MILP 参考教师；
+- `milp_imitation.py`：在线基线仍使用的候选—约束图组件；
+- `ipm_trajectory_pilot.py`：TELGEN 风格 LP 内点法轨迹教师和图 GNN；
 - `online_milp_dataset.py`：在线标签数据读取；
 - `train_online_milp_gnn.py`：训练、验证和 checkpoint 选择；
-- `gnn_policy.py`：加载 checkpoint 并直接输出离散动作序列；
+- `ipm_policy.py`：加载 IPM checkpoint，输出连续规划解并做容量安全舍入；
 - `online.py`：共享滚动请求队列与 TELGEN 在线控制；
 - `physical_validation.py`：把已选变量编译为中性物理计划；
 - `compare_online_gnn.py`：GNN、MILP 与 Q-CAST 的配对在线比较；
 - `validate_construction_milp.py`：自适应交换树与固定交换树的 MILP 消融；
 - `validate_construction_physics.py`：在 SeQUeNCe 中复放构造消融计划。
 
-GNN 每一步在当前可行候选和 `STOP` 中作一次模型决策。请求唯一性与
-资源—时隙容量在 softmax 前形成动态动作掩码，因此不会先输出任意连续分数
-再交给独立硬解码器修复。
+IPM 轨迹 GNN 在三部图上共享迭代参数，输出连续 LP 规划解。请求结构在读出
+阶段保持不变，最终使用与教师一致的共享容量安全舍入生成离散执行计划。
+
+实验协议统一由 `experiments/run_core_value.py` 驱动，分为 LP 学习质量、
+拓扑泛化和在线端到端比较三组。
 
 ## Q-CAST 基线
 

@@ -22,21 +22,41 @@ _CONTRACT_FLAGS = {
 }
 
 _METRICS = {
-    "completed_requests": {
-        "label": "完成请求数",
-        "higher_is_better": True,
+    "mean_completion_delay_ps": {
+        "label": "平均完成时延（截尾，ps）",
+        "higher_is_better": False,
         "role": "primary",
     },
-    "mean_censored_latency_ps": {
-        "label": "平均删失完成延迟（ps）",
+    "max_completion_delay_ps": {
+        "label": "最大完成时延（ps）",
         "higher_is_better": False,
         "role": "secondary",
     },
-    "mean_decision_seconds": {
-        "label": "平均决策时间（秒）",
+    "mean_final_fidelity_loss": {
+        "label": "平均最终保真度损失",
+        "higher_is_better": False,
+        "role": "secondary",
+    },
+    "completion_delay_gini": {
+        "label": "完成时延基尼系数",
+        "higher_is_better": False,
+        "role": "secondary",
+    },
+    "completed_requests": {
+        "label": "完成请求数",
+        "higher_is_better": True,
+        "role": "throughput",
+    },
+    "mean_planner_seconds": {
+        "label": "平均规划时间（秒）",
         "higher_is_better": False,
         "role": "runtime",
     },
+}
+
+_METRIC_ALIASES = {
+    "mean_completion_delay_ps": ("mean_completion_delay_ps", "mean_censored_latency_ps"),
+    "mean_planner_seconds": ("mean_planner_seconds", "mean_decision_seconds"),
 }
 
 _NON_FATAL_SCHEDULE_CODES = frozenset({"slot_completion_overrun"})
@@ -162,29 +182,19 @@ def _quality_verdict(
 ) -> str:
     if not valid:
         return "invalid_hard_gate_failure"
-    completion = metrics["completed_requests"]
-    completion_low = float(completion["ci95_low"])
-    completion_high = float(completion["ci95_high"])
-    completion_p = float(completion["paired_randomization_p"])
-    if completion_low > 0.0 and completion_p < 0.05:
-        return "telgen_better_throughput"
-    if completion_high < 0.0 and completion_p < 0.05:
-        return "qcast_better_throughput"
-    if not bool(completion["all_paired_advantages_zero"]):
-        return "inconclusive_throughput"
-    latency = metrics["mean_censored_latency_ps"]
+    latency = metrics["mean_completion_delay_ps"]
     latency_low = float(latency["ci95_low"])
     latency_high = float(latency["ci95_high"])
     latency_p = float(latency["paired_randomization_p"])
     if latency_low > 0.0 and latency_p < 0.05:
-        return "telgen_better_latency_at_equal_throughput"
+        return "telgen_better_latency"
     if latency_high < 0.0 and latency_p < 0.05:
-        return "qcast_better_latency_at_equal_throughput"
-    return "statistically_inconclusive"
+        return "qcast_better_latency"
+    return "inconclusive_latency"
 
 
 def _runtime_verdict(metrics: Mapping[str, Mapping[str, object]]) -> str:
-    runtime = metrics["mean_decision_seconds"]
+    runtime = metrics["mean_planner_seconds"]
     low = float(runtime["ci95_low"])
     high = float(runtime["ci95_high"])
     p_value = float(runtime["paired_randomization_p"])
@@ -216,11 +226,17 @@ def _case_groups(
     payload: Mapping[str, object],
     metric: str,
 ) -> tuple[list[float], list[float]]:
+    def value(metrics: Mapping[str, object]) -> float:
+        for name in _METRIC_ALIASES.get(metric, (metric,)):
+            if name in metrics:
+                return float(metrics[name])
+        raise ValueError(f"missing metric {metric}")
+
     telgen: list[float] = []
     qcast: list[float] = []
     for trial in payload["trials"]:
-        telgen.append(float(trial["telgen"]["metrics"][metric]))
-        qcast.append(float(trial["qcast"]["metrics"][metric]))
+        telgen.append(value(trial["telgen"]["metrics"]))
+        qcast.append(value(trial["qcast"]["metrics"]))
     return telgen, qcast
 
 
@@ -317,14 +333,16 @@ def analyze_online_payloads(
         "analysis_contract": {
             "paired_trials": True,
             "balanced_case_weighting": True,
-            "primary_metric": "completed_requests",
-            "secondary_metric": "mean_censored_latency_ps",
-            "runtime_metric": "mean_decision_seconds",
+            "primary_metric": "mean_completion_delay_ps",
+            "secondary_metrics": [
+                "max_completion_delay_ps",
+                "mean_final_fidelity_loss",
+                "completion_delay_gini",
+            ],
+            "throughput_metric": "completed_requests",
+            "runtime_metric": "mean_planner_seconds",
             "positive_advantage_means": "telgen_better",
-            "quality_rule": (
-                "compare throughput first; use latency only when every paired "
-                "throughput difference is zero"
-            ),
+            "quality_rule": "compare mean completion delay first; report throughput separately",
             "non_fatal_schedule_codes": sorted(_NON_FATAL_SCHEDULE_CODES),
             "confidence_level": 0.95,
             "bootstrap_samples": bootstrap_samples,
@@ -364,12 +382,9 @@ def analyze_online_reports(
 
 def _verdict_text(verdict: str) -> str:
     return {
-        "telgen_better_throughput": "TELGEN 吞吐显著更优",
-        "qcast_better_throughput": "Q-CAST 吞吐显著更优",
-        "telgen_better_latency_at_equal_throughput": "吞吐完全相同，TELGEN 延迟显著更低",
-        "qcast_better_latency_at_equal_throughput": "吞吐完全相同，Q-CAST 延迟显著更低",
-        "inconclusive_throughput": "吞吐差异尚不确定，不能降级到延迟判优",
-        "statistically_inconclusive": "统计上无法判定业务质量优劣",
+        "telgen_better_latency": "TELGEN 平均完成时延显著更低",
+        "qcast_better_latency": "Q-CAST 平均完成时延显著更低",
+        "inconclusive_latency": "平均完成时延差异不显著",
         "invalid_hard_gate_failure": "存在硬约束违例，实验无效",
         "telgen_faster": "TELGEN 决策显著更快",
         "qcast_faster": "Q-CAST 决策显著更快",
@@ -388,22 +403,22 @@ def _markdown(analysis: Mapping[str, object]) -> str:
         f"- 规划耗时结论：**{_verdict_text(overall['runtime_verdict'])}**",
         f"- 可执行性硬门槛：{'通过' if overall['valid'] else '失败'}",
         "",
-        "判定顺序是先比较完成请求数；只有每个配对 episode 的完成数都相同时，才使用删失完成延迟判优。规划耗时单独报告，不与业务质量混合成一个分数。",
+        "平均完成时延是主指标；完成请求数作为吞吐补充指标，规划耗时单独报告，不与业务质量混合成一个分数。",
         "",
         "## 分场景结果",
         "",
-        "| 场景 | 样本数 | TELGEN 完成数 | Q-CAST 完成数 | 完成数优势及 95% CI | TELGEN 延迟 | Q-CAST 延迟 | 业务质量结论 |",
+        "| 场景 | 样本数 | TELGEN 延迟 | Q-CAST 延迟 | 延迟优势及 95% CI | TELGEN 完成数 | Q-CAST 完成数 | 业务质量结论 |",
         "|---|---:|---:|---:|---:|---:|---:|---|",
     ]
     for case_name, case in analysis["cases"].items():
+        latency = case["metrics"]["mean_completion_delay_ps"]
         completed = case["metrics"]["completed_requests"]
-        latency = case["metrics"]["mean_censored_latency_ps"]
         lines.append(
             f"| {case_name} | {case['trial_count']} | "
-            f"{completed['telgen_mean']:.3f} | {completed['qcast_mean']:.3f} | "
-            f"{completed['telgen_advantage_mean']:.3f} "
-            f"[{completed['ci95_low']:.3f}, {completed['ci95_high']:.3f}] | "
             f"{latency['telgen_mean']:.3f} | {latency['qcast_mean']:.3f} | "
+            f"{latency['telgen_advantage_mean']:.3f} "
+            f"[{latency['ci95_low']:.3f}, {latency['ci95_high']:.3f}] | "
+            f"{completed['telgen_mean']:.3f} | {completed['qcast_mean']:.3f} | "
             f"{_verdict_text(case['quality_verdict'])} |"
         )
     lines.extend([
@@ -424,7 +439,7 @@ def _markdown(analysis: Mapping[str, object]) -> str:
         )
     lines.extend([
         "",
-        "所有“优势”均统一为正值表示 TELGEN 更好：完成数使用 TELGEN−Q-CAST，延迟和决策时间使用 Q-CAST−TELGEN。",
+        "所有“优势”均统一为正值表示 TELGEN 更好：完成数使用 TELGEN−Q-CAST，时延、保真度损失、基尼系数和规划时间使用 Q-CAST−TELGEN。",
         "",
         "## 可执行性门槛与名义超时",
         "",
