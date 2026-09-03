@@ -46,6 +46,7 @@ import warnings
 import networkx as nx
 import numpy as np
 from scipy.optimize import linprog
+from scipy.sparse import csr_matrix
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -215,6 +216,42 @@ def _maximum_feasible_prefix_scale(
     )
 
 
+def _deduplicate_solver_rows(
+    matrix: np.ndarray,
+    rhs: np.ndarray,
+) -> tuple[csr_matrix, np.ndarray]:
+    """Remove exact duplicate inequality rows for the LP solver only.
+
+    Candidate/resource expansion can produce the same normalized packing row
+    many times (for example, when several construction candidates touch the
+    same resource--slot pattern).  Duplicate rows do not change the feasible
+    set, but they make the normal equations used by SciPy's legacy interior
+    point implementation singular or badly conditioned.  The graph kept for
+    the GNN remains unchanged; this is an exact solver-side presolve step.
+    """
+
+    sparse = csr_matrix(matrix)
+    sparse.sum_duplicates()
+    if not len(rhs) or sparse.shape[0] < 2:
+        return sparse, np.asarray(rhs, dtype=np.float64)
+    keep: list[int] = []
+    seen: set[tuple[bytes, bytes, bytes]] = set()
+    for row_index in range(sparse.shape[0]):
+        start, end = sparse.indptr[row_index:row_index + 2]
+        indices = np.asarray(sparse.indices[start:end], dtype=np.int64)
+        data = np.asarray(sparse.data[start:end], dtype=np.float64)
+        rhs_value = np.asarray(rhs[row_index], dtype=np.float64)
+        key = (indices.tobytes(), data.tobytes(), rhs_value.tobytes())
+        if key in seen:
+            continue
+        seen.add(key)
+        keep.append(row_index)
+    if len(keep) == sparse.shape[0]:
+        return sparse, np.asarray(rhs, dtype=np.float64)
+    keep_array = np.asarray(keep, dtype=np.int64)
+    return sparse[keep_array], np.asarray(rhs, dtype=np.float64)[keep_array]
+
+
 def solve_scipy_ipm_trajectory(
     matrix: np.ndarray,
     rhs: np.ndarray,
@@ -249,35 +286,70 @@ def solve_scipy_ipm_trajectory(
     if not np.isfinite(objective_constant) or objective_constant < 0.0:
         raise ValueError("objective_constant must be finite and non-negative")
 
+    # Keep the graph representation dense because the GNN feature builder
+    # consumes the matrix directly, but give the solver an equivalent sparse
+    # representation first.  The sparse code path avoids the dense
+    # normal-equation factorization that becomes severely ill-conditioned for
+    # the large, highly redundant resource--time matrices in the training
+    # protocol.  A few tiny, deliberately degenerate fixtures are better
+    # handled by the dense path, so retain it as a deterministic fallback.
+    # Both attempts have exactly the same coefficients, bounds, feasible set,
+    # and objective; only the numerical linear-algebra representation differs.
+    solver_sparse_matrix, solver_rhs = _deduplicate_solver_rows(
+        matrix, rhs
+    )
+    solver_attempts = (
+        ("sparse", solver_sparse_matrix),
+        ("dense", solver_sparse_matrix.toarray()),
+    )
+    result = None
     callbacks: list[np.ndarray] = []
+    failures: list[str] = []
+    for representation, solver_matrix in solver_attempts:
+        attempt_callbacks: list[np.ndarray] = []
 
-    def record(result: object) -> None:
-        point = np.asarray(getattr(result, "x"), dtype=np.float64)
-        callbacks.append(point.copy())
+        def record(attempt_result: object) -> None:
+            point = np.asarray(
+                getattr(attempt_result, "x"), dtype=np.float64
+            )
+            attempt_callbacks.append(point.copy())
 
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore",
-            message="`method='interior-point'` is deprecated",
-            category=DeprecationWarning,
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message="`method='interior-point'` is deprecated",
+                category=DeprecationWarning,
+            )
+            attempt = linprog(
+                objective,
+                A_ub=solver_matrix if len(rhs) else None,
+                b_ub=solver_rhs if len(rhs) else None,
+                bounds=(0.0, 1.0),
+                method="interior-point",
+                callback=record,
+                options={
+                    "presolve": True,
+                    "tol": float(tolerance),
+                    "maxiter": int(max_iterations),
+                },
+            )
+        if (
+            attempt.success
+            and attempt.x is not None
+            and np.isfinite(attempt.fun)
+            and np.isfinite(np.asarray(attempt.x, dtype=np.float64)).all()
+        ):
+            result = attempt
+            callbacks = attempt_callbacks
+            break
+        failures.append(
+            f"{representation}: status={attempt.status}, "
+            f"message={attempt.message}"
         )
-        result = linprog(
-            objective,
-            A_ub=matrix if len(rhs) else None,
-            b_ub=rhs if len(rhs) else None,
-            bounds=(0.0, 1.0),
-            method="interior-point",
-            callback=record,
-            options={
-                "presolve": True,
-                "tol": float(tolerance),
-                "maxiter": int(max_iterations),
-            },
-        )
-    if not result.success or result.x is None or not np.isfinite(result.fun):
+    if result is None:
         raise RuntimeError(
-            "SciPy interior-point teacher failed: "
-            f"status={result.status}, message={result.message}"
+            "SciPy interior-point teacher failed after sparse and dense "
+            "attempts: " + "; ".join(failures)
         )
     final_point = np.asarray(result.x, dtype=np.float64)
     if not callbacks:
