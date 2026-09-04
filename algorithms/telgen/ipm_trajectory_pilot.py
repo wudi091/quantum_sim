@@ -10,7 +10,7 @@ single-stage quantum planning LP:
 * K shared outer loops imitate IPM iterations and J inner GNN layers imitate
   the Newton step;
 * training uses the primal, objective, normalized constraint, request-mass,
-  and request-admission losses;
+  and within-request distribution losses;
 * request uniqueness is parameterized at the readout, while one deterministic
   capacity-safe rounding shared with the IPM teacher produces an executable
   plan.
@@ -1109,16 +1109,18 @@ def _sample_loss(
     objective_weight: float = 3.43,
     constraint_weight: float = 5.8,
     request_mass_weight: float = 2.0,
-    request_admission_weight: float = 2.0,
     candidate_distribution_weight: float = 0.5,
 ) -> tuple[torch.Tensor, dict[str, float]]:
-    """Step-supervised IPM loss with quantum request-structure terms."""
+    """Step-supervised loss for the single-stage LP trajectory.
+
+    Request mass and within-request distribution describe the same continuous
+    primal; they do not introduce a separate admission or throughput target.
+    """
 
     if not 0.0 <= discount <= 1.0:
         raise ValueError("discount must lie in [0, 1]")
     if (
         request_mass_weight < 0.0
-        or request_admission_weight < 0.0
         or candidate_distribution_weight < 0.0
     ):
         raise ValueError("request-structure loss weights must be non-negative")
@@ -1171,7 +1173,6 @@ def _sample_loss(
     for index, variable in enumerate(sample.variables):
         request_groups.setdefault(variable.request_id, []).append(index)
     request_mass_terms: list[torch.Tensor] = []
-    request_admission_terms: list[torch.Tensor] = []
     distribution_terms: list[torch.Tensor] = []
     for indices in request_groups.values():
         index_tensor = torch.as_tensor(
@@ -1183,16 +1184,6 @@ def _sample_loss(
         target_mass = target_request.sum(dim=1)
         request_mass_terms.append(
             (predicted_mass - target_mass).pow(2) * weights
-        )
-        target_admission = (target_mass[-1].detach() >= 0.5).to(
-            predicted_mass.dtype
-        )
-        request_admission_terms.append(
-            F.binary_cross_entropy(
-                predicted_mass.clamp(1e-6, 1.0 - 1e-6),
-                target_admission.expand_as(predicted_mass),
-                reduction="none",
-            ) * weights
         )
         predicted_distribution = (
             predicted_request
@@ -1211,11 +1202,6 @@ def _sample_loss(
         if request_mass_terms
         else prediction.new_zeros(())
     )
-    request_admission_loss = (
-        torch.stack(request_admission_terms).mean()
-        if request_admission_terms
-        else prediction.new_zeros(())
-    )
     candidate_distribution_loss = (
         torch.stack(distribution_terms).mean()
         if distribution_terms
@@ -1226,7 +1212,6 @@ def _sample_loss(
         + objective_weight * objective_loss
         + constraint_weight * constraint_loss
         + request_mass_weight * request_mass_loss
-        + request_admission_weight * request_admission_loss
         + candidate_distribution_weight * candidate_distribution_loss
     )
     return total, {
@@ -1234,9 +1219,6 @@ def _sample_loss(
         "objective_loss": float(objective_loss.detach().cpu()),
         "constraint_loss": float(constraint_loss.detach().cpu()),
         "request_mass_loss": float(request_mass_loss.detach().cpu()),
-        "request_admission_loss": float(
-            request_admission_loss.detach().cpu()
-        ),
         "candidate_distribution_loss": float(
             candidate_distribution_loss.detach().cpu()
         ),
@@ -1744,7 +1726,6 @@ def _mean_supervised_loss(
     objective_weight: float,
     constraint_weight: float,
     request_mass_weight: float,
-    request_admission_weight: float,
     candidate_distribution_weight: float,
 ) -> float:
     if not samples:
@@ -1762,7 +1743,6 @@ def _mean_supervised_loss(
                 objective_weight=objective_weight,
                 constraint_weight=constraint_weight,
                 request_mass_weight=request_mass_weight,
-                request_admission_weight=request_admission_weight,
                 candidate_distribution_weight=candidate_distribution_weight,
             )
             value = float(loss.detach().cpu())
@@ -1811,7 +1791,7 @@ def _save_checkpoint(
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save({
-        "schema_version": 4,
+        "schema_version": 5,
         "model_class": "TELGENPaperGNN",
         "method": "single_stage_delay_ipm_trajectory_with_shared_rounding",
         "objective": "expected_censored_completion_latency",
@@ -1865,7 +1845,6 @@ def run_pilot(
     objective_weight: float = 3.43,
     constraint_weight: float = 5.8,
     request_mass_weight: float = 2.0,
-    request_admission_weight: float = 2.0,
     candidate_distribution_weight: float = 0.5,
     learning_rate: float = 1e-5,
     weight_decay: float = 0.0,
@@ -1921,7 +1900,6 @@ def run_pilot(
         objective_weight < 0.0
         or constraint_weight < 0.0
         or request_mass_weight < 0.0
-        or request_admission_weight < 0.0
         or candidate_distribution_weight < 0.0
     ):
         raise ValueError("loss weights must be non-negative")
@@ -2108,7 +2086,6 @@ def run_pilot(
                 objective_weight=objective_weight,
                 constraint_weight=constraint_weight,
                 request_mass_weight=request_mass_weight,
-                request_admission_weight=request_admission_weight,
                 candidate_distribution_weight=candidate_distribution_weight,
             )
             loss.backward()
@@ -2121,7 +2098,6 @@ def run_pilot(
             objective_weight=objective_weight,
             constraint_weight=constraint_weight,
             request_mass_weight=request_mass_weight,
-            request_admission_weight=request_admission_weight,
             candidate_distribution_weight=candidate_distribution_weight,
         )
         if validation_loss < best_validation_loss - min_delta:
@@ -2190,11 +2166,11 @@ def run_pilot(
             "edge_features": "A, c, and b coefficients",
             "loss": (
                 "discounted primal + reduced-delay objective gap + "
-                "normalized constraint violation + request-structure "
-                "supervision"
+                "normalized constraint violation + request-mass and "
+                "within-request distribution supervision"
             ),
             "readout": (
-                "request admission sigmoid times within-request normalized "
+                "request-mass sigmoid times within-request normalized "
                 "candidate softplus weights"
             ),
             "request_uniqueness": (
@@ -2277,7 +2253,6 @@ def run_pilot(
         "objective_weight": objective_weight,
         "constraint_weight": constraint_weight,
         "request_mass_weight": request_mass_weight,
-        "request_admission_weight": request_admission_weight,
         "candidate_distribution_weight": candidate_distribution_weight,
         "learning_rate": learning_rate,
         "weight_decay": weight_decay,
@@ -2354,9 +2329,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--constraint-weight", type=float, default=5.8)
     parser.add_argument("--request-mass-weight", type=float, default=2.0)
     parser.add_argument(
-        "--request-admission-weight", type=float, default=2.0
-    )
-    parser.add_argument(
         "--candidate-distribution-weight", type=float, default=0.5
     )
     parser.add_argument("--learning-rate", type=float, default=1e-5)
@@ -2430,7 +2402,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         objective_weight=args.objective_weight,
         constraint_weight=args.constraint_weight,
         request_mass_weight=args.request_mass_weight,
-        request_admission_weight=args.request_admission_weight,
         candidate_distribution_weight=args.candidate_distribution_weight,
         learning_rate=args.learning_rate,
         weight_decay=args.weight_decay,

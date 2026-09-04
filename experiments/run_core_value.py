@@ -68,7 +68,7 @@ def _load_model(
     )
     if not isinstance(checkpoint, Mapping):
         raise ValueError("checkpoint must contain a mapping")
-    if checkpoint.get("schema_version") != 4:
+    if checkpoint.get("schema_version") != 5:
         raise ValueError(
             "checkpoint does not use the single-stage delay objective; "
             "retrain the IPM-GNN model"

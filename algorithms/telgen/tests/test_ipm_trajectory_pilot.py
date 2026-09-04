@@ -87,6 +87,7 @@ class IPMTrajectoryPilotTests(unittest.TestCase):
             loss, parts = _sample_loss(prediction, sample)
             self.assertTrue(bool(torch.isfinite(loss)))
             self.assertTrue(np.isfinite(list(parts.values())).all())
+            self.assertNotIn("request_admission_loss", parts)
             loss.backward()
             gradients = [
                 parameter.grad

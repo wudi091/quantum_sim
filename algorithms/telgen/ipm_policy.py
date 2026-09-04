@@ -101,7 +101,7 @@ class OnlineIPMGNNPolicy:
         )
         if not isinstance(checkpoint, Mapping):
             raise ValueError("IPM GNN checkpoint must contain a mapping")
-        if checkpoint.get("schema_version") != 4:
+        if checkpoint.get("schema_version") != 5:
             raise ValueError(
                 "checkpoint does not use the single-stage delay objective and "
                 "must be retrained"

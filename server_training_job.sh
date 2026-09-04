@@ -188,10 +188,9 @@ valid = (
     and payload.get("data_protocol", {}).get("validation", {}).get("samples") == 80
     and payload.get("best_epoch", 0) > 0
     and math.isfinite(float(payload.get("best_validation_loss", float("nan"))))
-    and payload.get("request_admission_weight") == 6.0
-    and payload.get("learning_rate") == 0.00005
+    and payload.get("learning_rate") == 0.0002
     and payload.get("quantum_adaptation", {}).get("objective") == "single-stage expected censored completion latency"
-    and checkpoint.get("schema_version") == 4
+    and checkpoint.get("schema_version") == 5
     and checkpoint.get("model_class") == "TELGENPaperGNN"
     and checkpoint.get("objective") == "expected_censored_completion_latency"
     and decoder.get("name") == "shared_capacity_safe_rounding"
@@ -235,9 +234,8 @@ run_training_seed() {
         --objective-weight 3.43 \
         --constraint-weight 5.8 \
         --request-mass-weight 2.0 \
-        --request-admission-weight 6.0 \
         --candidate-distribution-weight 0.5 \
-        --learning-rate 0.00005 \
+        --learning-rate 0.0002 \
         --weight-decay 0 \
         --train-topology waxman \
         --train-nodes "${TRAIN_NODES[@]}" \

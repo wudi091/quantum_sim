@@ -50,7 +50,7 @@ class OnlineTELGENTests(unittest.TestCase):
             prediction_layers=1,
         )
         torch.save({
-            "schema_version": 4,
+            "schema_version": 5,
             "model_class": "TELGENPaperGNN",
             "method": "single_stage_delay_ipm_trajectory_with_shared_rounding",
             "objective": "expected_censored_completion_latency",
