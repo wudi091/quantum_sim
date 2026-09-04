@@ -43,6 +43,9 @@ class TrainingRunConfig:
     random_seed: int = 20260905
     topology_seed: int = 3101
     checkpoint_every_updates: int = 10
+    validation_every_updates: int = 10
+    validation_episode_count: int = 8
+    validation_seed: int = 30260905
     output_directory: str = "results/arcq/training"
     device: str = "auto"
     cpu_threads: int | None = None
@@ -52,6 +55,23 @@ class TrainingRunConfig:
             raise ValueError("training episode counts must be positive")
         if self.checkpoint_every_updates < 1:
             raise ValueError("checkpoint_every_updates must be positive")
+        if self.validation_every_updates < 1:
+            raise ValueError("validation_every_updates must be positive")
+        if self.validation_episode_count < 1:
+            raise ValueError("validation_episode_count must be positive")
+        training_seeds = range(
+            self.random_seed + 1,
+            self.random_seed + self.episode_count + 1,
+        )
+        validation_seeds = range(
+            self.validation_seed,
+            self.validation_seed + self.validation_episode_count,
+        )
+        if max(training_seeds.start, validation_seeds.start) < min(
+            training_seeds.stop,
+            validation_seeds.stop,
+        ):
+            raise ValueError("training and validation episode seeds overlap")
         if not self.output_directory:
             raise ValueError("output_directory must be non-empty")
         if self.cpu_threads is not None and self.cpu_threads < 1:
@@ -146,6 +166,49 @@ def _restore_rng_state(state: object) -> None:
         torch.cuda.set_rng_state_all(values["cuda"])
 
 
+def _validation_metrics(
+    policy: ARCQPolicy,
+    config: ARCQTrainingConfig,
+) -> dict[str, float]:
+    """Evaluate deterministic actor-only decisions on fixed held-out traces."""
+
+    rollouts = tuple(
+        collect_episode(
+            policy,
+            make_episode(
+                config.scenario,
+                config.run.validation_seed + index,
+                topology_seed=config.run.topology_seed,
+            ),
+            config.environment,
+            deterministic=True,
+            collect_value_estimates=False,
+        )
+        for index in range(config.run.validation_episode_count)
+    )
+    maximum_identity_error = max(
+        abs(rollout.reward_identity_error) for rollout in rollouts
+    )
+    if maximum_identity_error > 1e-8:
+        raise RuntimeError("validation reward identity check failed")
+    return {
+        "validation_mean_censored_latency_slots": fmean(
+            rollout.execution.metrics["mean_censored_latency_ps"]
+            / rollout.execution.episode.physical.slot_duration_ps
+            for rollout in rollouts
+        ),
+        "validation_mean_completion_rate": fmean(
+            rollout.execution.metrics["completion_rate"]
+            for rollout in rollouts
+        ),
+        "validation_mean_planner_seconds": fmean(
+            rollout.execution.metrics["mean_planner_seconds"]
+            for rollout in rollouts
+        ),
+        "validation_maximum_reward_identity_error": maximum_identity_error,
+    }
+
+
 def train(
     config: ARCQTrainingConfig,
     *,
@@ -170,6 +233,8 @@ def train(
     history: list[dict[str, object]] = []
     episodes_completed = 0
     update_index = 0
+    best_validation_latency_slots: float | None = None
+    best_validation_update: int | None = None
     if resume_path is not None:
         from .checkpoint import load_arcq_checkpoint
 
@@ -199,12 +264,17 @@ def train(
                     f"resume checkpoint differs in {section} configuration"
                 )
         stored_run = _mapping(stored_config.get("run"), "checkpoint run config")
-        if int(stored_run["random_seed"]) != run.random_seed:
-            raise ValueError("resume checkpoint uses another random seed")
-        if int(stored_run["episodes_per_update"]) != run.episodes_per_update:
-            raise ValueError(
-                "resume checkpoint uses another episodes-per-update value"
-            )
+        for field in (
+            "random_seed",
+            "episodes_per_update",
+            "validation_every_updates",
+            "validation_episode_count",
+            "validation_seed",
+        ):
+            if int(stored_run[field]) != int(getattr(run, field)):
+                raise ValueError(
+                    f"resume checkpoint uses another {field.replace('_', '-')}"
+                )
         if int(training_state["fixed_training_topology_seed"]) != (
             run.topology_seed
         ):
@@ -215,6 +285,14 @@ def train(
         if not isinstance(raw_history, list):
             raise ValueError("checkpoint history must be a list")
         history = [dict(row) for row in raw_history]
+        stored_best = training_state.get("best_validation_latency_slots")
+        best_validation_latency_slots = (
+            None if stored_best is None else float(stored_best)
+        )
+        stored_best_update = training_state.get("best_validation_update")
+        best_validation_update = (
+            None if stored_best_update is None else int(stored_best_update)
+        )
         if episodes_completed > run.episode_count:
             raise ValueError("checkpoint exceeds configured episode count")
         if metadata.get("rng_state") is None:
@@ -258,6 +336,29 @@ def train(
                 for rollout in rollouts
             ),
         }
+        validation_due = (
+            update_index % run.validation_every_updates == 0
+            or episodes_completed == run.episode_count
+        )
+        is_best_validation = False
+        if validation_due:
+            validation = _validation_metrics(policy, config)
+            validation_latency = float(
+                validation["validation_mean_censored_latency_slots"]
+            )
+            is_best_validation = (
+                best_validation_latency_slots is None
+                or validation_latency < best_validation_latency_slots
+            )
+            if is_best_validation:
+                best_validation_latency_slots = validation_latency
+                best_validation_update = update_index
+            history_row.update(validation)
+            history_row["is_best_validation"] = is_best_validation
+        history_row["best_validation_latency_slots"] = (
+            best_validation_latency_slots
+        )
+        history_row["best_validation_update"] = best_validation_update
         history.append(history_row)
         print(json.dumps(history_row, ensure_ascii=False), flush=True)
         _write_json_atomic(output / "training_history.json", {
@@ -267,6 +368,27 @@ def train(
             "config": asdict(config),
             "history": history,
         })
+        checkpoint_training_state = {
+            "update": update_index,
+            "episodes_completed": episodes_completed,
+            "fixed_training_topology_seed": run.topology_seed,
+            "config": asdict(config),
+            "latest_metrics": history_row,
+            "history": history,
+            "best_validation_latency_slots": best_validation_latency_slots,
+            "best_validation_update": best_validation_update,
+            "model_selection_metric": "mean_censored_latency_slots",
+        }
+        if is_best_validation:
+            save_arcq_checkpoint(
+                output / "arcq_best.pt",
+                policy,
+                hidden_dim=config.model.hidden_dim,
+                message_passing_layers=config.model.message_passing_layers,
+                training_state=checkpoint_training_state,
+                optimizer_state_dict=trainer.optimizer.state_dict(),
+                rng_state=_rng_state(),
+            )
         if (
             update_index % run.checkpoint_every_updates == 0
             or episodes_completed == run.episode_count
@@ -276,14 +398,7 @@ def train(
                 policy,
                 hidden_dim=config.model.hidden_dim,
                 message_passing_layers=config.model.message_passing_layers,
-                training_state={
-                    "update": update_index,
-                    "episodes_completed": episodes_completed,
-                    "fixed_training_topology_seed": run.topology_seed,
-                    "config": asdict(config),
-                    "latest_metrics": history_row,
-                    "history": history,
-                },
+                training_state=checkpoint_training_state,
                 optimizer_state_dict=trainer.optimizer.state_dict(),
                 rng_state=_rng_state(),
             )

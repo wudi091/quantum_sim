@@ -50,6 +50,9 @@ run:
   random_seed: 8500
   topology_seed: 1
   checkpoint_every_updates: 1
+  validation_every_updates: 1
+  validation_episode_count: 1
+  validation_seed: 9500
   output_directory: results/arcq/smoke
   device: cpu
   cpu_threads: 1

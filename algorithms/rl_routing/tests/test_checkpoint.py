@@ -9,7 +9,7 @@ from algorithms.rl_routing.checkpoint import (
     save_arcq_checkpoint,
 )
 from algorithms.rl_routing.policy import ARCQPolicy
-from algorithms.rl_routing.train import load_training_config
+from algorithms.rl_routing.train import TrainingRunConfig, load_training_config
 
 
 class ARCQCheckpointTests(unittest.TestCase):
@@ -43,6 +43,25 @@ class ARCQCheckpointTests(unittest.TestCase):
         self.assertGreater(training.run.episode_count, 2)
         self.assertIsInstance(training.run.topology_seed, int)
         self.assertEqual(training.ppo.gamma, 1.0)
+        training_seeds = set(range(
+            training.run.random_seed + 1,
+            training.run.random_seed + training.run.episode_count + 1,
+        ))
+        validation_seeds = set(range(
+            training.run.validation_seed,
+            training.run.validation_seed
+            + training.run.validation_episode_count,
+        ))
+        self.assertTrue(training_seeds.isdisjoint(validation_seeds))
+
+    def test_training_and_validation_seeds_must_be_disjoint(self):
+        with self.assertRaisesRegex(ValueError, "overlap"):
+            TrainingRunConfig(
+                episode_count=10,
+                random_seed=100,
+                validation_episode_count=2,
+                validation_seed=105,
+            )
 
     def test_incompatible_checkpoint_schema_fails_before_state_loading(self):
         torch.manual_seed(8601)

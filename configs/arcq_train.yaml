@@ -55,6 +55,9 @@ run:
   random_seed: 20260905
   topology_seed: 3101
   checkpoint_every_updates: 10
+  validation_every_updates: 10
+  validation_episode_count: 8
+  validation_seed: 30260905
   output_directory: results/arcq/training
   device: auto
   cpu_threads: null

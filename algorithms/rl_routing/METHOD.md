@@ -100,6 +100,10 @@ Training varies request traces and physical randomness while holding one graph
 topology fixed. Evaluation must use disjoint request seeds and include both
 unseen instances of the training topology family and unseen topology families.
 LP, MILP, and supervised labels are not used in training or online inference.
+Checkpoint selection uses deterministic actor-only performance on a fixed set
+of request and physical seeds that is disjoint from both training and final
+test seeds. The final paper evaluation must load the best validation checkpoint,
+not choose a checkpoint from test performance.
 
 ## Paper claims and gates
 
