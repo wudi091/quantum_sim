@@ -1393,9 +1393,11 @@ def _sample_loss(
         normalized_violation = torch.relu(
             prediction @ matrix.T - rhs[None, :]
         )
-        constraint_loss = (
-            normalized_violation.pow(2) * weights[:, None]
-        ).mean()
+        # Interior-point iterates can be temporarily infeasible.  The
+        # executable plan is the final readout, so only that point should be
+        # required to satisfy the packing inequalities.  Penalizing every
+        # intermediate iterate conflicts with the trajectory supervision.
+        constraint_loss = normalized_violation[-1].pow(2).mean()
         maximum_violation = float(
             normalized_violation[-1].max().detach().cpu()
         )
@@ -2428,6 +2430,10 @@ def run_pilot(
                 "discounted primal + reduced-delay objective gap + "
                 "normalized constraint violation + request-mass and "
                 "within-request distribution supervision"
+            ),
+            "constraint_supervision": (
+                "final readout only; intermediate IPM iterates may be "
+                "temporarily infeasible"
             ),
             "readout": (
                 "request-mass sigmoid times within-request normalized "

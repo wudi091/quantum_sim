@@ -41,7 +41,7 @@ readonly PATH_COUNT=4
 readonly CONSTRUCTION_PLANS=5
 readonly IPM_STEPS=16
 
-declare -ar TRAINING_SEEDS=(20260826 20260827 20260828)
+readonly TRAINING_SEED=20260826
 declare -ar TRAIN_NODES=(64 96 128)
 declare -ar TEST_NODES=(160 192)
 declare -ar CROSS_NODES=(128 192)
@@ -204,33 +204,10 @@ PY
 run_training_seed() {
     local run_root="$1"
     local seed="$2"
-    local gpu_id="${3:-}"
     local model_dir="${run_root}/seed_${seed}"
     local report="${model_dir}/telgen_ipm_report.json"
     local checkpoint="${model_dir}/telgen_ipm_model.pt"
     local log_file="${run_root}/logs/seed_${seed}.log"
-
-    # Independent seeds can use separate GPUs.  The outer pipeline still
-    # invokes this function once per seed; the first invocation fans out the
-    # first two only when the shared teacher cache already exists.  Recursive
-    # calls carry an explicit GPU id and therefore do not fan out again.
-    if [[ -z "${gpu_id}" \
-        && "${seed}" == "${TRAINING_SEEDS[0]}" \
-        && ${#TRAINING_SEEDS[@]} -ge 2 \
-        && -f "${run_root}/dataset/telgen_ipm_dataset.pkl" ]]; then
-        run_training_seed "${run_root}" "${TRAINING_SEEDS[0]}" 0 &
-        local seed_a_pid=$!
-        run_training_seed "${run_root}" "${TRAINING_SEEDS[1]}" 1 &
-        local seed_b_pid=$!
-        local status_a=0
-        local status_b=0
-        wait "${seed_a_pid}" || status_a=$?
-        wait "${seed_b_pid}" || status_b=$?
-        if [[ ${status_a} -ne 0 || ${status_b} -ne 0 ]]; then
-            return 1
-        fi
-        return 0
-    fi
 
     mkdir -p "${model_dir}" "${run_root}/logs"
     if validate_report "${report}" "${checkpoint}" "${seed}"; then
@@ -238,9 +215,6 @@ run_training_seed() {
         return 0
     fi
 
-    if [[ -n "${gpu_id}" ]]; then
-        export CUDA_VISIBLE_DEVICES="${gpu_id}"
-    fi
     "${PYTHON_BIN}" -m algorithms.telgen.ipm_trajectory_pilot \
         --output "${report}" \
         --checkpoint "${checkpoint}" \
@@ -299,7 +273,7 @@ run_pipeline() {
     export OPENBLAS_NUM_THREADS=16
 
     echo "运行目录：${run_root}"
-    set_phase "阶段 0/4：记录环境与代码版本"
+    set_phase "阶段 0/3：记录环境与代码版本"
     {
         "${GIT_BIN}" -C "${SCRIPT_DIR}" rev-parse HEAD
         "${PYTHON_BIN}" -c '
@@ -312,7 +286,7 @@ print(f"scipy={scipy.__version__}")
 '
     } 2>&1 | tee "${run_root}/logs/environment.log"
 
-    set_phase "阶段 1/4：同配置 GPU 冒烟训练"
+    set_phase "阶段 1/3：同配置 GPU 冒烟训练"
     local sanity_report="${run_root}/sanity/telgen_ipm_report.json"
     local sanity_checkpoint="${run_root}/sanity/telgen_ipm_model.pt"
     if [[ ! -f "${sanity_report}" || ! -f "${sanity_checkpoint}" ]]; then
@@ -345,13 +319,8 @@ print(f"scipy={scipy.__version__}")
     test -f "${sanity_report}"
     test -f "${sanity_checkpoint}"
 
-    local index=0
-    local seed
-    for seed in "${TRAINING_SEEDS[@]}"; do
-        index=$((index + 1))
-        set_phase "阶段 $((index + 1))/4：正式训练 ${index}/3，seed=${seed}"
-        run_training_seed "${run_root}" "${seed}"
-    done
+    set_phase "阶段 2/3：正式训练（单种子），seed=${TRAINING_SEED}"
+    run_training_seed "${run_root}" "${TRAINING_SEED}"
 
     touch "${run_root}/COMPLETED"
     set_phase "全部完成"
