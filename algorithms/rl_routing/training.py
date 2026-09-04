@@ -10,6 +10,7 @@ from typing import Sequence
 import torch
 from torch import Tensor
 
+from .environment import STOP_ACTION
 from .policy import ARCQPolicy
 from .rollout import EpisodeRollout, PolicyRolloutToken
 
@@ -18,7 +19,7 @@ from .rollout import EpisodeRollout, PolicyRolloutToken
 class PPOConfig:
     learning_rate: float = 3e-4
     gamma: float = 1.0
-    gae_lambda: float = 0.95
+    physical_gae_lambda: float = 0.95
     clip_ratio: float = 0.2
     value_loss_coefficient: float = 0.5
     entropy_coefficient: float = 0.01
@@ -33,8 +34,8 @@ class PPOConfig:
             raise ValueError(
                 "ARC-Q fixes gamma=1 so return remains exactly delay-aligned"
             )
-        if not 0.0 <= self.gae_lambda <= 1.0:
-            raise ValueError("gae_lambda must lie in [0, 1]")
+        if not 0.0 <= self.physical_gae_lambda <= 1.0:
+            raise ValueError("physical_gae_lambda must lie in [0, 1]")
         if not 0.0 < self.clip_ratio < 1.0:
             raise ValueError("clip_ratio must lie in (0, 1)")
         if self.value_loss_coefficient < 0.0:
@@ -91,7 +92,11 @@ def _advantages_for_rollout(
         advantage = (
             temporal_difference
             + config.gamma
-            * config.gae_lambda
+            * (
+                config.physical_gae_lambda
+                if token.action_id == STOP_ACTION
+                else 1.0
+            )
             * continuation
             * next_advantage
         )

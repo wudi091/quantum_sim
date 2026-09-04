@@ -386,12 +386,12 @@ class ConstructionAwareRoutingEnvironment(OnlineExecutionController):
         self,
         action: RoutingAction,
         *,
-        policy_seconds: float = 0.0,
+        planner_seconds: float = 0.0,
     ) -> RoutingTransition:
         if self._done:
             raise RuntimeError("the episode is already complete")
-        if policy_seconds < 0.0:
-            raise ValueError("policy_seconds cannot be negative")
+        if planner_seconds < 0.0:
+            raise ValueError("planner_seconds cannot be negative")
         observation = self.observe()
         decision_started = perf_counter()
         builder = FeasiblePlanBuilder(observation)
@@ -440,8 +440,8 @@ class ConstructionAwareRoutingEnvironment(OnlineExecutionController):
                 * variable.completion_latency
                 for variable in selected
             ),
-            planner_seconds=policy_seconds,
-            decision_seconds=policy_seconds + validation_seconds,
+            planner_seconds=planner_seconds,
+            decision_seconds=planner_seconds + validation_seconds,
             selection_strategy="arcq_autoregressive_policy",
         ))
 

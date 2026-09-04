@@ -77,18 +77,18 @@ def collect_episode(
     policy.eval()
     steps: list[PolicyRolloutStep] = []
     while not environment.done:
+        planner_started = perf_counter()
         observation = environment.observe()
-        policy_started = perf_counter()
         with torch.no_grad():
             evaluation = policy.sample_action(
                 observation,
                 deterministic=deterministic,
                 include_value=collect_value_estimates,
             )
-        policy_seconds = perf_counter() - policy_started
+        planner_seconds = perf_counter() - planner_started
         transition = environment.step(
             evaluation.action,
-            policy_seconds=policy_seconds,
+            planner_seconds=planner_seconds,
         )
         token_records = tuple(
             PolicyRolloutToken(

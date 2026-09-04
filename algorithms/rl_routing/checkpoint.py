@@ -10,7 +10,7 @@ import torch
 from .policy import ARCQPolicy
 
 
-CHECKPOINT_SCHEMA_VERSION = 3
+CHECKPOINT_SCHEMA_VERSION = 7
 METHOD_NAME = "ARC-Q"
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict, dataclass
+import hashlib
 import json
 from pathlib import Path
 import random
@@ -18,7 +19,7 @@ from algorithms.routing_core.execution import OnlineExecutionConfig
 from qnet_core.scenario import ScenarioConfig, make_episode
 from qnet_core.spec import PhysicalConfig
 
-from .checkpoint import save_arcq_checkpoint
+from .checkpoint import load_arcq_checkpoint, save_arcq_checkpoint
 from .policy import ARCQPolicy
 from .rollout import collect_episode
 from .training import PPOConfig, PPOTrainer
@@ -142,6 +143,73 @@ def _write_json_atomic(path: Path, payload: object) -> None:
         encoding="utf-8",
     )
     temporary.replace(path)
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _finalize_model_selection(
+    output: Path,
+    config: ARCQTrainingConfig,
+    *,
+    episodes_completed: int,
+    final_update: int,
+    best_validation_latency_slots: float | None,
+    best_validation_update: int | None,
+) -> None:
+    """Mark the selected checkpoint only after the full run has completed."""
+
+    if episodes_completed != config.run.episode_count:
+        raise RuntimeError("cannot finalize an incomplete ARC-Q training run")
+    if best_validation_update is None or best_validation_latency_slots is None:
+        raise RuntimeError("training finished without a validation checkpoint")
+    best_path = output / "arcq_best.pt"
+    latest_path = output / "arcq_latest.pt"
+    if not best_path.is_file() or not latest_path.is_file():
+        raise RuntimeError("training finished without both ARC-Q checkpoints")
+    best_policy, metadata = load_arcq_checkpoint(best_path)
+    best_state = _mapping(metadata["training_state"], "best training state")
+    if int(best_state.get("update", -1)) != best_validation_update:
+        raise RuntimeError("best checkpoint update does not match model selection")
+    best_state.update({
+        "config": asdict(config),
+        "selection_finalized": True,
+        "training_completed_episodes": episodes_completed,
+        "final_update": final_update,
+        "final_best_validation_latency_slots": (
+            best_validation_latency_slots
+        ),
+        "final_best_validation_update": best_validation_update,
+    })
+    save_arcq_checkpoint(
+        best_path,
+        best_policy,
+        hidden_dim=config.model.hidden_dim,
+        message_passing_layers=config.model.message_passing_layers,
+        training_state=best_state,
+        optimizer_state_dict=metadata.get("optimizer_state_dict"),
+        rng_state=metadata.get("rng_state"),
+    )
+    _write_json_atomic(output / "training_manifest.json", {
+        "schema_version": 1,
+        "method": "ARC-Q",
+        "training_complete": True,
+        "episodes_completed": episodes_completed,
+        "final_update": final_update,
+        "best_validation_update": best_validation_update,
+        "best_validation_latency_slots": best_validation_latency_slots,
+        "model_selection_metric": "mean_censored_latency_slots",
+        "best_checkpoint": "arcq_best.pt",
+        "best_checkpoint_sha256": _sha256(best_path),
+        "latest_checkpoint": "arcq_latest.pt",
+        "latest_checkpoint_sha256": _sha256(latest_path),
+        "config": asdict(config),
+    })
 
 
 def _rng_state() -> dict[str, object]:
@@ -402,6 +470,14 @@ def train(
                 optimizer_state_dict=trainer.optimizer.state_dict(),
                 rng_state=_rng_state(),
             )
+    _finalize_model_selection(
+        output,
+        config,
+        episodes_completed=episodes_completed,
+        final_update=update_index,
+        best_validation_latency_slots=best_validation_latency_slots,
+        best_validation_update=best_validation_update,
+    )
     return policy, history
 
 

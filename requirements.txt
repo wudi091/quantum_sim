@@ -2,6 +2,7 @@ sequence==1.0.0
 numpy
 networkx
 scipy
+matplotlib
 tqdm
 pytest
 torch

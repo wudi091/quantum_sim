@@ -1,12 +1,18 @@
 import math
 import unittest
+from types import SimpleNamespace
 
 import torch
 
 from algorithms.rl_routing.environment import STOP_ACTION
 from algorithms.rl_routing.policy import ARCQPolicy
 from algorithms.rl_routing.rollout import collect_episode
-from algorithms.rl_routing.training import PPOConfig, PPOTrainer
+from algorithms.rl_routing.training import (
+    PPOConfig,
+    PPOTrainer,
+    _advantages_for_rollout,
+)
+from algorithms.rl_routing.rollout import PolicyRolloutToken
 from algorithms.routing_core.execution import OnlineExecutionConfig
 from qnet_core.planning_spec import RequestSpec
 from qnet_core.spec import EpisodeSpec, PhysicalConfig
@@ -114,6 +120,22 @@ class PPOTrainerTests(unittest.TestCase):
     def test_discounting_cannot_silently_change_the_delay_objective(self):
         with self.assertRaises(ValueError):
             PPOConfig(gamma=0.99)
+
+    def test_gae_does_not_attenuate_zero_time_planning_tokens(self):
+        tokens = (
+            PolicyRolloutToken(None, (), "candidate", 0.0, False, 0.0, 0.0),
+            PolicyRolloutToken(None, (), STOP_ACTION, -2.0, False, 0.0, 0.0),
+            PolicyRolloutToken(None, (), STOP_ACTION, -3.0, True, 0.0, 0.0),
+        )
+        advantages, _targets = _advantages_for_rollout(
+            SimpleNamespace(tokens=tokens),
+            PPOConfig(physical_gae_lambda=0.5),
+        )
+        self.assertEqual(advantages, [-3.5, -3.5, -3.0])
+
+    def test_physical_gae_lambda_is_bounded(self):
+        with self.assertRaises(ValueError):
+            PPOConfig(physical_gae_lambda=1.01)
 
 
 if __name__ == "__main__":

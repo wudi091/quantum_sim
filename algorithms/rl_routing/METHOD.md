@@ -36,11 +36,15 @@ experimental claim that must be tested.
 
 ## Action representation
 
-The policy creates one plan autoregressively:
+The policy creates one plan autoregressively. Its action distribution is
+hierarchical so a request is not favored merely because it owns more path,
+construction, or start-slot alternatives:
 
-1. score every currently legal joint candidate and STOP;
-2. sample or select one action;
-3. if a candidate is chosen, subtract its resource--time footprint and remove
+1. jointly score STOP and one branch for every request that still has a legal
+   candidate;
+2. after choosing a request, conditionally choose its path, construction, and
+   start slot;
+3. subtract the chosen candidate's resource--time footprint and remove
    every other candidate for the same request;
 4. recompute graph features and scores;
 5. terminate only when the policy chooses STOP.
@@ -72,29 +76,39 @@ Across a complete episode:
 This follows by exchanging the order of summation: each request contributes
 one unit to the unfinished count from arrival until successful completion, or
 until censoring plus its terminal charge. The implementation checks this
-identity after every rollout. PPO therefore uses discount factor 1; allowing
-a smaller factor would silently change the paper objective and is rejected by
-configuration validation.
+identity after every rollout. PPO therefore fixes the discount factor to 1;
+a smaller discount would silently change the paper objective and is rejected
+by configuration validation.
 
 ## Learning algorithm
 
 The actor and critic use independent relation-aware graph encoders. This keeps
 the much larger value-regression gradient from suppressing the combinatorial
-policy gradient; their gradients are clipped separately. Candidate heads
-produce categorical logits, while a global head scores STOP. Planning is
+policy gradient; their gradients are clipped separately. A shared top-level
+categorical distribution contains STOP and one alternative per feasible
+request. Conditional categorical heads then select route, construction, and
+start slot. Thus the number of low-level candidates cannot mechanically alter
+a request's top-level probability. With equal logits and no newly induced
+conflicts, this top-level factorization gives equal probability to every plan
+cardinality rather than the geometric short-plan bias of an independent
+binary STOP hazard. Planning is
 treated as an augmented Markov process: selecting a candidate changes only
 the residual-capacity graph and yields zero immediate reward; selecting STOP
 advances the physical environment and receives the exact interval reward.
 PPO therefore optimizes each masked categorical choice rather than multiplying
 an entire variable-length plan into one probability ratio. The critic values
-every partial feasible plan, generalized advantage estimation propagates the
-physical reward through the zero-time planning steps, and gamma remains one,
-so autoregressive factorization does not introduce an artificial time cost or
-change the episode objective.
+every partial feasible plan. Generalized advantage estimation uses two trace
+scales: lambda is exactly one after a zero-time candidate choice and is the
+configured physical lambda only after STOP advances the simulator. Thus all
+choices in one plan receive the same unattenuated physical feedback regardless
+of their sequence position, while variance can still be controlled across
+physical decision intervals. This duration-aware trace prevents the
+autoregressive factorization from introducing an artificial plan-length cost.
 
 The critic is used only while collecting training rollouts and updating PPO.
-Frozen online evaluation executes the actor alone, so reported planning time
-does not include a training-only value network.
+Frozen online evaluation times the complete planner path--candidate
+generation, resource--time expansion, graph construction, and actor
+inference--but never executes or times the training-only critic.
 
 Training varies request traces and physical randomness while holding one graph
 topology fixed. Evaluation must use disjoint request seeds and include both

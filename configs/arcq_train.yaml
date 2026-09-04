@@ -5,7 +5,7 @@ model:
 ppo:
   learning_rate: 0.0003
   gamma: 1.0
-  gae_lambda: 0.95
+  physical_gae_lambda: 0.95
   clip_ratio: 0.2
   value_loss_coefficient: 0.5
   entropy_coefficient: 0.01
@@ -20,7 +20,6 @@ environment:
   swap_tree_count: 3
   purification_kinds:
     - none
-    - elementary_once
 
 scenario:
   request_count: 12
@@ -58,6 +57,6 @@ run:
   validation_every_updates: 10
   validation_episode_count: 8
   validation_seed: 30260905
-  output_directory: results/arcq/training
+  output_directory: results/arcq/paper_training
   device: auto
   cpu_threads: null

@@ -122,12 +122,16 @@ def run_paired_evaluation(
             deterministic=True,
             collect_value_estimates=False,
         )
+        arcq_metrics = dict(arcq.execution.metrics)
+        arcq_metrics["reward_identity_error"] = float(
+            arcq.reward_identity_error
+        )
         records.append(EvaluationRecord(
             scenario=scenario_name,
             method="ARC-Q",
             episode_seed=episode_seed,
             topology_seed=topology_seed,
-            metrics=dict(arcq.execution.metrics),
+            metrics=arcq_metrics,
         ))
         for definition in definitions:
             if definition.algorithm == "qcast":
