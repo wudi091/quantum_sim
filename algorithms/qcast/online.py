@@ -7,11 +7,11 @@ from statistics import fmean
 from time import perf_counter
 from typing import Mapping
 
-from algorithms.telgen.packing import PackingSolution
-from algorithms.telgen.online import (
+from algorithms.routing_core.packing import PackingSolution
+from algorithms.routing_core.execution import (
     OnlineAttemptRecord,
-    OnlineTELGENConfig,
-    OnlineTELGENController,
+    OnlineExecutionConfig,
+    OnlineExecutionController,
 )
 from qnet_core.construction_api import ExecutionEvent
 from qnet_core.construction_metrics import RequestSettlement
@@ -76,7 +76,7 @@ class OnlineQCASTResult:
     metrics: Mapping[str, float]
 
 
-class OnlineQCASTController(OnlineTELGENController):
+class OnlineQCASTController(OnlineExecutionController):
     """Reuse the shared online lifecycle while replacing only the planner."""
 
     def __init__(
@@ -87,7 +87,7 @@ class OnlineQCASTController(OnlineTELGENController):
         self.qcast_config = config or OnlineQCASTConfig()
         super().__init__(
             spec,
-            OnlineTELGENConfig(
+            OnlineExecutionConfig(
                 decision_interval=self.qcast_config.decision_interval,
                 path_candidate_count=self.qcast_config.path_candidate_count,
                 construction_kinds=(self.qcast_config.construction_kind,),

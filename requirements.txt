@@ -4,3 +4,5 @@ networkx
 scipy
 tqdm
 pytest
+torch
+pyyaml

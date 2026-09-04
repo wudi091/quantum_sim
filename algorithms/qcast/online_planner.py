@@ -11,12 +11,12 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Mapping
 
-from algorithms.telgen.fidelity import candidate_fidelity_estimate_map
-from algorithms.telgen.packing import (
+from algorithms.routing_core.fidelity import candidate_fidelity_estimate_map
+from algorithms.routing_core.packing import (
     PackingSolution,
     validate_packing_selection,
 )
-from algorithms.telgen.time_expansion import (
+from algorithms.routing_core.time_expansion import (
     TimeExpandedCandidate,
     TimeExpansionResult,
     expand_construction_candidates,
