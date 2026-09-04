@@ -796,8 +796,12 @@ class _RelationGCN(nn.Module):
                 normalization = normalization.to(source.dtype)
         if edge_embedding is None:
             edge_embedding = self.edge(edge_value[:, None])
+        # The source projection is node-wise.  Projecting all source nodes
+        # once and gathering afterwards avoids repeating the same linear
+        # transform for every incident edge on dense constraint rows.
+        source_projection = self.source(source)
         message = torch.relu(
-            self.source(source[source_index]) + edge_embedding
+            source_projection[source_index] + edge_embedding
         )
         message = message * normalization[:, None]
         aggregate = destination.new_zeros((destination_count, message.shape[-1]))
@@ -1326,6 +1330,7 @@ def _sample_loss(
     request_mass_weight: float = 2.0,
     candidate_distribution_weight: float = 0.5,
     prepared: _PreparedLossTensors | None = None,
+    return_components: bool = True,
 ) -> tuple[torch.Tensor, dict[str, float]]:
     """Step-supervised loss for the single-stage LP trajectory.
 
@@ -1390,16 +1395,20 @@ def _sample_loss(
     )
     objective_loss = (objective_gap.pow(2) * weights).mean()
     if len(rhs):
+        # Only the final iterate is supervised for capacity constraints.  Do
+        # not materialize constraint loads for all trajectory steps when the
+        # loss only consumes the final row.
         normalized_violation = torch.relu(
-            prediction @ matrix.T - rhs[None, :]
+            prediction[-1] @ matrix.T - rhs
         )
         # Interior-point iterates can be temporarily infeasible.  The
         # executable plan is the final readout, so only that point should be
         # required to satisfy the packing inequalities.  Penalizing every
         # intermediate iterate conflicts with the trajectory supervision.
-        constraint_loss = normalized_violation[-1].pow(2).mean()
-        maximum_violation = float(
-            normalized_violation[-1].max().detach().cpu()
+        constraint_loss = normalized_violation.pow(2).mean()
+        maximum_violation = (
+            float(normalized_violation.max().detach().cpu())
+            if return_components else 0.0
         )
     else:
         constraint_loss = prediction.new_zeros(())
@@ -1452,6 +1461,8 @@ def _sample_loss(
         + request_mass_weight * request_mass_loss
         + candidate_distribution_weight * candidate_distribution_loss
     )
+    if not return_components:
+        return total, {}
     return total, {
         "primal_loss": float(primal_loss.detach().cpu()),
         "objective_loss": float(objective_loss.detach().cpu()),
@@ -1970,7 +1981,7 @@ def _mean_supervised_loss(
     if not samples:
         return float("inf")
     model.eval()
-    values: list[float] = []
+    values: list[torch.Tensor] = []
     with torch.no_grad():
         for sample in samples:
             prediction = model(
@@ -1988,12 +1999,12 @@ def _mean_supervised_loss(
                     if prepared_cache is None
                     else prepared_cache.get(id(sample))
                 ),
+                return_components=False,
             )
-            value = float(loss.detach().cpu())
-            if not np.isfinite(value):
-                return float("inf")
-            values.append(value)
-    return float(np.mean(values))
+            values.append(loss.detach())
+    mean_loss = torch.stack(values).mean()
+    value = float(mean_loss.item())
+    return value if np.isfinite(value) else float("inf")
 
 
 def _topology_digest(sample: PilotSample) -> str:
@@ -2334,7 +2345,7 @@ def run_pilot(
         model.train()
         order = list(train)
         rng.shuffle(order)
-        losses: list[float] = []
+        epoch_loss = torch.zeros((), device=resolved_device)
         for sample in order:
             optimizer.zero_grad(set_to_none=True)
             prediction = model(
@@ -2348,11 +2359,15 @@ def run_pilot(
                 request_mass_weight=request_mass_weight,
                 candidate_distribution_weight=candidate_distribution_weight,
                 prepared=prepared_loss_cache[id(sample)],
+                return_components=False,
             )
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
-            losses.append(float(loss.detach().cpu()))
+            # Keep the running statistic on the training device and perform a
+            # single synchronization after all sample updates are complete.
+            epoch_loss.add_(loss.detach())
+        train_loss_value = float((epoch_loss / len(order)).item())
         validation_loss = _mean_supervised_loss(
             model,
             validation,
@@ -2377,14 +2392,14 @@ def run_pilot(
         if should_record:
             history.append({
                 "epoch": epoch,
-                "train_loss": float(np.mean(losses)),
+                "train_loss": train_loss_value,
                 "validation_loss": validation_loss,
                 "train": _evaluate(model, train),
                 "validation": _evaluate(model, validation),
             })
         print(
             f"epoch={epoch}/{epochs} "
-            f"train_loss={float(np.mean(losses)):.8f} "
+            f"train_loss={train_loss_value:.8f} "
             f"validation_loss={validation_loss:.8f} "
             f"best_epoch={best_epoch} "
             f"stale_epochs={stale_epochs} "
