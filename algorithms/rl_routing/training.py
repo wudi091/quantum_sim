@@ -11,7 +11,7 @@ import torch
 from torch import Tensor
 
 from .policy import ARCQPolicy
-from .rollout import EpisodeRollout, PolicyRolloutStep
+from .rollout import EpisodeRollout, PolicyRolloutToken
 
 
 @dataclass(frozen=True)
@@ -56,6 +56,8 @@ class PPODiagnostics:
     approximate_kl: float
     clip_fraction: float
     gradient_norm: float
+    actor_gradient_norm: float
+    critic_gradient_norm: float
     mean_episode_return: float
     mean_completed_requests: float
     mean_censored_latency_slots: float
@@ -64,7 +66,7 @@ class PPODiagnostics:
 
 @dataclass(frozen=True)
 class _TrainingSample:
-    step: PolicyRolloutStep
+    token: PolicyRolloutToken
     advantage: float
     return_target: float
 
@@ -73,17 +75,18 @@ def _advantages_for_rollout(
     rollout: EpisodeRollout,
     config: PPOConfig,
 ) -> tuple[list[float], list[float]]:
-    advantages = [0.0] * len(rollout.steps)
-    return_targets = [0.0] * len(rollout.steps)
+    tokens = rollout.tokens
+    advantages = [0.0] * len(tokens)
+    return_targets = [0.0] * len(tokens)
     next_value = 0.0
     next_advantage = 0.0
-    for index in range(len(rollout.steps) - 1, -1, -1):
-        step = rollout.steps[index]
-        continuation = 0.0 if step.done else 1.0
+    for index in range(len(tokens) - 1, -1, -1):
+        token = tokens[index]
+        continuation = 0.0 if token.done else 1.0
         temporal_difference = (
-            step.reward
+            token.reward
             + config.gamma * next_value * continuation
-            - step.old_value
+            - token.old_value
         )
         advantage = (
             temporal_difference
@@ -93,8 +96,8 @@ def _advantages_for_rollout(
             * next_advantage
         )
         advantages[index] = advantage
-        return_targets[index] = advantage + step.old_value
-        next_value = step.old_value
+        return_targets[index] = advantage + token.old_value
+        next_value = token.old_value
         next_advantage = advantage
     return advantages, return_targets
 
@@ -105,11 +108,15 @@ def _training_samples(
 ) -> list[_TrainingSample]:
     samples: list[_TrainingSample] = []
     for rollout in rollouts:
+        if not rollout.has_value_estimates:
+            raise ValueError(
+                "PPO training requires rollouts with critic value estimates"
+            )
         advantages, targets = _advantages_for_rollout(rollout, config)
         samples.extend(
-            _TrainingSample(step, advantage, target)
-            for step, advantage, target in zip(
-                rollout.steps, advantages, targets, strict=True
+            _TrainingSample(token, advantage, target)
+            for token, advantage, target in zip(
+                rollout.tokens, advantages, targets, strict=True
             )
         )
     if not samples:
@@ -124,7 +131,7 @@ def _training_samples(
             mean = float(raw_advantages.mean().item())
             samples = [
                 _TrainingSample(
-                    sample.step,
+                    sample.token,
                     (sample.advantage - mean) / deviation,
                     sample.return_target,
                 )
@@ -145,6 +152,22 @@ class PPOTrainer:
             self.policy.parameters(),
             lr=self.config.learning_rate,
         )
+        self.actor_parameters = self.policy.actor_parameters()
+        self.critic_parameters = self.policy.critic_parameters()
+        if {
+            id(parameter) for parameter in self.actor_parameters
+        } & {
+            id(parameter) for parameter in self.critic_parameters
+        }:
+            raise ValueError("actor and critic parameter groups must be disjoint")
+        grouped_parameter_ids = {
+            id(parameter)
+            for parameter in (*self.actor_parameters, *self.critic_parameters)
+        }
+        if grouped_parameter_ids != {
+            id(parameter) for parameter in self.policy.parameters()
+        }:
+            raise ValueError("actor and critic groups must cover the policy")
 
     def update(
         self,
@@ -160,6 +183,8 @@ class PPOTrainer:
         approximate_kls: list[float] = []
         clip_fractions: list[float] = []
         gradient_norms: list[float] = []
+        actor_gradient_norms: list[float] = []
+        critic_gradient_norms: list[float] = []
         self.policy.train()
 
         for _ in range(self.config.update_epochs):
@@ -179,12 +204,13 @@ class PPOTrainer:
                 batch_clipped: list[Tensor] = []
 
                 for sample in batch:
-                    evaluation = self.policy.evaluate_action(
-                        sample.step.observation,
-                        sample.step.action,
+                    evaluation = self.policy.evaluate_token(
+                        sample.token.observation,
+                        sample.token.prefix_action_ids,
+                        sample.token.action_id,
                     )
                     old_log_probability = torch.tensor(
-                        sample.step.old_log_probability,
+                        sample.token.old_log_probability,
                         dtype=evaluation.log_probability.dtype,
                         device=self.policy.device,
                     )
@@ -230,8 +256,12 @@ class PPOTrainer:
                 )
                 self.optimizer.zero_grad(set_to_none=True)
                 total_loss.backward()
-                gradient_norm = torch.nn.utils.clip_grad_norm_(
-                    self.policy.parameters(),
+                actor_gradient_norm = torch.nn.utils.clip_grad_norm_(
+                    self.actor_parameters,
+                    self.config.max_gradient_norm,
+                )
+                critic_gradient_norm = torch.nn.utils.clip_grad_norm_(
+                    self.critic_parameters,
                     self.config.max_gradient_norm,
                 )
                 self.optimizer.step()
@@ -245,7 +275,13 @@ class PPOTrainer:
                 clip_fractions.append(float(
                     torch.stack(batch_clipped).mean().detach().item()
                 ))
-                gradient_norms.append(float(gradient_norm.detach().item()))
+                actor_norm = float(actor_gradient_norm.detach().item())
+                critic_norm = float(critic_gradient_norm.detach().item())
+                actor_gradient_norms.append(actor_norm)
+                critic_gradient_norms.append(critic_norm)
+                gradient_norms.append(
+                    (actor_norm * actor_norm + critic_norm * critic_norm) ** 0.5
+                )
 
         mean_latency_slots = fmean(
             rollout.execution.metrics["mean_censored_latency_ps"]
@@ -260,6 +296,8 @@ class PPOTrainer:
             approximate_kl=fmean(approximate_kls),
             clip_fraction=fmean(clip_fractions),
             gradient_norm=fmean(gradient_norms),
+            actor_gradient_norm=fmean(actor_gradient_norms),
+            critic_gradient_norm=fmean(critic_gradient_norms),
             mean_episode_return=fmean(
                 rollout.episode_return for rollout in rollouts
             ),

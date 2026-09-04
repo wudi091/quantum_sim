@@ -3,6 +3,7 @@ import unittest
 
 import torch
 
+from algorithms.rl_routing.environment import STOP_ACTION
 from algorithms.rl_routing.policy import ARCQPolicy
 from algorithms.rl_routing.rollout import collect_episode
 from algorithms.rl_routing.training import PPOConfig, PPOTrainer
@@ -64,9 +65,18 @@ class PPOTrainerTests(unittest.TestCase):
             ),
         )
         diagnostics = trainer.update(rollouts, shuffle_seed=8403)
-        self.assertEqual(diagnostics.sample_count, 4)
+        expected_token_count = sum(
+            step.token_count
+            for rollout in rollouts
+            for step in rollout.steps
+        )
+        self.assertEqual(diagnostics.sample_count, expected_token_count)
         self.assertTrue(math.isfinite(diagnostics.policy_loss))
         self.assertTrue(math.isfinite(diagnostics.value_loss))
+        self.assertTrue(math.isfinite(diagnostics.actor_gradient_norm))
+        self.assertTrue(math.isfinite(diagnostics.critic_gradient_norm))
+        self.assertGreater(diagnostics.actor_gradient_norm, 0.0)
+        self.assertGreater(diagnostics.critic_gradient_norm, 0.0)
         self.assertLess(diagnostics.maximum_reward_identity_error, 1e-9)
         self.assertTrue(any(
             not torch.equal(previous, current.detach())
@@ -74,6 +84,32 @@ class PPOTrainerTests(unittest.TestCase):
                 before, policy.parameters(), strict=True
             )
         ))
+
+    def test_only_stop_tokens_receive_physical_reward(self):
+        torch.manual_seed(8404)
+        policy = ARCQPolicy(hidden_dim=16, message_passing_layers=1)
+        rollout = collect_episode(
+            policy,
+            make_episode(8405),
+            OnlineExecutionConfig(
+                decision_interval=2,
+                path_candidate_count=2,
+                construction_kinds=("balanced",),
+                purification_kinds=("none",),
+            ),
+        )
+        self.assertTrue(rollout.tokens)
+        self.assertTrue(all(
+            token.reward == 0.0
+            for token in rollout.tokens
+            if token.action_id != STOP_ACTION
+        ))
+        self.assertAlmostEqual(
+            sum(token.reward for token in rollout.tokens),
+            rollout.episode_return,
+        )
+        self.assertTrue(rollout.tokens[-1].done)
+        self.assertFalse(any(token.done for token in rollout.tokens[:-1]))
 
     def test_discounting_cannot_silently_change_the_delay_objective(self):
         with self.assertRaises(ValueError):

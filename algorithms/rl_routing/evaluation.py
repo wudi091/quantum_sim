@@ -120,6 +120,7 @@ def run_paired_evaluation(
             episode,
             environment_config,
             deterministic=True,
+            collect_value_estimates=False,
         )
         records.append(EvaluationRecord(
             scenario=scenario_name,

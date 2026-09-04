@@ -9,8 +9,19 @@ from .environment import (
     RoutingTransition,
 )
 from .graph import RoutingGraph, build_routing_graph
-from .policy import ARCQPolicy, GraphActorCritic, PolicyEvaluation
-from .rollout import EpisodeRollout, PolicyRolloutStep, collect_episode
+from .policy import (
+    ARCQPolicy,
+    GraphActorCritic,
+    PolicyEvaluation,
+    PolicyTokenEvaluation,
+    RoutingGraphEncoder,
+)
+from .rollout import (
+    EpisodeRollout,
+    PolicyRolloutStep,
+    PolicyRolloutToken,
+    collect_episode,
+)
 from .training import PPOConfig, PPODiagnostics, PPOTrainer
 from .checkpoint import load_arcq_checkpoint, save_arcq_checkpoint
 from .evaluation import (
@@ -33,8 +44,11 @@ __all__ = [
     "ARCQPolicy",
     "GraphActorCritic",
     "PolicyEvaluation",
+    "PolicyTokenEvaluation",
+    "RoutingGraphEncoder",
     "EpisodeRollout",
     "PolicyRolloutStep",
+    "PolicyRolloutToken",
     "collect_episode",
     "PPOConfig",
     "PPODiagnostics",

@@ -10,7 +10,7 @@ ppo:
   value_loss_coefficient: 0.5
   entropy_coefficient: 0.01
   update_epochs: 4
-  minibatch_size: 16
+  minibatch_size: 64
   max_gradient_norm: 0.5
 
 environment:

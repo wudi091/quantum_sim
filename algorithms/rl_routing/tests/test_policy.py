@@ -106,6 +106,25 @@ class ARCQPolicyTests(unittest.TestCase):
         policy.eval()
         with torch.no_grad():
             sample = policy.sample_action(observation)
+        self.assertEqual(len(sample.tokens), sample.token_count)
+        self.assertEqual(
+            tuple(token.action_id for token in sample.tokens),
+            sample.action.action_ids,
+        )
+        for index, token in enumerate(sample.tokens):
+            self.assertEqual(
+                token.prefix_action_ids,
+                sample.action.action_ids[:index],
+            )
+            recomputed = policy.evaluate_token(
+                observation,
+                token.prefix_action_ids,
+                token.action_id,
+            )
+            self.assertTrue(torch.allclose(
+                recomputed.log_probability,
+                token.log_probability,
+            ))
         evaluated = policy.evaluate_action(observation, sample.action)
         self.assertTrue(torch.isfinite(evaluated.log_probability))
         self.assertTrue(torch.isfinite(evaluated.value))
@@ -114,6 +133,22 @@ class ARCQPolicyTests(unittest.TestCase):
         self.assertTrue(any(
             parameter.grad is not None
             for parameter in policy.parameters()
+        ))
+
+    def test_deployment_action_does_not_require_critic_values(self):
+        _environment, observation = make_observation()
+        torch.manual_seed(8303)
+        policy = ARCQPolicy(hidden_dim=24, message_passing_layers=2)
+        policy.eval()
+        with torch.no_grad():
+            sample = policy.sample_action(
+                observation,
+                deterministic=True,
+                include_value=False,
+            )
+        self.assertEqual(float(sample.value.item()), 0.0)
+        self.assertTrue(all(
+            float(token.value.item()) == 0.0 for token in sample.tokens
         ))
 
 

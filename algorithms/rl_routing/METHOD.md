@@ -78,12 +78,23 @@ configuration validation.
 
 ## Learning algorithm
 
-The actor and critic share a relation-aware graph encoder. Candidate heads
-produce categorical logits, while a global head scores STOP. The probability
-of a complete plan is the product of its masked autoregressive conditionals.
-The critic estimates return at the beginning of each online decision. PPO
-optimizes complete-plan log probability with generalized advantage estimation
-and clipped updates.
+The actor and critic use independent relation-aware graph encoders. This keeps
+the much larger value-regression gradient from suppressing the combinatorial
+policy gradient; their gradients are clipped separately. Candidate heads
+produce categorical logits, while a global head scores STOP. Planning is
+treated as an augmented Markov process: selecting a candidate changes only
+the residual-capacity graph and yields zero immediate reward; selecting STOP
+advances the physical environment and receives the exact interval reward.
+PPO therefore optimizes each masked categorical choice rather than multiplying
+an entire variable-length plan into one probability ratio. The critic values
+every partial feasible plan, generalized advantage estimation propagates the
+physical reward through the zero-time planning steps, and gamma remains one,
+so autoregressive factorization does not introduce an artificial time cost or
+change the episode objective.
+
+The critic is used only while collecting training rollouts and updating PPO.
+Frozen online evaluation executes the actor alone, so reported planning time
+does not include a training-only value network.
 
 Training varies request traces and physical randomness while holding one graph
 topology fixed. Evaluation must use disjoint request seeds and include both

@@ -73,19 +73,11 @@ class RelationalMessageLayer(nn.Module):
         return self.normalization(node_embeddings + update)
 
 
-class GraphActorCritic(nn.Module):
-    """Scores candidate nodes and STOP while estimating macro-state value."""
+class RoutingGraphEncoder(nn.Module):
+    """Encode one heterogeneous routing graph into nodes and global context."""
 
-    def __init__(
-        self,
-        hidden_dim: int = 96,
-        message_passing_layers: int = 3,
-    ) -> None:
+    def __init__(self, hidden_dim: int, message_passing_layers: int) -> None:
         super().__init__()
-        if hidden_dim < 8:
-            raise ValueError("hidden_dim must be at least 8")
-        if message_passing_layers < 1:
-            raise ValueError("message_passing_layers must be positive")
         self.node_encoder = nn.Sequential(
             nn.Linear(NODE_FEATURE_DIM, hidden_dim),
             nn.GELU(),
@@ -100,6 +92,46 @@ class GraphActorCritic(nn.Module):
             nn.Linear(GLOBAL_FEATURE_DIM, hidden_dim),
             nn.GELU(),
             nn.Linear(hidden_dim, hidden_dim),
+        )
+
+    def forward(self, graph: RoutingGraph) -> tuple[Tensor, Tensor]:
+        embeddings = (
+            self.node_encoder(graph.node_features)
+            + self.node_type_embedding(graph.node_types)
+        )
+        for layer in self.layers:
+            embeddings = layer(
+                embeddings,
+                graph.edge_index,
+                graph.edge_types,
+                graph.edge_features,
+            )
+        context = embeddings.mean(dim=0) + self.global_encoder(
+            graph.global_features
+        )
+        return embeddings, context
+
+
+class GraphActorCritic(nn.Module):
+    """Independent graph actor and critic for stable clipped optimization."""
+
+    def __init__(
+        self,
+        hidden_dim: int = 96,
+        message_passing_layers: int = 3,
+    ) -> None:
+        super().__init__()
+        if hidden_dim < 8:
+            raise ValueError("hidden_dim must be at least 8")
+        if message_passing_layers < 1:
+            raise ValueError("message_passing_layers must be positive")
+        self.actor_encoder = RoutingGraphEncoder(
+            hidden_dim,
+            message_passing_layers,
+        )
+        self.critic_encoder = RoutingGraphEncoder(
+            hidden_dim,
+            message_passing_layers,
         )
         self.candidate_head = nn.Sequential(
             nn.Linear(2 * hidden_dim, hidden_dim),
@@ -117,34 +149,41 @@ class GraphActorCritic(nn.Module):
             nn.Linear(hidden_dim, 1),
         )
 
-    def forward(self, graph: RoutingGraph) -> tuple[Tensor, Tensor, Tensor]:
-        embeddings = (
-            self.node_encoder(graph.node_features)
-            + self.node_type_embedding(graph.node_types)
-        )
-        for layer in self.layers:
-            embeddings = layer(
-                embeddings,
-                graph.edge_index,
-                graph.edge_types,
-                graph.edge_features,
-            )
-        context = embeddings.mean(dim=0) + self.global_encoder(
-            graph.global_features
-        )
-        candidate_embeddings = embeddings[graph.candidate_node_indices]
+    def actor_forward(self, graph: RoutingGraph) -> tuple[Tensor, Tensor]:
+        actor_embeddings, actor_context = self.actor_encoder(graph)
+        candidate_embeddings = actor_embeddings[graph.candidate_node_indices]
         if candidate_embeddings.shape[0]:
-            repeated_context = context.unsqueeze(0).expand(
+            repeated_context = actor_context.unsqueeze(0).expand(
                 candidate_embeddings.shape[0], -1
             )
             candidate_logits = self.candidate_head(torch.cat(
                 (candidate_embeddings, repeated_context), dim=-1
             )).squeeze(-1)
         else:
-            candidate_logits = embeddings.new_empty((0,))
-        stop_logit = self.stop_head(context).squeeze(-1)
-        value = self.value_head(context).squeeze(-1)
+            candidate_logits = actor_embeddings.new_empty((0,))
+        stop_logit = self.stop_head(actor_context).squeeze(-1)
+        return candidate_logits, stop_logit
+
+    def critic_forward(self, graph: RoutingGraph) -> Tensor:
+        _critic_embeddings, critic_context = self.critic_encoder(graph)
+        value = self.value_head(critic_context).squeeze(-1)
+        return value
+
+    def forward(self, graph: RoutingGraph) -> tuple[Tensor, Tensor, Tensor]:
+        candidate_logits, stop_logit = self.actor_forward(graph)
+        value = self.critic_forward(graph)
         return candidate_logits, stop_logit, value
+
+
+@dataclass(frozen=True)
+class PolicyTokenEvaluation:
+    """One atomic action in the augmented autoregressive MDP."""
+
+    prefix_action_ids: tuple[str, ...]
+    action_id: str
+    log_probability: Tensor
+    entropy: Tensor
+    value: Tensor
 
 
 @dataclass(frozen=True)
@@ -154,6 +193,7 @@ class PolicyEvaluation:
     entropy: Tensor
     value: Tensor
     token_count: int
+    tokens: tuple[PolicyTokenEvaluation, ...]
 
 
 class ARCQPolicy(nn.Module):
@@ -174,11 +214,32 @@ class ARCQPolicy(nn.Module):
     def device(self) -> torch.device:
         return next(self.parameters()).device
 
+    def actor_parameters(self) -> tuple[nn.Parameter, ...]:
+        return tuple(
+            self.actor_critic.actor_encoder.parameters()
+        ) + tuple(
+            self.actor_critic.candidate_head.parameters()
+        ) + tuple(
+            self.actor_critic.stop_head.parameters()
+        )
+
+    def critic_parameters(self) -> tuple[nn.Parameter, ...]:
+        return tuple(
+            self.actor_critic.critic_encoder.parameters()
+        ) + tuple(self.actor_critic.value_head.parameters())
+
     def _distribution(
         self,
         graph: RoutingGraph,
+        *,
+        include_value: bool = True,
     ) -> tuple[Categorical, Tensor]:
-        candidate_logits, stop_logit, value = self.actor_critic(graph)
+        candidate_logits, stop_logit = self.actor_critic.actor_forward(graph)
+        value = (
+            self.actor_critic.critic_forward(graph)
+            if include_value
+            else candidate_logits.new_zeros(())
+        )
         masked_candidate_logits = candidate_logits.masked_fill(
             ~graph.candidate_legal_mask,
             -torch.inf,
@@ -191,11 +252,13 @@ class ARCQPolicy(nn.Module):
         observation: RoutingObservation,
         *,
         deterministic: bool = False,
+        include_value: bool = True,
     ) -> PolicyEvaluation:
         builder = FeasiblePlanBuilder(observation)
         action_ids: list[str] = []
         log_probabilities: list[Tensor] = []
         entropies: list[Tensor] = []
+        token_evaluations: list[PolicyTokenEvaluation] = []
         initial_value: Tensor | None = None
 
         while not builder.stopped:
@@ -204,7 +267,10 @@ class ARCQPolicy(nn.Module):
                 builder,
                 device=self.device,
             )
-            distribution, value = self._distribution(graph)
+            distribution, value = self._distribution(
+                graph,
+                include_value=include_value,
+            )
             if initial_value is None:
                 initial_value = value
             if deterministic:
@@ -219,6 +285,13 @@ class ARCQPolicy(nn.Module):
                 if index == len(graph.candidate_variable_ids)
                 else graph.candidate_variable_ids[index]
             )
+            token_evaluations.append(PolicyTokenEvaluation(
+                prefix_action_ids=tuple(action_ids),
+                action_id=action_id,
+                log_probability=log_probabilities[-1],
+                entropy=entropies[-1],
+                value=value,
+            ))
             action_ids.append(action_id)
             builder.select(action_id)
 
@@ -234,6 +307,48 @@ class ARCQPolicy(nn.Module):
             entropy=torch.stack(entropies).mean(),
             value=initial_value,
             token_count=len(action_ids),
+            tokens=tuple(token_evaluations),
+        )
+
+    def evaluate_token(
+        self,
+        observation: RoutingObservation,
+        prefix_action_ids: tuple[str, ...],
+        action_id: str,
+    ) -> PolicyTokenEvaluation:
+        """Re-evaluate one action from an exact feasible plan prefix."""
+
+        if STOP_ACTION in prefix_action_ids:
+            raise ValueError("a token prefix cannot contain STOP")
+        builder = FeasiblePlanBuilder(observation)
+        for prefix_action_id in prefix_action_ids:
+            builder.select(prefix_action_id)
+        graph = build_routing_graph(
+            observation,
+            builder,
+            device=self.device,
+        )
+        distribution, value = self._distribution(graph)
+        if action_id == STOP_ACTION:
+            action_index = len(graph.candidate_variable_ids)
+        else:
+            try:
+                action_index = graph.candidate_variable_ids.index(action_id)
+            except ValueError as exc:
+                raise KeyError(f"unknown routing action: {action_id}") from exc
+            if not bool(graph.candidate_legal_mask[action_index]):
+                raise ValueError(f"infeasible routing action: {action_id}")
+        action_tensor = torch.tensor(
+            action_index,
+            dtype=torch.long,
+            device=self.device,
+        )
+        return PolicyTokenEvaluation(
+            prefix_action_ids=prefix_action_ids,
+            action_id=action_id,
+            log_probability=distribution.log_prob(action_tensor),
+            entropy=distribution.entropy(),
+            value=value,
         )
 
     def evaluate_action(
@@ -246,6 +361,7 @@ class ARCQPolicy(nn.Module):
         builder = FeasiblePlanBuilder(observation)
         log_probabilities: list[Tensor] = []
         entropies: list[Tensor] = []
+        token_evaluations: list[PolicyTokenEvaluation] = []
         initial_value: Tensor | None = None
 
         for action_id in action.action_ids:
@@ -269,6 +385,15 @@ class ARCQPolicy(nn.Module):
             action_tensor = torch.tensor(action_index, device=self.device)
             log_probabilities.append(distribution.log_prob(action_tensor))
             entropies.append(distribution.entropy())
+            token_evaluations.append(PolicyTokenEvaluation(
+                prefix_action_ids=tuple(
+                    item.action_id for item in token_evaluations
+                ),
+                action_id=action_id,
+                log_probability=log_probabilities[-1],
+                entropy=entropies[-1],
+                value=value,
+            ))
             builder.select(action_id)
 
         if not builder.stopped or initial_value is None:
@@ -279,6 +404,7 @@ class ARCQPolicy(nn.Module):
             entropy=torch.stack(entropies).mean(),
             value=initial_value,
             token_count=len(action.action_ids),
+            tokens=tuple(token_evaluations),
         )
 
 
@@ -286,5 +412,7 @@ __all__ = [
     "ARCQPolicy",
     "GraphActorCritic",
     "PolicyEvaluation",
+    "PolicyTokenEvaluation",
     "RelationalMessageLayer",
+    "RoutingGraphEncoder",
 ]

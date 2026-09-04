@@ -44,6 +44,24 @@ class ARCQCheckpointTests(unittest.TestCase):
         self.assertIsInstance(training.run.topology_seed, int)
         self.assertEqual(training.ppo.gamma, 1.0)
 
+    def test_incompatible_checkpoint_schema_fails_before_state_loading(self):
+        torch.manual_seed(8601)
+        policy = ARCQPolicy(hidden_dim=16, message_passing_layers=1)
+        with tempfile.TemporaryDirectory(dir=".") as directory:
+            path = Path(directory) / "model.pt"
+            save_arcq_checkpoint(
+                path,
+                policy,
+                hidden_dim=16,
+                message_passing_layers=1,
+                training_state={},
+            )
+            payload = torch.load(path, weights_only=False)
+            payload["schema_version"] = 1
+            torch.save(payload, path)
+            with self.assertRaisesRegex(ValueError, "schema"):
+                load_arcq_checkpoint(path)
+
 
 if __name__ == "__main__":
     unittest.main()

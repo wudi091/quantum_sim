@@ -43,6 +43,13 @@ running_pid() {
   printf '%s' "${process_id}"
 }
 
+checkpoint_compatible() {
+  [[ -f "${CHECKPOINT}" ]] || return 1
+  cd "${REPOSITORY}"
+  "${PYTHON}" -c \
+    "from algorithms.rl_routing.checkpoint import load_arcq_checkpoint; load_arcq_checkpoint('results/arcq/training/arcq_latest.pt')"
+}
+
 training_complete() {
   [[ -f "${CHECKPOINT}" ]] || return 1
   cd "${REPOSITORY}"
@@ -71,6 +78,10 @@ start_job() {
   if process_id=$(running_pid); then
     echo "ARC-Q training is already running: pid=${process_id}"
     return 0
+  fi
+  if [[ -f "${CHECKPOINT}" ]] && ! checkpoint_compatible; then
+    echo "ARC-Q checkpoint is incompatible with the current method; refusing to overwrite it" >&2
+    return 1
   fi
   if training_complete; then
     echo "ARC-Q training is already complete"
@@ -101,6 +112,8 @@ status_job() {
     echo "ARC-Q training is running: pid=${process_id}"
   elif training_complete; then
     echo "ARC-Q training is complete"
+  elif [[ -f "${CHECKPOINT}" ]] && ! checkpoint_compatible; then
+    echo "ARC-Q training is not running; checkpoint is incompatible"
   else
     echo "ARC-Q training is not running"
   fi

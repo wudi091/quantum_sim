@@ -22,6 +22,19 @@ from .policy import ARCQPolicy
 
 
 @dataclass(frozen=True)
+class PolicyRolloutToken:
+    """One policy transition; only STOP advances the physical environment."""
+
+    observation: RoutingObservation
+    prefix_action_ids: tuple[str, ...]
+    action_id: str
+    reward: float
+    done: bool
+    old_log_probability: float
+    old_value: float
+
+
+@dataclass(frozen=True)
 class PolicyRolloutStep:
     observation: RoutingObservation
     action: RoutingAction
@@ -30,6 +43,7 @@ class PolicyRolloutStep:
     old_log_probability: float
     old_value: float
     token_count: int
+    tokens: tuple[PolicyRolloutToken, ...]
 
 
 @dataclass(frozen=True)
@@ -38,6 +52,11 @@ class EpisodeRollout:
     execution: OnlineExecutionResult
     episode_return: float
     reward_identity_error: float
+    has_value_estimates: bool
+
+    @property
+    def tokens(self) -> tuple[PolicyRolloutToken, ...]:
+        return tuple(token for step in self.steps for token in step.tokens)
 
 
 def collect_episode(
@@ -46,6 +65,7 @@ def collect_episode(
     environment_config: OnlineExecutionConfig,
     *,
     deterministic: bool = False,
+    collect_value_estimates: bool = True,
 ) -> EpisodeRollout:
     """Collect one complete online trajectory without retaining autograd."""
 
@@ -63,11 +83,32 @@ def collect_episode(
             evaluation = policy.sample_action(
                 observation,
                 deterministic=deterministic,
+                include_value=collect_value_estimates,
             )
         policy_seconds = perf_counter() - policy_started
         transition = environment.step(
             evaluation.action,
             policy_seconds=policy_seconds,
+        )
+        token_records = tuple(
+            PolicyRolloutToken(
+                observation=observation,
+                prefix_action_ids=token.prefix_action_ids,
+                action_id=token.action_id,
+                reward=(
+                    transition.reward
+                    if index == len(evaluation.tokens) - 1
+                    else 0.0
+                ),
+                done=(
+                    transition.done
+                    if index == len(evaluation.tokens) - 1
+                    else False
+                ),
+                old_log_probability=float(token.log_probability.item()),
+                old_value=float(token.value.item()),
+            )
+            for index, token in enumerate(evaluation.tokens)
         )
         steps.append(PolicyRolloutStep(
             observation=observation,
@@ -77,6 +118,7 @@ def collect_episode(
             old_log_probability=float(evaluation.log_probability.item()),
             old_value=float(evaluation.value.item()),
             token_count=evaluation.token_count,
+            tokens=token_records,
         ))
     if was_training:
         policy.train()
@@ -85,7 +127,13 @@ def collect_episode(
         execution=environment.result(),
         episode_return=float(sum(step.reward for step in steps)),
         reward_identity_error=environment.reward_identity_error(),
+        has_value_estimates=collect_value_estimates,
     )
 
 
-__all__ = ["EpisodeRollout", "PolicyRolloutStep", "collect_episode"]
+__all__ = [
+    "EpisodeRollout",
+    "PolicyRolloutStep",
+    "PolicyRolloutToken",
+    "collect_episode",
+]

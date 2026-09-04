@@ -16,6 +16,14 @@ The method has three deliberate properties:
    curve.  With the terminal censoring charge, the episode return is exactly
    the negative mean censored completion time measured by the evaluator.
 
+Candidate choices and STOP are PPO transitions in an augmented decision
+process. Candidate transitions consume no physical time and receive zero
+reward; STOP advances SeQUeNCe and receives the interval reward. This gives
+the critic a value for every partial feasible plan without changing the
+physical objective. Actor and critic graph encoders are independent and their
+gradients are clipped separately, so value regression cannot scale away the
+policy update.
+
 Planning code sees only immutable specifications, opaque resource keys, and
 neutral physical snapshots.  Selected plans are executed by the existing
 SeQUeNCe-backed lifecycle in `algorithms/routing_core/`.
