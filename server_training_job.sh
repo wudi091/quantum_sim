@@ -190,6 +190,7 @@ valid = (
     and math.isfinite(float(payload.get("best_validation_loss", float("nan"))))
     and payload.get("learning_rate") == 0.0002
     and payload.get("quantum_adaptation", {}).get("objective") == "single-stage expected censored completion latency"
+    and payload.get("paper_alignment", {}).get("constraint_supervision") == "final readout only; intermediate IPM iterates may be temporarily infeasible"
     and checkpoint.get("schema_version") == 5
     and checkpoint.get("model_class") == "TELGENPaperGNN"
     and checkpoint.get("objective") == "expected_censored_completion_latency"
