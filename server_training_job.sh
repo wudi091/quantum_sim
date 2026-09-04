@@ -204,10 +204,33 @@ PY
 run_training_seed() {
     local run_root="$1"
     local seed="$2"
+    local gpu_id="${3:-}"
     local model_dir="${run_root}/seed_${seed}"
     local report="${model_dir}/telgen_ipm_report.json"
     local checkpoint="${model_dir}/telgen_ipm_model.pt"
     local log_file="${run_root}/logs/seed_${seed}.log"
+
+    # Independent seeds can use separate GPUs.  The outer pipeline still
+    # invokes this function once per seed; the first invocation fans out the
+    # first two only when the shared teacher cache already exists.  Recursive
+    # calls carry an explicit GPU id and therefore do not fan out again.
+    if [[ -z "${gpu_id}" \
+        && "${seed}" == "${TRAINING_SEEDS[0]}" \
+        && ${#TRAINING_SEEDS[@]} -ge 2 \
+        && -f "${run_root}/dataset/telgen_ipm_dataset.pkl" ]]; then
+        run_training_seed "${run_root}" "${TRAINING_SEEDS[0]}" 0 &
+        local seed_a_pid=$!
+        run_training_seed "${run_root}" "${TRAINING_SEEDS[1]}" 1 &
+        local seed_b_pid=$!
+        local status_a=0
+        local status_b=0
+        wait "${seed_a_pid}" || status_a=$?
+        wait "${seed_b_pid}" || status_b=$?
+        if [[ ${status_a} -ne 0 || ${status_b} -ne 0 ]]; then
+            return 1
+        fi
+        return 0
+    fi
 
     mkdir -p "${model_dir}" "${run_root}/logs"
     if validate_report "${report}" "${checkpoint}" "${seed}"; then
@@ -215,6 +238,9 @@ run_training_seed() {
         return 0
     fi
 
+    if [[ -n "${gpu_id}" ]]; then
+        export CUDA_VISIBLE_DEVICES="${gpu_id}"
+    fi
     "${PYTHON_BIN}" -m algorithms.telgen.ipm_trajectory_pilot \
         --output "${report}" \
         --checkpoint "${checkpoint}" \

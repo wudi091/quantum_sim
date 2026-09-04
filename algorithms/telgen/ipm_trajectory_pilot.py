@@ -31,6 +31,7 @@ construction-aware plan.  The resulting checkpoint can be used by the
 from __future__ import annotations
 
 import argparse
+from collections import OrderedDict
 import copy
 from dataclasses import dataclass
 import hashlib
@@ -138,6 +139,41 @@ class PilotSample:
     @property
     def capacities(self) -> dict[str, int]:
         return dict(self.resource_capacities)
+
+
+@dataclass(frozen=True)
+class _PreparedGraph:
+    """Device-resident immutable tensors for one graph.
+
+    The serialized pilot samples intentionally remain NumPy based.  This
+    runtime-only view avoids rebuilding the same index and feature tensors on
+    every epoch while keeping checkpoints and dataset caches device-neutral.
+    """
+
+    variable_features: torch.Tensor
+    constraint_features: torch.Tensor
+    objective_features: torch.Tensor
+    relations: dict[
+        str,
+        tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+    ]
+    relation_normalizations: dict[str, torch.Tensor]
+    request_groups: tuple[torch.Tensor, ...]
+    request_rows: torch.Tensor
+    variable_to_request: torch.Tensor
+
+
+@dataclass(frozen=True)
+class _PreparedLossTensors:
+    """Static tensors used by the supervised loss for one sample."""
+
+    target: torch.Tensor
+    matrix: torch.Tensor | None
+    rhs: torch.Tensor
+    objective: torch.Tensor
+    weights: torch.Tensor
+    request_groups: tuple[torch.Tensor, ...]
+    discount: float
 
 
 class _PilotCacheUnpickler(pickle.Unpickler):
@@ -736,22 +772,32 @@ class _RelationGCN(nn.Module):
         source_index: torch.Tensor,
         destination_index: torch.Tensor,
         edge_value: torch.Tensor,
+        *,
+        edge_embedding: torch.Tensor | None = None,
+        destination_normalization: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        source_count = len(source)
         destination_count = len(destination)
         destination_self = self.destination(destination)
         if len(source_index) == 0:
             return self.update(destination_self)
-        destination_degree = torch.bincount(
-            destination_index, minlength=destination_count
-        ).to(source.dtype) + 1.0
-        # Mean aggregation keeps a request embedding stable when the number
-        # of candidate variables grows on a larger or denser topology.  The
-        # symmetric normalization used by the generic TELGEN graph is
-        # degree-sensitive and caused a size-dependent scale drift here.
-        normalization = destination_degree[destination_index].reciprocal()
+        if destination_normalization is None:
+            destination_degree = torch.bincount(
+                destination_index, minlength=destination_count
+            ).to(source.dtype) + 1.0
+            # Mean aggregation keeps a request embedding stable when the
+            # number of candidate variables grows on a larger or denser
+            # topology.  The symmetric normalization used by the generic
+            # TELGEN graph is degree-sensitive and caused a size-dependent
+            # scale drift here.
+            normalization = destination_degree[destination_index].reciprocal()
+        else:
+            normalization = destination_normalization
+            if normalization.dtype != source.dtype:
+                normalization = normalization.to(source.dtype)
+        if edge_embedding is None:
+            edge_embedding = self.edge(edge_value[:, None])
         message = torch.relu(
-            self.source(source[source_index]) + self.edge(edge_value[:, None])
+            self.source(source[source_index]) + edge_embedding
         )
         message = message * normalization[:, None]
         aggregate = destination.new_zeros((destination_count, message.shape[-1]))
@@ -807,6 +853,8 @@ class _TELGENInnerStep(nn.Module):
             str,
             tuple[torch.Tensor, torch.Tensor, torch.Tensor],
         ],
+        relation_normalizations: dict[str, torch.Tensor] | None = None,
+        edge_embeddings: dict[str, torch.Tensor] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         states = {
             "variable": variable,
@@ -834,6 +882,16 @@ class _TELGENInnerStep(nn.Module):
                     source_index,
                     destination_index,
                     edge_value,
+                    edge_embedding=(
+                        None
+                        if edge_embeddings is None
+                        else edge_embeddings.get(name)
+                    ),
+                    destination_normalization=(
+                        None
+                        if relation_normalizations is None
+                        else relation_normalizations.get(name)
+                    ),
                 )
                 updates.setdefault(destination_name, []).append(message)
             for destination_name, messages in updates.items():
@@ -854,6 +912,8 @@ class TELGENPaperGNN(nn.Module):
     admission mass.  Consequently every predicted primal already satisfies
     request uniqueness, independent of the number of candidates per request.
     """
+
+    _GRAPH_CACHE_LIMIT_BYTES = 256 * 1024 * 1024
 
     def __init__(
         self,
@@ -912,6 +972,20 @@ class TELGENPaperGNN(nn.Module):
             normalization=None,
             dropout=dropout,
         )
+        # Graph structure is immutable during training.  Keep a device-local
+        # tensor view keyed by graph identity; the serialized NumPy graph is
+        # still the source of truth for reproducibility.
+        self._graph_cache: OrderedDict[
+            tuple[int, str],
+            tuple[_PreparedGraph, int],
+        ] = OrderedDict()
+        self._graph_cache_bytes = 0
+
+    def clear_graph_cache(self) -> None:
+        """Release cached graph tensors, for phase-boundary memory control."""
+
+        self._graph_cache.clear()
+        self._graph_cache_bytes = 0
 
     @staticmethod
     def _relations(
@@ -1021,23 +1095,117 @@ class TELGENPaperGNN(nn.Module):
             torch.as_tensor(variable_to_request, dtype=torch.long, device=device),
         )
 
+    def _prepare_graph(
+        self,
+        graph: IPMGraph,
+        device: torch.device,
+    ) -> _PreparedGraph:
+        """Create and cache the device-resident graph representation."""
+
+        key = (id(graph), str(device))
+        cached = self._graph_cache.get(key)
+        if cached is not None:
+            self._graph_cache.move_to_end(key)
+            return cached[0]
+
+        variable_features = torch.as_tensor(
+            graph.variable_features, dtype=torch.float32, device=device
+        )
+        constraint_features = torch.as_tensor(
+            graph.constraint_features, dtype=torch.float32, device=device
+        )
+        objective_features = torch.as_tensor(
+            graph.objective_features, dtype=torch.float32, device=device
+        )
+        relations = self._relations(graph, device)
+        destination_counts = {
+            "constraint_to_variable": len(variable_features),
+            "variable_to_constraint": len(constraint_features),
+            "variable_to_objective": 1,
+            "objective_to_variable": len(variable_features),
+            "constraint_to_objective": 1,
+            "objective_to_constraint": len(constraint_features),
+        }
+        relation_normalizations: dict[str, torch.Tensor] = {}
+        for name, (_, destination_index, _) in relations.items():
+            destination_count = destination_counts[name]
+            if len(destination_index) == 0:
+                relation_normalizations[name] = torch.zeros(
+                    0, dtype=torch.float32, device=device
+                )
+                continue
+            destination_degree = torch.bincount(
+                destination_index, minlength=destination_count
+            ).to(torch.float32) + 1.0
+            relation_normalizations[name] = destination_degree.index_select(
+                0, destination_index
+            ).reciprocal()
+        request_groups, request_rows, variable_to_request = (
+            self._request_partition(graph, device)
+        )
+        prepared = _PreparedGraph(
+            variable_features=variable_features,
+            constraint_features=constraint_features,
+            objective_features=objective_features,
+            relations=relations,
+            relation_normalizations=relation_normalizations,
+            request_groups=request_groups,
+            request_rows=request_rows,
+            variable_to_request=variable_to_request,
+        )
+        unique_tensors: dict[int, torch.Tensor] = {}
+        direct_tensors = (
+            prepared.variable_features,
+            prepared.constraint_features,
+            prepared.objective_features,
+            prepared.request_rows,
+            prepared.variable_to_request,
+            *prepared.request_groups,
+            *prepared.relation_normalizations.values(),
+        )
+        relation_tensors = (
+            tensor
+            for relation in prepared.relations.values()
+            for tensor in relation
+        )
+        for tensor in (*direct_tensors, *relation_tensors):
+            unique_tensors.setdefault(tensor.data_ptr(), tensor)
+        prepared_bytes = sum(
+            tensor.numel() * tensor.element_size()
+            for tensor in unique_tensors.values()
+        )
+        if prepared_bytes <= self._GRAPH_CACHE_LIMIT_BYTES:
+            while (
+                self._graph_cache
+                and self._graph_cache_bytes + prepared_bytes
+                > self._GRAPH_CACHE_LIMIT_BYTES
+            ):
+                _, (_, released_bytes) = self._graph_cache.popitem(last=False)
+                self._graph_cache_bytes -= released_bytes
+            self._graph_cache[key] = (prepared, prepared_bytes)
+            self._graph_cache_bytes += prepared_bytes
+        return prepared
+
     def forward(self, graph: IPMGraph, *, steps: int) -> torch.Tensor:
         if steps < 1:
             raise ValueError("steps must be positive")
         device = next(self.parameters()).device
-        variable = self.variable_encoder(torch.as_tensor(
-            graph.variable_features, dtype=torch.float32, device=device
-        ))
-        constraint = self.constraint_encoder(torch.as_tensor(
-            graph.constraint_features, dtype=torch.float32, device=device
-        ))
-        objective_node = self.objective_encoder(torch.as_tensor(
-            graph.objective_features, dtype=torch.float32, device=device
-        ))
-        relations = self._relations(graph, device)
-        request_groups, request_rows, variable_to_request = (
-            self._request_partition(graph, device)
-        )
+        prepared = self._prepare_graph(graph, device)
+        variable = self.variable_encoder(prepared.variable_features)
+        constraint = self.constraint_encoder(prepared.constraint_features)
+        objective_node = self.objective_encoder(prepared.objective_features)
+        relations = prepared.relations
+        request_groups = prepared.request_groups
+        request_rows = prepared.request_rows
+        variable_to_request = prepared.variable_to_request
+        # Edge values are fixed for a graph during one forward pass.  Their
+        # relation-specific linear embeddings can therefore be reused across
+        # all shared outer and inner iterations while retaining gradients.
+        edge_embeddings = {
+            name: getattr(self.inner_step, name).edge(edge_value[:, None])
+            for name, (_, _, edge_value) in relations.items()
+            if len(edge_value)
+        }
         outputs: list[torch.Tensor] = []
         for _ in range(steps):
             last_variable_message = variable
@@ -1054,6 +1222,8 @@ class TELGENPaperGNN(nn.Module):
                     constraint,
                     objective_node,
                     relations,
+                    prepared.relation_normalizations,
+                    edge_embeddings,
                 )
                 last_variable_message = new_variable
                 variable = (torch.relu(new_variable) + old_variable) / 2.0
@@ -1101,6 +1271,51 @@ class TELGENQuantumAdapterGNN(TELGENPaperGNN):
         )
 
 
+def _prepare_loss_tensors(
+    sample: PilotSample,
+    device: torch.device,
+    *,
+    discount: float,
+    cache_matrix: bool = True,
+) -> _PreparedLossTensors:
+    """Move sample-constant loss inputs to ``device`` once."""
+
+    target = torch.as_tensor(
+        sample.trajectory.points, dtype=torch.float32, device=device
+    )
+    grouped_indices: dict[str, list[int]] = {}
+    for index, variable in enumerate(sample.variables):
+        grouped_indices.setdefault(variable.request_id, []).append(index)
+    request_groups = tuple(
+        torch.as_tensor(indices, dtype=torch.long, device=device)
+        for indices in grouped_indices.values()
+    )
+    weights = torch.as_tensor(
+        [discount ** (len(target) - index - 1)
+         for index in range(len(target))],
+        dtype=torch.float32,
+        device=device,
+    )
+    return _PreparedLossTensors(
+        target=target,
+        matrix=(
+            torch.as_tensor(
+                sample.graph.matrix, dtype=torch.float32, device=device
+            )
+            if cache_matrix else None
+        ),
+        rhs=torch.as_tensor(
+            sample.graph.rhs, dtype=torch.float32, device=device
+        ),
+        objective=torch.as_tensor(
+            sample.graph.objective, dtype=torch.float32, device=device
+        ),
+        weights=weights,
+        request_groups=request_groups,
+        discount=float(discount),
+    )
+
+
 def _sample_loss(
     prediction: torch.Tensor,
     sample: PilotSample,
@@ -1110,6 +1325,7 @@ def _sample_loss(
     constraint_weight: float = 5.8,
     request_mass_weight: float = 2.0,
     candidate_distribution_weight: float = 0.5,
+    prepared: _PreparedLossTensors | None = None,
 ) -> tuple[torch.Tensor, dict[str, float]]:
     """Step-supervised loss for the single-stage LP trajectory.
 
@@ -1125,25 +1341,43 @@ def _sample_loss(
     ):
         raise ValueError("request-structure loss weights must be non-negative")
     device = prediction.device
-    target = torch.as_tensor(
-        sample.trajectory.points, dtype=torch.float32, device=device
-    )
+    if prepared is None:
+        target = torch.as_tensor(
+            sample.trajectory.points, dtype=torch.float32, device=device
+        )
+        matrix = torch.as_tensor(
+            sample.graph.matrix, dtype=torch.float32, device=device
+        )
+        rhs = torch.as_tensor(
+            sample.graph.rhs, dtype=torch.float32, device=device
+        )
+        objective = torch.as_tensor(
+            sample.graph.objective, dtype=torch.float32, device=device
+        )
+        weights = torch.as_tensor(
+            [discount ** (len(target) - index - 1)
+             for index in range(len(target))],
+            dtype=torch.float32,
+            device=device,
+        )
+        request_groups: tuple[torch.Tensor, ...] | None = None
+    else:
+        if abs(float(prepared.discount) - float(discount)) > 1e-12:
+            raise ValueError("prepared loss tensors use a different discount")
+        target = prepared.target
+        matrix = (
+            prepared.matrix
+            if prepared.matrix is not None
+            else torch.as_tensor(
+                sample.graph.matrix, dtype=torch.float32, device=device
+            )
+        )
+        rhs = prepared.rhs
+        objective = prepared.objective
+        weights = prepared.weights
+        request_groups = prepared.request_groups
     if prediction.shape != target.shape:
         raise ValueError("prediction and teacher trajectory shapes differ")
-    matrix = torch.as_tensor(
-        sample.graph.matrix, dtype=torch.float32, device=device
-    )
-    rhs = torch.as_tensor(
-        sample.graph.rhs, dtype=torch.float32, device=device
-    )
-    objective = torch.as_tensor(
-        sample.graph.objective, dtype=torch.float32, device=device
-    )
-    weights = torch.as_tensor(
-        [discount ** (len(target) - index - 1) for index in range(len(target))],
-        dtype=torch.float32,
-        device=device,
-    )
 
     primal_loss = (
         (prediction - target).pow(2) * weights[:, None]
@@ -1169,17 +1403,19 @@ def _sample_loss(
         constraint_loss = prediction.new_zeros(())
         maximum_violation = 0.0
 
-    request_groups: dict[str, list[int]] = {}
-    for index, variable in enumerate(sample.variables):
-        request_groups.setdefault(variable.request_id, []).append(index)
+    if request_groups is None:
+        grouped_indices: dict[str, list[int]] = {}
+        for index, variable in enumerate(sample.variables):
+            grouped_indices.setdefault(variable.request_id, []).append(index)
+        request_groups = tuple(
+            torch.as_tensor(indices, dtype=torch.long, device=device)
+            for indices in grouped_indices.values()
+        )
     request_mass_terms: list[torch.Tensor] = []
     distribution_terms: list[torch.Tensor] = []
-    for indices in request_groups.values():
-        index_tensor = torch.as_tensor(
-            indices, dtype=torch.long, device=device
-        )
-        predicted_request = prediction[:, index_tensor]
-        target_request = target[:, index_tensor]
+    for index_tensor in request_groups:
+        predicted_request = prediction.index_select(1, index_tensor)
+        target_request = target.index_select(1, index_tensor)
         predicted_mass = predicted_request.sum(dim=1)
         target_mass = target_request.sum(dim=1)
         request_mass_terms.append(
@@ -1727,6 +1963,7 @@ def _mean_supervised_loss(
     constraint_weight: float,
     request_mass_weight: float,
     candidate_distribution_weight: float,
+    prepared_cache: Mapping[int, _PreparedLossTensors] | None = None,
 ) -> float:
     if not samples:
         return float("inf")
@@ -1744,6 +1981,11 @@ def _mean_supervised_loss(
                 constraint_weight=constraint_weight,
                 request_mass_weight=request_mass_weight,
                 candidate_distribution_weight=candidate_distribution_weight,
+                prepared=(
+                    None
+                    if prepared_cache is None
+                    else prepared_cache.get(id(sample))
+                ),
             )
             value = float(loss.detach().cpu())
             if not np.isfinite(value):
@@ -2052,6 +2294,19 @@ def run_pilot(
     optimizer = torch.optim.Adam(
         model.parameters(), lr=learning_rate, weight_decay=weight_decay
     )
+    # Keep compact labels and request partitions resident on the device.  The
+    # dense LP matrix is intentionally left uncached to avoid pinning several
+    # gigabytes for a large training set; it is materialized only for the one
+    # sample currently contributing a loss.
+    prepared_loss_cache = {
+        id(sample): _prepare_loss_tensors(
+            sample,
+            resolved_device,
+            discount=0.7,
+            cache_matrix=False,
+        )
+        for sample in (*train, *validation)
+    }
     untrained = {
         "train": _evaluate(model, train),
         "validation": _evaluate(model, validation),
@@ -2060,6 +2315,9 @@ def run_pilot(
             _evaluate(model, cross_family_test) if cross_family_test else None
         ),
     }
+    # Do not retain evaluation-only graphs while the training cache is being
+    # populated; this keeps peak GPU residency bounded on large topologies.
+    model.clear_graph_cache()
 
     best_state: dict[str, torch.Tensor] | None = None
     best_epoch = 0
@@ -2087,6 +2345,7 @@ def run_pilot(
                 constraint_weight=constraint_weight,
                 request_mass_weight=request_mass_weight,
                 candidate_distribution_weight=candidate_distribution_weight,
+                prepared=prepared_loss_cache[id(sample)],
             )
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -2099,6 +2358,7 @@ def run_pilot(
             constraint_weight=constraint_weight,
             request_mass_weight=request_mass_weight,
             candidate_distribution_weight=candidate_distribution_weight,
+            prepared_cache=prepared_loss_cache,
         )
         if validation_loss < best_validation_loss - min_delta:
             best_validation_loss = validation_loss
