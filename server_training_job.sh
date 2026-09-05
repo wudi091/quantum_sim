@@ -36,11 +36,26 @@ is_arcq_process() {
 }
 
 running_pid() {
-  local process_id
-  process_id=$(read_pid) || return 1
-  kill -0 "${process_id}" 2>/dev/null || return 1
-  is_arcq_process "${process_id}" || return 1
-  printf '%s' "${process_id}"
+  local process_id process_path
+  if process_id=$(read_pid) &&
+    kill -0 "${process_id}" 2>/dev/null &&
+    is_arcq_process "${process_id}"; then
+    printf '%s' "${process_id}"
+    return 0
+  fi
+
+  # The output directory can change between method revisions. Scan command
+  # lines as well so an older task using the same fixed config is not doubled.
+  for process_path in /proc/[0-9]*; do
+    process_id=${process_path##*/}
+    [[ "${process_id}" == "$$" ]] && continue
+    if kill -0 "${process_id}" 2>/dev/null &&
+      is_arcq_process "${process_id}"; then
+      printf '%s' "${process_id}"
+      return 0
+    fi
+  done
+  return 1
 }
 
 checkpoint_compatible() {
