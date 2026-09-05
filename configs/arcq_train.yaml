@@ -1,0 +1,62 @@
+model:
+  hidden_dim: 96
+  message_passing_layers: 3
+
+ppo:
+  learning_rate: 0.0003
+  gamma: 1.0
+  physical_gae_lambda: 0.95
+  clip_ratio: 0.2
+  value_loss_coefficient: 0.5
+  entropy_coefficient: 0.01
+  update_epochs: 4
+  minibatch_size: 64
+  max_gradient_norm: 0.5
+
+environment:
+  decision_interval: 4
+  path_candidate_count: 3
+  construction_kinds: []
+  swap_tree_count: 3
+  purification_kinds:
+    - none
+
+scenario:
+  request_count: 12
+  min_hops: 2
+  max_hops: 4
+  ttl: 24
+  horizon: 32
+  topology_nodes: 32
+  topology_mode: random_regular
+  random_regular_degree: 4
+  endpoint_mode: distance_stratified
+  arrival_batch_size: 4
+  arrival_interval: 4
+  demand_pairs: 1
+  physical:
+    generation_probability: 0.8
+    swap_probability: 0.9
+    memory_capacity: 2
+    node_memory_capacity: 4
+    max_width: 1
+    memory_lifetime: 100
+    initial_fidelity: 0.99
+    swap_degradation: 0.95
+    quantum_distance_m: 1000.0
+    detector_efficiency: 1.0
+    bsm_success_probability: 1.0
+    slot_duration_ps: 100000000
+
+run:
+  episode_count: 1000
+  episodes_per_update: 8
+  random_seed: 20260905
+  topology_seed: 3101
+  checkpoint_every_updates: 10
+  validation_every_updates: 10
+  validation_episode_count: 8
+  validation_seed: 30260905
+  output_directory: results/arcq/paper_training
+  device: auto
+  cpu_threads: null

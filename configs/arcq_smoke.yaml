@@ -1,0 +1,58 @@
+model:
+  hidden_dim: 16
+  message_passing_layers: 1
+
+ppo:
+  learning_rate: 0.001
+  gamma: 1.0
+  physical_gae_lambda: 0.95
+  clip_ratio: 0.2
+  value_loss_coefficient: 0.5
+  entropy_coefficient: 0.01
+  update_epochs: 1
+  minibatch_size: 8
+  max_gradient_norm: 0.5
+
+environment:
+  decision_interval: 2
+  path_candidate_count: 2
+  construction_kinds:
+    - left_deep
+    - balanced
+  swap_tree_count: null
+  purification_kinds:
+    - none
+
+scenario:
+  request_count: 2
+  min_hops: 2
+  max_hops: 2
+  ttl: 6
+  horizon: 6
+  topology_mode: parallel_corridors
+  parallel_corridors: 2
+  endpoint_mode: distance_stratified
+  demand_pairs: 1
+  physical:
+    generation_probability: 1.0
+    swap_probability: 1.0
+    memory_capacity: 1
+    node_memory_capacity: 2
+    max_width: 1
+    quantum_distance_m: 1.0
+    detector_efficiency: 1.0
+    bsm_success_probability: 1.0
+    slot_duration_ps: 1000000
+
+run:
+  episode_count: 2
+  episodes_per_update: 2
+  random_seed: 8500
+  topology_seed: 1
+  checkpoint_every_updates: 1
+  validation_every_updates: 1
+  validation_episode_count: 1
+  validation_seed: 9500
+  output_directory: results/arcq/smoke
+  device: cpu
+  cpu_threads: 1

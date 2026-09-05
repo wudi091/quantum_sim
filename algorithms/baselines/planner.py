@@ -3,7 +3,8 @@
 The original algorithms use different simulators and execution models.  This
 module keeps their path-selection principles while compiling every accepted
 choice into the same fixed-construction, resource--time contract used by
-TELGEN and Q-CAST.  No function here imports or inspects SeQUeNCe objects.
+the shared execution layer and Q-CAST.  No function here imports or inspects
+SeQUeNCe objects.
 """
 
 from __future__ import annotations
@@ -16,16 +17,16 @@ from typing import Callable, Mapping, Sequence
 from algorithms.qcast.online_planner import (
     effective_link_generation_probability,
 )
-from algorithms.telgen.dataset import (
+from algorithms.routing_core.candidates import (
     PlanningBatchProblem,
     build_planning_batch_problem,
 )
-from algorithms.telgen.fidelity import candidate_fidelity_estimate_map
-from algorithms.telgen.packing import (
+from algorithms.routing_core.fidelity import candidate_fidelity_estimate_map
+from algorithms.routing_core.packing import (
     PackingSolution,
     validate_packing_selection,
 )
-from algorithms.telgen.time_expansion import (
+from algorithms.routing_core.time_expansion import (
     TimeExpandedCandidate,
     normalize_reserved_usage,
 )
@@ -36,6 +37,7 @@ from qnet_core.spec import EpisodeSpec
 
 BASELINE_ALGORITHMS = (
     "greedy",
+    "construction_only",
     "strict_fifo",
     "best_fifo",
     "qpass",
@@ -446,6 +448,7 @@ def plan_baseline_window(
     reserved_usage: Mapping[tuple[str, int], int] | None = None,
     path_candidate_count: int = 4,
     construction_kind: str = "left_deep",
+    swap_tree_count: int | None = None,
     planner_state: BaselinePlannerState | None = None,
 ) -> BaselinePlanningRecord:
     """Plan one online window with a named non-learning baseline."""
@@ -456,6 +459,23 @@ def plan_baseline_window(
         raise ValueError("path_candidate_count must be positive")
     if construction_kind not in {"left_deep", "balanced"}:
         raise ValueError("unsupported construction_kind")
+    if algorithm == "greedy" and (
+        path_candidate_count != 1
+        or construction_kind != "balanced"
+        or swap_tree_count is not None
+    ):
+        raise ValueError(
+            "greedy is fixed to one shortest path and balanced construction"
+        )
+    if algorithm == "construction_only" and (
+        path_candidate_count != 1
+        or swap_tree_count is None
+        or swap_tree_count < 1
+    ):
+        raise ValueError(
+            "construction_only is fixed to one shortest path and requires "
+            "a positive swap_tree_count"
+        )
 
     planning_episode, declared_request_ids = _validate_request_subset(
         episode,
@@ -474,7 +494,14 @@ def plan_baseline_window(
         resource_capacities=resource_capacities,
         reserved_usage=reserved_usage,
         path_candidate_count=path_candidate_count,
-        construction_kinds=(construction_kind,),
+        construction_kinds=(
+            ("balanced",)
+            if algorithm == "construction_only"
+            else (construction_kind,)
+        ),
+        swap_tree_count=(
+            swap_tree_count if algorithm == "construction_only" else None
+        ),
         purification_kinds=purification_kinds,
     )
     capacities = problem.capacities
@@ -500,6 +527,8 @@ def plan_baseline_window(
         cost = _expected_pair_cost(variable)
         if algorithm == "greedy":
             score = 1.0 / (1.0 + variable.base_candidate.hop_count)
+        elif algorithm == "construction_only":
+            score = 1.0 / (1.0 + variable.completion_latency)
         elif algorithm in {"strict_fifo", "best_fifo"}:
             score = 0.0 if not math.isfinite(cost) else 1.0 / (1.0 + cost)
         elif algorithm == "qpath":
@@ -533,6 +562,19 @@ def plan_baseline_window(
                 item.start_slot,
                 item.completion_slot,
                 _variable_resource_time_cost(item),
+                item.variable_id,
+            ),
+        )
+    elif algorithm == "construction_only":
+        _select_by_request_order(
+            variables,
+            request_order,
+            selection,
+            lambda item: (
+                item.completion_slot,
+                item.start_slot,
+                _variable_resource_time_cost(item),
+                -item.expected_success_probability,
                 item.variable_id,
             ),
         )

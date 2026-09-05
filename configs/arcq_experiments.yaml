@@ -1,0 +1,186 @@
+schema_version: 1
+checkpoint_path: results/arcq/paper_training/arcq_best.pt
+output_path: results/arcq/formal/raw_results.json
+
+replication:
+  episode_seed_start: 40260905
+  episodes_per_topology: 10
+
+environment:
+  decision_interval: 4
+  path_candidate_count: 3
+  construction_kinds: []
+  swap_tree_count: 3
+  purification_kinds:
+    - none
+
+base_scenario:
+  request_count: 80
+  min_hops: 2
+  max_hops: 4
+  ttl: 24
+  horizon: 100
+  topology_nodes: 32
+  topology_mode: random_regular
+  random_regular_degree: 4
+  endpoint_mode: distance_stratified
+  arrival_batch_size: 4
+  arrival_interval: 4
+  demand_pairs: 1
+  physical:
+    generation_probability: 0.8
+    swap_probability: 0.9
+    memory_capacity: 2
+    node_memory_capacity: 4
+    max_width: 1
+    memory_lifetime: 100
+    initial_fidelity: 0.99
+    swap_degradation: 0.95
+    quantum_distance_m: 1000.0
+    detector_efficiency: 1.0
+    bsm_success_probability: 1.0
+    slot_duration_ps: 100000000
+
+baselines:
+  - name: Greedy
+    algorithm: greedy
+    path_candidate_count: 1
+    construction_kind: balanced
+  - name: Path-only
+    algorithm: qpass
+    path_candidate_count: 3
+    construction_kind: balanced
+  - name: Construction-only
+    algorithm: construction_only
+    path_candidate_count: 1
+    construction_kind: balanced
+    swap_tree_count: 3
+  - name: Q-LEAP
+    algorithm: qleap
+    path_candidate_count: 3
+    construction_kind: balanced
+  - name: Q-CAST
+    algorithm: qcast
+    path_candidate_count: 3
+    construction_kind: left_deep
+
+suites:
+  - id: offered_load
+    x_label: requests_per_decision
+    points:
+      - id: load_2
+        value: 2
+        topology_seeds: [5101, 5102, 5103]
+        scenario: {request_count: 40, arrival_batch_size: 2}
+      - id: load_3
+        value: 3
+        topology_seeds: [5101, 5102, 5103]
+        scenario: {request_count: 60, arrival_batch_size: 3}
+      - id: load_4
+        value: 4
+        topology_seeds: [5101, 5102, 5103]
+        scenario: {request_count: 80, arrival_batch_size: 4}
+      - id: load_5
+        value: 5
+        topology_seeds: [5101, 5102, 5103]
+        scenario: {request_count: 100, arrival_batch_size: 5}
+      - id: load_6
+        value: 6
+        topology_seeds: [5101, 5102, 5103]
+        scenario: {request_count: 120, arrival_batch_size: 6}
+
+  - id: network_scale
+    x_label: nodes
+    points:
+      - id: nodes_16
+        value: 16
+        topology_seeds: [5201, 5202, 5203]
+        scenario: {topology_nodes: 16, request_count: 40, arrival_batch_size: 2}
+      - id: nodes_24
+        value: 24
+        topology_seeds: [5201, 5202, 5203]
+        scenario: {topology_nodes: 24, request_count: 60, arrival_batch_size: 3}
+      - id: nodes_32
+        value: 32
+        topology_seeds: [5201, 5202, 5203]
+        scenario: {topology_nodes: 32, request_count: 80, arrival_batch_size: 4}
+      - id: nodes_48
+        value: 48
+        topology_seeds: [5201, 5202, 5203]
+        scenario: {topology_nodes: 48, request_count: 120, arrival_batch_size: 6}
+      - id: nodes_64
+        value: 64
+        topology_seeds: [5201, 5202, 5203]
+        scenario: {topology_nodes: 64, request_count: 160, arrival_batch_size: 8}
+
+  - id: memory_capacity
+    x_label: memory_units_per_node
+    points:
+      - id: memory_2
+        value: 2
+        topology_seeds: [5301, 5302, 5303]
+        scenario: {physical: {node_memory_capacity: 2}}
+      - id: memory_3
+        value: 3
+        topology_seeds: [5301, 5302, 5303]
+        scenario: {physical: {node_memory_capacity: 3}}
+      - id: memory_4
+        value: 4
+        topology_seeds: [5301, 5302, 5303]
+        scenario: {physical: {node_memory_capacity: 4}}
+      - id: memory_6
+        value: 6
+        topology_seeds: [5301, 5302, 5303]
+        scenario: {physical: {node_memory_capacity: 6}}
+      - id: memory_8
+        value: 8
+        topology_seeds: [5301, 5302, 5303]
+        scenario: {physical: {node_memory_capacity: 8}}
+
+  - id: generation_probability
+    x_label: elementary_generation_probability
+    points:
+      - id: generation_05
+        value: 0.5
+        topology_seeds: [5401, 5402, 5403]
+        scenario: {physical: {generation_probability: 0.5}}
+      - id: generation_06
+        value: 0.6
+        topology_seeds: [5401, 5402, 5403]
+        scenario: {physical: {generation_probability: 0.6}}
+      - id: generation_07
+        value: 0.7
+        topology_seeds: [5401, 5402, 5403]
+        scenario: {physical: {generation_probability: 0.7}}
+      - id: generation_08
+        value: 0.8
+        topology_seeds: [5401, 5402, 5403]
+        scenario: {physical: {generation_probability: 0.8}}
+      - id: generation_09
+        value: 0.9
+        topology_seeds: [5401, 5402, 5403]
+        scenario: {physical: {generation_probability: 0.9}}
+
+  - id: topology_generalization
+    x_label: unseen_topology
+    points:
+      - id: random_regular_32
+        value: RR-32
+        topology_seeds: [5501, 5502, 5503]
+        scenario: {topology_mode: random_regular, topology_nodes: 32, request_count: 80, arrival_batch_size: 4}
+      - id: random_regular_48
+        value: RR-48
+        topology_seeds: [5511, 5512, 5513]
+        scenario: {topology_mode: random_regular, topology_nodes: 48, request_count: 120, arrival_batch_size: 6}
+      - id: erdos_renyi_32
+        value: ER-32
+        topology_seeds: [5521, 5522, 5523]
+        scenario: {topology_mode: erdos_renyi, topology_nodes: 32, request_count: 80, arrival_batch_size: 4}
+      - id: barabasi_albert_32
+        value: BA-32
+        topology_seeds: [5531, 5532, 5533]
+        scenario: {topology_mode: barabasi_albert, topology_nodes: 32, request_count: 80, arrival_batch_size: 4}
+      - id: waxman_32
+        value: Waxman-32
+        topology_seeds: [5541, 5542, 5543]
+        scenario: {topology_mode: waxman, topology_nodes: 32, request_count: 80, arrival_batch_size: 4}

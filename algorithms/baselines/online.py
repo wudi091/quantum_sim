@@ -2,7 +2,7 @@
 
 Only the planning rule changes between algorithms.  Request visibility,
 resource reservations, retries, and physical execution are inherited from
-the same persistent SeQUeNCe-backed lifecycle used by TELGEN and Q-CAST.
+the same persistent SeQUeNCe-backed lifecycle used by all planners.
 """
 
 from __future__ import annotations
@@ -17,12 +17,12 @@ from statistics import fmean
 from time import perf_counter
 from typing import Mapping
 
-from algorithms.telgen.online import (
+from algorithms.routing_core.execution import (
     OnlineAttemptRecord,
-    OnlineTELGENConfig,
-    OnlineTELGENController,
+    OnlineExecutionConfig,
+    OnlineExecutionController,
 )
-from algorithms.telgen.packing import PackingSolution
+from algorithms.routing_core.packing import PackingSolution
 from qnet_core.construction_api import ExecutionEvent
 from qnet_core.construction_metrics import RequestSettlement
 from qnet_core.scheduled_execution import (
@@ -39,21 +39,17 @@ from .planner import (
 )
 
 
-class _DisabledMILPOracle:
-    """Fail closed if a future refactor accidentally enters the MILP path."""
-
-    def solve(self, *args, **kwargs):
-        raise RuntimeError("non-learning baselines must not invoke MILP")
-
-
 @dataclass(frozen=True)
 class OnlineBaselineConfig:
     """Online settings shared by all non-learning planning rules."""
 
     algorithm: str = "greedy"
     decision_interval: int = 4
-    path_candidate_count: int = 4
-    construction_kind: str = "left_deep"
+    # The default Greedy policy is deliberately fixed-path/fixed-construction.
+    # Other named baselines pass their own route/construction settings.
+    path_candidate_count: int = 1
+    construction_kind: str = "balanced"
+    swap_tree_count: int | None = None
 
     def __post_init__(self) -> None:
         if self.algorithm not in BASELINE_ALGORITHMS:
@@ -64,6 +60,24 @@ class OnlineBaselineConfig:
             raise ValueError("path_candidate_count must be positive")
         if self.construction_kind not in {"left_deep", "balanced"}:
             raise ValueError("unsupported construction_kind")
+        if self.swap_tree_count is not None and self.swap_tree_count < 1:
+            raise ValueError("swap_tree_count must be positive")
+        if self.algorithm == "greedy" and (
+            self.path_candidate_count != 1
+            or self.construction_kind != "balanced"
+            or self.swap_tree_count is not None
+        ):
+            raise ValueError(
+                "greedy is fixed to one shortest path and balanced construction"
+            )
+        if self.algorithm == "construction_only" and (
+            self.path_candidate_count != 1
+            or self.swap_tree_count is None
+        ):
+            raise ValueError(
+                "construction_only is fixed to one shortest path and requires "
+                "swap_tree_count"
+            )
 
 
 @dataclass(frozen=True)
@@ -113,8 +127,8 @@ class OnlineBaselineResultPaths:
     latest_csv_path: Path
 
 
-class OnlineBaselineController(OnlineTELGENController):
-    """Run one named baseline without invoking MILP or a learned policy."""
+class OnlineBaselineController(OnlineExecutionController):
+    """Run one named baseline through the shared execution lifecycle."""
 
     def __init__(
         self,
@@ -129,17 +143,23 @@ class OnlineBaselineController(OnlineTELGENController):
         )
         super().__init__(
             spec,
-            OnlineTELGENConfig(
+            OnlineExecutionConfig(
                 decision_interval=self.baseline_config.decision_interval,
                 path_candidate_count=(
                     self.baseline_config.path_candidate_count
                 ),
                 construction_kinds=(
-                    self.baseline_config.construction_kind,
+                    ("balanced",)
+                    if self.baseline_config.algorithm == "construction_only"
+                    else (self.baseline_config.construction_kind,)
+                ),
+                swap_tree_count=(
+                    self.baseline_config.swap_tree_count
+                    if self.baseline_config.algorithm == "construction_only"
+                    else None
                 ),
                 purification_kinds=purification_kinds,
             ),
-            milp_oracle=_DisabledMILPOracle(),
         )
         self._planner_state = BaselinePlannerState()
         self._decisions: list[OnlineBaselineDecisionRecord] = []
@@ -175,6 +195,7 @@ class OnlineBaselineController(OnlineTELGENController):
                 self.baseline_config.path_candidate_count
             ),
             construction_kind=self.baseline_config.construction_kind,
+            swap_tree_count=self.baseline_config.swap_tree_count,
             planner_state=self._planner_state,
         )
         self._planner_state = record.state_after

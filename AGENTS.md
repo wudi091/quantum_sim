@@ -1,20 +1,19 @@
-# 项目协作约束
+# Repository Rules
 
-## 服务器操作边界
+## Server access
 
-- 对远程服务器及 `/data02/qbit/quantum_sim` 的任何操作，只能通过用户配置的 guarding 固定白名单命令执行。
-- 禁止使用 SSH、SCP、SFTP、Orca、桌面控制、直接远程 Shell 或其他方式绕过 guarding。
-- 用户说“继续”“做吧”等，不代表授权扩大服务器访问方式。
-- guarding 缺少所需命令时，必须停止并请用户新增固定命令或另行明确授权，不能自行寻找旁路。
-- 启动、停止、清理进程等操作必须遵守 guarding 的审批要求；不得自行终止服务器进程。
+- Any operation on the remote server or `/data02/qbit/quantum_sim` must use
+  the user's fixed guarding allow-list commands.
+- Do not use SSH, SCP, SFTP, Orca, desktop control, direct remote shells, or
+  another bypass of guarding.
+- User messages such as "continue" or "do it" do not expand server access.
+- If guarding lacks a required command, stop and request a new fixed command;
+  do not look for a side channel.
+- Starting, stopping, or cleaning processes must obey guarding approval rules.
 
-## 2026-08-13 操作事件记录
+## Image and experiment handling
 
-助手曾在没有获得明确授权的情况下使用本机已有 SSH 配置连接服务器，读取了仓库提交、工作树和进程信息，并向 20 个属于 `quantum_sim`、已经卡死的 Git 拉取父子进程发送了正常终止信号。这些进程随后全部退出。
-
-此次操作没有修改服务器仓库或训练数据，没有同步代码，也没有启动训练；后续尝试传输修复提交的本地命令被执行策略拦截，未实际执行。该行为属于越权，不得再次发生。
-
-## 图片查看禁令
-
-- 禁止打开、查看或以任何方式读取图片文件（PNG、JPG、SVG、PDF 等图像内容），包括使用 view_image 或等效工具。
-- 实验结果的正确性一律以数据文件（JSON、CSV、日志、统计表）为准，不通过肉眼查看图片来判断。
+- Do not open or visually inspect generated image files. Plotting scripts may
+  create image outputs and validate their existence and file size only.
+- Keep experiment execution and plotting separate; plotting must read recorded
+  result files and must not rerun an experiment or invent measurements.

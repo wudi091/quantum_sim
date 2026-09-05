@@ -6,16 +6,13 @@
 - 依赖：`sequence==1.0.0`
 - 角色：项目唯一物理仿真后端
 
-## TELGEN
+## ARC-Q
 
-- 论文：Fangtong Zhou 等，*Traffic Engineering in Large-scale Networks
-  with Generalizable Graph Neural Networks*，arXiv:2503.24203；
-- 官方源码：<https://github.com/aelitazhou/TELGEN>；
-- 核对提交：`64684ebb3a7e856de86346da46232f8ceca6666c`；
-- 本地适配：`algorithms/telgen/`（MILP 自回归 GNN 单一范式）。
-
-本项目的在线 GNN 学习精确 MILP 的 0/1 离散选择，采用带可行性掩码的自回归
-候选—约束图模型；这是面向量子网络多请求规划的适配，不声称逐行复现官方仓库。
+`algorithms/rl_routing/` contains the construction-aware online
+reinforcement-learning router. It uses a sparse graph policy and a
+feasibility-preserving autoregressive action process. The method is trained
+from SeQUeNCe feedback and does not use LP, MILP, TELGEN, supervised labels,
+or a post-hoc decoder.
 
 ## Q-CAST
 
@@ -25,8 +22,8 @@
   的来源参考
 
 `QCAST/` 中的上游模拟器不参与本项目实验。适配实现位于
-`algorithms/qcast/`，物理执行仍统一交给 SeQUeNCe；该实现目前只用于源码
-核对和补充实验，不属于固定正式对比方法。
+`algorithms/qcast/`，物理执行仍统一交给 SeQUeNCe；该实现用于源码核对和
+正式实验中的 Q-CAST 基线。
 
 同一上游仓库中的以下源码也用于核对无训练基线的行为：
 

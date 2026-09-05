@@ -345,7 +345,20 @@ def _candidate_pair_buckets(
     return buckets
 
 
-def make_episode(config: ScenarioConfig, seed: int) -> EpisodeSpec:
+def make_episode(
+    config: ScenarioConfig,
+    seed: int,
+    *,
+    topology_seed: int | None = None,
+) -> EpisodeSpec:
+    """Create one seeded workload, optionally on a fixed training topology.
+
+    ``seed`` always controls requests and physical randomness.  Supplying a
+    separate ``topology_seed`` holds only the graph fixed across episodes,
+    which permits a clean train-on-one-topology/generalize-to-unseen-topology
+    protocol without repeating an identical request trace.
+    """
+
     if config.request_count < 1:
         raise ValueError("request_count must be positive")
     if config.endpoint_mode == "distance_stratified" and (
@@ -379,16 +392,23 @@ def make_episode(config: ScenarioConfig, seed: int) -> EpisodeSpec:
     }:
         raise ValueError(f"unknown endpoint_mode: {config.endpoint_mode}")
 
+    resolved_topology_seed = seed if topology_seed is None else int(topology_seed)
     if config.topology_mode == "parallel_corridors":
         graph, distances = _make_parallel_corridor_graph(config)
     elif config.topology_mode == "barabasi_albert":
-        graph, distances = _make_barabasi_albert_graph(config, seed)
+        graph, distances = _make_barabasi_albert_graph(
+            config, resolved_topology_seed
+        )
     elif config.topology_mode == "erdos_renyi":
-        graph, distances = _make_erdos_renyi_graph(config, seed)
+        graph, distances = _make_erdos_renyi_graph(
+            config, resolved_topology_seed
+        )
     elif config.topology_mode == "random_regular":
-        graph, distances = _make_random_regular_graph(config, seed)
+        graph, distances = _make_random_regular_graph(
+            config, resolved_topology_seed
+        )
     else:
-        graph, distances = _make_waxman_graph(config, seed)
+        graph, distances = _make_waxman_graph(config, resolved_topology_seed)
     nodes = tuple(sorted(int(node) for node in graph.nodes))
     edges = tuple(sorted((min(int(u), int(v)), max(int(u), int(v))) for u, v in graph.edges))
 

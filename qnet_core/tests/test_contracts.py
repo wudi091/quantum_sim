@@ -45,6 +45,26 @@ class SharedContractTests(unittest.TestCase):
             {config.ttl},
         )
 
+    def test_topology_seed_separates_graph_and_request_randomness(self):
+        config = ScenarioConfig(
+            request_count=20,
+            min_hops=None,
+            max_hops=None,
+            topology_nodes=24,
+            topology_mode="random_regular",
+            random_regular_degree=4,
+            endpoint_mode="uniform_random",
+            ttl=8,
+            horizon=8,
+        )
+        first = make_episode(config, 501, topology_seed=77)
+        second = make_episode(config, 502, topology_seed=77)
+        unseen = make_episode(config, 501, topology_seed=78)
+        self.assertEqual(first.nodes, second.nodes)
+        self.assertEqual(first.edges, second.edges)
+        self.assertNotEqual(first.requests, second.requests)
+        self.assertNotEqual(first.edges, unseen.edges)
+
     def test_generated_requests_use_seeded_distributed_endpoints(self):
         config = ScenarioConfig(request_count=100, min_hops=2, max_hops=50)
         first = make_episode(config, 321)
