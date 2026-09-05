@@ -10,7 +10,9 @@ import torch
 from .policy import ARCQPolicy
 
 
-CHECKPOINT_SCHEMA_VERSION = 7
+# The shared state encoder changes the policy state-dict layout. Refuse old
+# checkpoints instead of mixing the previous two-encoder model with this one.
+CHECKPOINT_SCHEMA_VERSION = 8
 METHOD_NAME = "ARC-Q"
 
 

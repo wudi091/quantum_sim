@@ -173,7 +173,14 @@ class RoutingGraphEncoder(nn.Module):
 
 
 class GraphActorCritic(nn.Module):
-    """Independent graph actor and critic for stable clipped optimization."""
+    """Shared graph state encoder with separate actor and critic heads.
+
+    The encoder is the state representation.  The actor heads turn that
+    representation into the autoregressive action policy, while the value
+    head estimates the continuation value used by PPO.  Sharing the encoder
+    makes the division explicit and lets both policy and value feedback train
+    the same topology-aware representation.
+    """
 
     def __init__(
         self,
@@ -185,11 +192,7 @@ class GraphActorCritic(nn.Module):
             raise ValueError("hidden_dim must be at least 8")
         if message_passing_layers < 1:
             raise ValueError("message_passing_layers must be positive")
-        self.actor_encoder = RoutingGraphEncoder(
-            hidden_dim,
-            message_passing_layers,
-        )
-        self.critic_encoder = RoutingGraphEncoder(
+        self.encoder = RoutingGraphEncoder(
             hidden_dim,
             message_passing_layers,
         )
@@ -224,25 +227,46 @@ class GraphActorCritic(nn.Module):
             nn.Linear(hidden_dim, 1),
         )
 
+    def encode_state(
+        self,
+        graph: RoutingGraph,
+    ) -> tuple[Tensor, Tensor]:
+        """Encode the current graph state once for both policy heads."""
+
+        return self.encoder(graph)
+
     def actor_forward(
         self,
         graph: RoutingGraph,
+        encoded: tuple[Tensor, Tensor] | None = None,
     ) -> tuple[Tensor, Tensor, Tensor]:
-        actor_embeddings, actor_context = self.actor_encoder(graph)
-        stop_logit = self.stop_head(actor_context).squeeze(-1)
-        return actor_embeddings, actor_context, stop_logit
+        embeddings, context = (
+            self.encode_state(graph) if encoded is None else encoded
+        )
+        stop_logit = self.stop_head(context).squeeze(-1)
+        return embeddings, context, stop_logit
 
-    def critic_forward(self, graph: RoutingGraph) -> Tensor:
-        _critic_embeddings, critic_context = self.critic_encoder(graph)
-        value = self.value_head(critic_context).squeeze(-1)
+    def critic_forward(
+        self,
+        graph: RoutingGraph,
+        encoded: tuple[Tensor, Tensor] | None = None,
+    ) -> Tensor:
+        _embeddings, context = (
+            self.encode_state(graph) if encoded is None else encoded
+        )
+        value = self.value_head(context).squeeze(-1)
         return value
 
     def forward(
         self,
         graph: RoutingGraph,
     ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
-        embeddings, context, stop_logit = self.actor_forward(graph)
-        value = self.critic_forward(graph)
+        encoded = self.encode_state(graph)
+        embeddings, context, stop_logit = self.actor_forward(
+            graph,
+            encoded=encoded,
+        )
+        value = self.critic_forward(graph, encoded=encoded)
         return embeddings, context, stop_logit, value
 
 
@@ -287,7 +311,7 @@ class ARCQPolicy(nn.Module):
 
     def actor_parameters(self) -> tuple[nn.Parameter, ...]:
         return tuple(
-            self.actor_critic.actor_encoder.parameters()
+            self.actor_critic.encoder.parameters()
         ) + tuple(
             self.actor_critic.request_head.parameters()
         ) + tuple(
@@ -302,8 +326,29 @@ class ARCQPolicy(nn.Module):
 
     def critic_parameters(self) -> tuple[nn.Parameter, ...]:
         return tuple(
-            self.actor_critic.critic_encoder.parameters()
+            self.actor_critic.encoder.parameters()
         ) + tuple(self.actor_critic.value_head.parameters())
+
+    def shared_parameters(self) -> tuple[nn.Parameter, ...]:
+        """Parameters used by both the actor and critic."""
+
+        return tuple(self.actor_critic.encoder.parameters())
+
+    def actor_head_parameters(self) -> tuple[nn.Parameter, ...]:
+        """Parameters that only produce action probabilities."""
+
+        return (
+            tuple(self.actor_critic.request_head.parameters())
+            + tuple(self.actor_critic.route_head.parameters())
+            + tuple(self.actor_critic.construction_head.parameters())
+            + tuple(self.actor_critic.start_head.parameters())
+            + tuple(self.actor_critic.stop_head.parameters())
+        )
+
+    def critic_head_parameters(self) -> tuple[nn.Parameter, ...]:
+        """Parameters that only produce the value estimate."""
+
+        return tuple(self.actor_critic.value_head.parameters())
 
     @staticmethod
     def _legal_hierarchy(
@@ -366,11 +411,13 @@ class ARCQPolicy(nn.Module):
     ) -> tuple[str, Tensor, Tensor, Tensor]:
         """Choose one feasible joint action through a semantic hierarchy."""
 
+        encoded = self.actor_critic.encode_state(graph)
         embeddings, context, stop_logit = self.actor_critic.actor_forward(
-            graph
+            graph,
+            encoded=encoded,
         )
         value = (
-            self.actor_critic.critic_forward(graph)
+            self.actor_critic.critic_forward(graph, encoded=encoded)
             if include_value
             else context.new_zeros(())
         )

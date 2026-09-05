@@ -157,22 +157,23 @@ class PPOTrainer:
             self.policy.parameters(),
             lr=self.config.learning_rate,
         )
+        self.shared_parameters = self.policy.shared_parameters()
+        self.actor_head_parameters = self.policy.actor_head_parameters()
+        self.critic_head_parameters = self.policy.critic_head_parameters()
         self.actor_parameters = self.policy.actor_parameters()
         self.critic_parameters = self.policy.critic_parameters()
-        if {
-            id(parameter) for parameter in self.actor_parameters
-        } & {
-            id(parameter) for parameter in self.critic_parameters
-        }:
-            raise ValueError("actor and critic parameter groups must be disjoint")
         grouped_parameter_ids = {
             id(parameter)
-            for parameter in (*self.actor_parameters, *self.critic_parameters)
+            for parameter in (
+                *self.shared_parameters,
+                *self.actor_head_parameters,
+                *self.critic_head_parameters,
+            )
         }
         if grouped_parameter_ids != {
             id(parameter) for parameter in self.policy.parameters()
         }:
-            raise ValueError("actor and critic groups must cover the policy")
+            raise ValueError("encoder and head groups must cover the policy")
 
     def update(
         self,
@@ -261,12 +262,16 @@ class PPOTrainer:
                 )
                 self.optimizer.zero_grad(set_to_none=True)
                 total_loss.backward()
-                actor_gradient_norm = torch.nn.utils.clip_grad_norm_(
-                    self.actor_parameters,
+                shared_gradient_norm = torch.nn.utils.clip_grad_norm_(
+                    self.shared_parameters,
                     self.config.max_gradient_norm,
                 )
-                critic_gradient_norm = torch.nn.utils.clip_grad_norm_(
-                    self.critic_parameters,
+                actor_head_gradient_norm = torch.nn.utils.clip_grad_norm_(
+                    self.actor_head_parameters,
+                    self.config.max_gradient_norm,
+                )
+                critic_head_gradient_norm = torch.nn.utils.clip_grad_norm_(
+                    self.critic_head_parameters,
                     self.config.max_gradient_norm,
                 )
                 self.optimizer.step()
@@ -280,12 +285,25 @@ class PPOTrainer:
                 clip_fractions.append(float(
                     torch.stack(batch_clipped).mean().detach().item()
                 ))
-                actor_norm = float(actor_gradient_norm.detach().item())
-                critic_norm = float(critic_gradient_norm.detach().item())
+                shared_norm = float(shared_gradient_norm.detach().item())
+                actor_head_norm = float(
+                    actor_head_gradient_norm.detach().item()
+                )
+                critic_head_norm = float(
+                    critic_head_gradient_norm.detach().item()
+                )
+                actor_norm = (shared_norm ** 2 + actor_head_norm ** 2) ** 0.5
+                critic_norm = (
+                    shared_norm ** 2 + critic_head_norm ** 2
+                ) ** 0.5
                 actor_gradient_norms.append(actor_norm)
                 critic_gradient_norms.append(critic_norm)
                 gradient_norms.append(
-                    (actor_norm * actor_norm + critic_norm * critic_norm) ** 0.5
+                    (
+                        shared_norm ** 2
+                        + actor_head_norm ** 2
+                        + critic_head_norm ** 2
+                    ) ** 0.5
                 )
 
         mean_latency_slots = fmean(

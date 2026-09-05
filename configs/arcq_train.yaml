@@ -57,6 +57,6 @@ run:
   validation_every_updates: 10
   validation_episode_count: 8
   validation_seed: 30260905
-  output_directory: results/arcq/paper_training
+  output_directory: results/arcq/paper_training_shared_actor_critic
   device: auto
   cpu_threads: null

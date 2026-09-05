@@ -219,6 +219,31 @@ class RoutingGraphTests(unittest.TestCase):
             atol=1e-6,
         ))
 
+    def test_actor_and_critic_share_one_state_encoding(self):
+        _environment, observation = make_observation()
+        graph = build_routing_graph(observation)
+        policy = ARCQPolicy(hidden_dim=24, message_passing_layers=2)
+        encoded = policy.actor_critic.encode_state(graph)
+        actor_output = policy.actor_critic.actor_forward(
+            graph,
+            encoded=encoded,
+        )
+        value = policy.actor_critic.critic_forward(
+            graph,
+            encoded=encoded,
+        )
+        self.assertEqual(actor_output[0].shape[0], graph.node_features.shape[0])
+        self.assertTrue(torch.isfinite(actor_output[2]))
+        self.assertTrue(torch.isfinite(value))
+        shared_ids = {id(parameter) for parameter in policy.shared_parameters()}
+        self.assertTrue(shared_ids)
+        self.assertTrue(shared_ids <= {
+            id(parameter) for parameter in policy.actor_parameters()
+        })
+        self.assertTrue(shared_ids <= {
+            id(parameter) for parameter in policy.critic_parameters()
+        })
+
 
 class ARCQPolicyTests(unittest.TestCase):
     def test_hierarchical_action_probabilities_sum_to_one(self):

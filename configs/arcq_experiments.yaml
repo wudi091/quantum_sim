@@ -1,5 +1,5 @@
 schema_version: 1
-checkpoint_path: results/arcq/paper_training/arcq_best.pt
+checkpoint_path: results/arcq/paper_training_shared_actor_critic/arcq_best.pt
 output_path: results/arcq/formal/raw_results.json
 
 replication:

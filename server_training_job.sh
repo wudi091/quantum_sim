@@ -4,7 +4,7 @@ set -euo pipefail
 REPOSITORY=/data02/qbit/quantum_sim
 PYTHON=/data/anaconda3/envs/reliq/bin/python
 CONFIG="${REPOSITORY}/configs/arcq_train.yaml"
-OUTPUT="${REPOSITORY}/results/arcq/paper_training"
+OUTPUT="${REPOSITORY}/results/arcq/paper_training_shared_actor_critic"
 CHECKPOINT="${OUTPUT}/arcq_latest.pt"
 LOG="${OUTPUT}/training.log"
 PID_FILE="${OUTPUT}/training.pid"
@@ -47,7 +47,7 @@ checkpoint_compatible() {
   [[ -f "${CHECKPOINT}" ]] || return 1
   cd "${REPOSITORY}"
   "${PYTHON}" -c \
-    "from dataclasses import asdict; from algorithms.rl_routing.checkpoint import load_arcq_checkpoint; from algorithms.rl_routing.train import load_training_config; c=asdict(load_training_config('configs/arcq_train.yaml')); _,m=load_arcq_checkpoint('results/arcq/paper_training/arcq_latest.pt'); raise SystemExit(0 if m['training_state'].get('config') == c else 1)"
+    "from dataclasses import asdict; from algorithms.rl_routing.checkpoint import load_arcq_checkpoint; from algorithms.rl_routing.train import load_training_config; c=asdict(load_training_config('configs/arcq_train.yaml')); _,m=load_arcq_checkpoint('results/arcq/paper_training_shared_actor_critic/arcq_latest.pt'); raise SystemExit(0 if m['training_state'].get('config') == c else 1)"
 }
 
 training_complete() {
@@ -56,7 +56,7 @@ training_complete() {
   checkpoint_compatible || return 1
   cd "${REPOSITORY}"
   "${PYTHON}" -c \
-    "from algorithms.rl_routing.checkpoint import load_arcq_checkpoint; from algorithms.rl_routing.train import load_training_config; c=load_training_config('configs/arcq_train.yaml'); _,latest=load_arcq_checkpoint('results/arcq/paper_training/arcq_latest.pt'); _,best=load_arcq_checkpoint('results/arcq/paper_training/arcq_best.pt'); ls=latest['training_state']; bs=best['training_state']; ok=int(ls['episodes_completed']) == c.run.episode_count and bs.get('selection_finalized') is True and int(bs.get('training_completed_episodes', -1)) == c.run.episode_count; raise SystemExit(0 if ok else 1)"
+    "from algorithms.rl_routing.checkpoint import load_arcq_checkpoint; from algorithms.rl_routing.train import load_training_config; c=load_training_config('configs/arcq_train.yaml'); _,latest=load_arcq_checkpoint('results/arcq/paper_training_shared_actor_critic/arcq_latest.pt'); _,best=load_arcq_checkpoint('results/arcq/paper_training_shared_actor_critic/arcq_best.pt'); ls=latest['training_state']; bs=best['training_state']; ok=int(ls['episodes_completed']) == c.run.episode_count and bs.get('selection_finalized') is True and int(bs.get('training_completed_episodes', -1)) == c.run.episode_count; raise SystemExit(0 if ok else 1)"
 }
 
 check_job() {

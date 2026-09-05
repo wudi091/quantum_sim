@@ -18,6 +18,12 @@ per request, and reserved plus selected demand no greater than capacity for
 every resource--slot key. Physical generation and swapping success are not
 planning constraints; SeQUeNCe resolves them after commitment.
 
+The policy uses one permutation-equivariant graph encoder for the current
+state, followed by separate actor and critic heads. The encoder is trained by
+both PPO losses; the actor head selects actions and the critic head estimates
+continuation value. This parameter sharing changes optimization efficiency but
+does not change the feasible action set or any of the propositions below.
+
 ## Proposition 1: finite feasible output
 
 Every ARC-Q decision terminates after at most one plus the number of eligible

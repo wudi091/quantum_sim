@@ -82,28 +82,35 @@ by configuration validation.
 
 ## Learning algorithm
 
-The actor and critic use independent relation-aware graph encoders. This keeps
-the much larger value-regression gradient from suppressing the combinatorial
-policy gradient; their gradients are clipped separately. A shared top-level
-categorical distribution contains STOP and one alternative per feasible
-request. Conditional categorical heads then select route, construction, and
-start slot. Thus the number of low-level candidates cannot mechanically alter
-a request's top-level probability. With equal logits and no newly induced
-conflicts, this top-level factorization gives equal probability to every plan
-cardinality rather than the geometric short-plan bias of an independent
-binary STOP hazard. Planning is
-treated as an augmented Markov process: selecting a candidate changes only
-the residual-capacity graph and yields zero immediate reward; selecting STOP
-advances the physical environment and receives the exact interval reward.
-PPO therefore optimizes each masked categorical choice rather than multiplying
-an entire variable-length plan into one probability ratio. The critic values
-every partial feasible plan. Generalized advantage estimation uses two trace
-scales: lambda is exactly one after a zero-time candidate choice and is the
-configured physical lambda only after STOP advances the simulator. Thus all
-choices in one plan receive the same unattenuated physical feedback regardless
-of their sequence position, while variance can still be controlled across
-physical decision intervals. This duration-aware trace prevents the
-autoregressive factorization from introducing an artificial plan-length cost.
+The current graph state is encoded once by a shared relation-aware GNN. Its
+node embeddings and pooled context are the state representation consumed by
+two separate heads: the actor heads produce the autoregressive action policy,
+and the critic head estimates the continuation value. The actor and critic
+heads are optimized jointly by PPO, while the shared encoder receives both
+policy and value gradients. This makes the implementation match the intended
+division directly: GNN understands the state, Actor chooses the strategy, and
+the physical reward determines the update direction.
+
+A shared top-level categorical distribution contains STOP and one alternative
+per feasible request. Conditional categorical heads then select route,
+construction, and start slot. Thus the number of low-level candidates cannot
+mechanically alter a request's top-level probability. With equal logits and no
+newly induced conflicts, this top-level factorization gives equal probability
+to every plan cardinality rather than the geometric short-plan bias of an
+independent binary STOP hazard. Planning is treated as an augmented Markov
+process: selecting a candidate changes only the residual-capacity graph and
+yields zero immediate reward; selecting STOP advances the physical environment
+and receives the exact interval reward. PPO therefore optimizes each masked
+categorical choice rather than multiplying an entire variable-length plan into
+one probability ratio. The critic values every partial feasible plan.
+
+Generalized advantage estimation uses two trace scales: lambda is exactly one
+after a zero-time candidate choice and is the configured physical lambda only
+after STOP advances the simulator. Thus all choices in one plan receive the
+same unattenuated physical feedback regardless of their sequence position,
+while variance can still be controlled across physical decision intervals.
+This duration-aware trace prevents the autoregressive factorization from
+introducing an artificial plan-length cost.
 
 The critic is used only while collecting training rollouts and updating PPO.
 Frozen online evaluation times the complete planner path--candidate
